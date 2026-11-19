@@ -1,6 +1,6 @@
 # Containment controller design spec, v3 draft
 
-Status: draft for Jon's review. Source: the council meeting on 2026-11-19 (`.claude/council/sessions/containment-controller-design-20261119-1534/meeting-notes.md`). Every claim this design makes is a row in [`claims.toml`](../claims.toml); the generated table is [`claims.md`](claims.md). Throughout this spec, "must" marks a requirement that a claim row tracks.
+Status: draft for Jon's review. Source: the council meeting on 2026-11-19 (`.claude/council/sessions/containment-controller-design-20261119-1534/meeting-notes.md`). Every claim this design makes is a row in [`claims.toml`](../claims.toml); the generated table is [`claims.md`](claims.md). A plain-English companion with reading links is [`design-explainer.html`](design-explainer.html). Throughout this spec, "must" marks a requirement that a claim row tracks.
 
 Compared with what the prototype does today (commit `d0c0764`), this spec adds or changes four things:
 - System One's liveness and its channel;

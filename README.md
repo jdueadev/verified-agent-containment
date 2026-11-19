@@ -6,7 +6,7 @@ The trust anchor is a small, pure decision kernel. A local classifier can add wa
 
 That cap covers classifier verdicts only. Today a stalled classifier thread blocks lease renewal, and an expired lease leads to Freeze and then Kill. Containment of System One as a whole is claim C-SYS-1, which is not yet met; [`docs/design-spec.md`](docs/design-spec.md) section 5 gives the fix.
 
-The v3 design is in [`docs/design-spec.md`](docs/design-spec.md). Every guarantee, its evidence and its falsifier is a row in [`claims.toml`](claims.toml), rendered as [`docs/claims.md`](docs/claims.md) and checked by `tools/claims_check.py`.
+The v3 design is in [`docs/design-spec.md`](docs/design-spec.md). Every guarantee, its evidence and its falsifier is a row in [`claims.toml`](claims.toml), rendered as [`docs/claims.md`](docs/claims.md) and checked by `tools/claims_check.py`. [`docs/design-explainer.html`](docs/design-explainer.html) is a plain-English companion to the spec, with key terms, small interactive demos and reading links for each section; open it in a browser.
 
 ## Result
 
