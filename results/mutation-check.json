@@ -1,0 +1,78 @@
+{
+  "bend": [
+    {
+      "mutant": "classifier_can_kill",
+      "rejected": true
+    },
+    {
+      "mutant": "expired_run_stays_live",
+      "rejected": true
+    },
+    {
+      "mutant": "renewal_ignores_maximum",
+      "rejected": true
+    },
+    {
+      "mutant": "freeze_before_revocation",
+      "rejected": true
+    },
+    {
+      "mutant": "unsigned_reset_runs",
+      "rejected": true
+    },
+    {
+      "mutant": "expired_access_allowed",
+      "rejected": true
+    },
+    {
+      "mutant": "freeze_allows_access",
+      "rejected": true
+    },
+    {
+      "mutant": "restrict_allows_secret",
+      "rejected": true
+    },
+    {
+      "mutant": "restrict_can_lower",
+      "rejected": true
+    }
+  ],
+  "rust": [
+    {
+      "mutant": "classifier_can_kill",
+      "rejected": true
+    },
+    {
+      "mutant": "lease_off_by_one",
+      "rejected": true
+    },
+    {
+      "mutant": "renewal_ignores_maximum",
+      "rejected": true
+    },
+    {
+      "mutant": "freeze_before_revocation",
+      "rejected": true
+    },
+    {
+      "mutant": "unsigned_reset_runs",
+      "rejected": true
+    },
+    {
+      "mutant": "expired_access_allowed",
+      "rejected": true
+    },
+    {
+      "mutant": "freeze_allows_access",
+      "rejected": true
+    },
+    {
+      "mutant": "restrict_allows_secret",
+      "rejected": true
+    }
+  ],
+  "bend_rejected": 9,
+  "rust_rejected": 8,
+  "bend_total": 9,
+  "rust_total": 8
+}

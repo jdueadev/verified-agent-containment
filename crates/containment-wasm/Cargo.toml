@@ -1,0 +1,12 @@
+[package]
+name = "containment-wasm"
+description = "WebAssembly exports for the containment kernel"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+containment-kernel = { path = "../containment-kernel" }

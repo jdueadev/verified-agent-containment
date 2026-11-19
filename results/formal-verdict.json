@@ -1,0 +1,13 @@
+{
+  "command": "bend PROOF.bend --verdict",
+  "result": "ALL PROOFS CHECK",
+  "bend_commit": "0e2f38f",
+  "bend_version": "2.0.40",
+  "lean_version": "4.34.0",
+  "kernel_stack_note": "Run with LEAN_STACK_SIZE_KB=1048576 through BENDTT because Bend's default 4 GB stack aborted on the 4 GB verification VM.",
+  "sha256": {
+    "formal/kernel.bend": "54f03ca5a2ab9788e391d53dd3e4234be65ba6afdc4c4a71214090354841508b",
+    "formal/LAWS.bend": "bf1df95b889d7860fb42adc4629ae2c60490dd61347035dda151044a304acee5",
+    "formal/PROOF.bend": "c8772315d9a5556400c885b91304d7e2164272eb29afe1c047871f643240a24b"
+  }
+}

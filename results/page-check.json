@@ -1,0 +1,59 @@
+[
+ {
+  "native": true,
+  "scheme": "light",
+  "width": 1280,
+  "engine": "WebAssembly kernel \u00b7 10,195 bytes",
+  "classifier_kill": 0,
+  "signed_reset_seen": true,
+  "laws": [
+   "0 failures",
+   "0 failures",
+   "0 failures",
+   "0 failures",
+   "0 failures",
+   "0 failures"
+  ],
+  "focus": "INPUT",
+  "overflow": 0,
+  "errors": []
+ },
+ {
+  "native": true,
+  "scheme": "dark",
+  "width": 400,
+  "engine": "WebAssembly kernel \u00b7 10,195 bytes",
+  "classifier_kill": 0,
+  "signed_reset_seen": true,
+  "laws": [
+   "0 failures",
+   "0 failures",
+   "0 failures",
+   "0 failures",
+   "0 failures",
+   "0 failures"
+  ],
+  "focus": "INPUT",
+  "overflow": 0,
+  "errors": []
+ },
+ {
+  "native": false,
+  "scheme": "light",
+  "width": 1280,
+  "engine": "JavaScript build of the WebAssembly kernel",
+  "classifier_kill": 0,
+  "signed_reset_seen": true,
+  "laws": [
+   "0 failures",
+   "0 failures",
+   "0 failures",
+   "0 failures",
+   "0 failures",
+   "0 failures"
+  ],
+  "focus": "INPUT",
+  "overflow": 0,
+  "errors": []
+ }
+]
