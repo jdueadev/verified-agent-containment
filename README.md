@@ -21,9 +21,9 @@ The v3 design is in [`docs/design-spec.md`](docs/design-spec.md). Every guarante
 | Unsafe Rust kernels | 19/19 diverge from the Bend model | The differential test detects these faults |
 | Rust vs Bend, Rust vs WebAssembly | 77,364 transitions each, 0 mismatches | Generated-test agreement, including stale timestamps and resets. Not a proof |
 | Linux attack runs | 176/176 passed | 31 scenarios; 5 timed scenarios repeated 30 times |
-| Under CPU load | 68/68 passed | Same suite at `--repeat 10`, with two busy loops on a 2-core VM |
+| Under CPU load | 68/68 passed | Same suite at `--repeat 10`, with two busy loops on a 2-core VM (earlier build, c96aa2d) |
 | Weakened controllers | 29/29 caught | Each removes one protection; the suite must fail |
-| Bytes admitted after a stop committed | 0 | Across 155 measured stops |
+| Bytes admitted after a stop committed | 0 | Across 158 measured stops |
 | Bytes written upstream after the cut | 0 | Same runs. Gateway stamps are HMAC-authenticated at the sink |
 | Live agent suite | 10/10 passed; 7/7 sabotaged controllers caught | The real agent harness with a scripted model: credential scoping, canary, unlisted hosts, budgets, cut on stop, workspace rebuild, HUD log redaction. `results/live-suite.json` |
 | Red-team kit, obedient scripted model | 0 leaks in 6 tasks; both sabotaged controllers score `LEAK` | The scorer can see a leak when one happens. Real-model scorecards are produced by `redteam` on your machine |
@@ -31,13 +31,15 @@ The v3 design is in [`docs/design-spec.md`](docs/design-spec.md). Every guarante
 | TLA+ host model | `ClassifierCannotForceStop` holds | 2,863,520 states (one sandbox, 12 ticks, renewal as its own action, no resets). Required counterexamples are found for the classifier in the health gate, an uncapped lag signal, and a dead monitor. `tools/tla_check.sh` |
 
 Timing on Linux 6.18 in a 2-core VM, p50 / p95 / max:
-- Stop committed to egress cut: 0.12 / 1.66 / 24.21 ms.
-- Committed to cgroup frozen: 0.41 / 2.63 / 24.30 ms.
-- Committed to cgroup empty: 0.94 / 2.41 / 2.65 ms.
+- Stop committed to egress cut: 0.11 / 1.29 / 9.67 ms.
+- Committed to cgroup frozen: 0.43 / 2.45 / 12.05 ms.
+- Committed to cgroup killed: 0.91 / 2.06 / 3.98 ms.
+
+These figures are from `results/attack-suite.json` at the stamped commit.
 
 Maxima vary between runs on this shared VM because the enforcer thread can be descheduled; one run of an earlier build of this change had a `gateway_flood` stop at 93 ms. Every measured stop, including that one, recorded 0 bytes admitted after commit and 0 written after the cut.
 
-Monitor loss to containment stayed under the 200 ms lease, with a maximum of 198.6 ms. Under CPU load, the frozen p95 rose to 9.6 ms and the maximum to 59.8 ms.
+Monitor loss to containment is bounded by lease expiry: p50 189 ms, p95 198 ms, max 200.06 ms for a 200 ms lease. The commit lands on the first tick at or after the deadline, so the maximum can pass the lease by a fraction of a millisecond. The suite's limit is 300 ms. Under CPU load (earlier build), the frozen p95 rose to 9.6 ms and the maximum to 59.8 ms.
 
 **Limits waiver.** This run used `--allow-missing-limits`. The VM has a hybrid cgroup v1/v2 layout, so the pids, memory and CPU controllers are not available in the v2 tree. The result records the waiver. Without it, `benign` fails when those limits are not in force.
 
@@ -129,7 +131,7 @@ The command streams each model step and tool call, prints every mode change, and
 
 Add `--hud 8787` (or `--hud 0` for any free port) to `live`. It prints a link such as `http://127.0.0.1:8787/<random>/`; open it in a browser on the same machine. The page shows the mode ladder (Run, Restrict, Hold, Freeze, Kill) with the cause of the current mode, the lease, request and token counters, and a filterable table of every gateway decision, System One verdict, classifier signal and mode change. Each row and the visible set have Copy buttons that copy JSON. It is keyboard-usable, works at phone width and follows the system light or dark theme.
 
-The HUD only observes. It binds 127.0.0.1, answers only under the random path, refuses other Host headers (DNS rebinding) and non-GET methods, and its event log has credential values and the canary masked. Any local user who learns the link can read the run's events, so keep it private. To watch a run that is already going: `sudo containment-lab hud --run /run/verified-agent-containment/live-... --port 8787`.
+The HUD only observes. It binds 127.0.0.1, answers only under the random path, refuses other Host headers (DNS rebinding) and non-GET methods, and its event log has credential values and the canary masked. Anyone on this machine who learns the link can read the run's events. On WSL2 with localhost forwarding that includes any Windows process. Keep the link private. The access checks were tested by hand, not by the suite (claim L-OPS-05). To watch a run that is already going: `sudo target/release/containment-lab hud --run /run/verified-agent-containment/live-... --port 8787`.
 
 While a run is going, in another terminal:
 

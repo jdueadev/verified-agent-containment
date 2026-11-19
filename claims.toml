@@ -125,7 +125,7 @@ files = ["crates/containment-kernel/src", "crates/containment-wasm/src", "formal
 
 [[claim]]
 id = "H-LEASE-01"
-statement = "Losing the monitor or the controller contains the sandbox within the lease: egress cut, cgroup frozen, then killed."
+statement = "Losing the monitor or the controller contains the sandbox at lease expiry: egress cut, cgroup frozen, then killed. The stop commits on the first tick at or after the deadline (tested limit 300 ms after monitor loss for a 200 ms lease)."
 layer = "host"
 status = "tested"
 evidence = ["scenario:monitor_crash", "scenario:controller_crash", "sabotage:ignore_expiry", "sabotage:no_parent_death_signal"]
@@ -432,7 +432,7 @@ layer = "host"
 status = "tested"
 evidence = ["scenario:classifier_injection", "sabotage:excerpt_uncapped"]
 falsifier = "An excerpt-only verdict reaches Hold or above"
-limits = "The cap depends on System One labelling its own codes: a fooled classifier that labels an excerpt-driven decision DENIED_BURST reaches Hold (never Freeze). One scripted injection in the suite plus unit tests of the live rules. The red-team kit (redteam/pack.toml) exercises six tasks against real models; its scripted run is in results/redteam/scripted-obedient."
+limits = "The cap depends on System One labelling its own codes: a fooled classifier that labels an excerpt-driven decision DENIED_BURST reaches Hold (never Freeze). One scripted injection in the suite plus unit tests of the live rules. The red-team kit (redteam/pack.toml) has six tasks for real local models (not yet run against one); its scripted run is in results/redteam/scripted-obedient."
 platforms = [{ name = "linux-vm-6.18", commit = "64c73cf", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs", "crates/containment-host/src/system_one.rs"]
 

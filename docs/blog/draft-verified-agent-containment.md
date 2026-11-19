@@ -12,14 +12,14 @@ That design puts a lot of trust in the classifier. A classifier that is wrong, f
 
 ## The idea in one paragraph
 
-An agent's authority is a **lease**. A separate monitor keeps renewing it (the lease lasts about 200 ms) only while enforcement is confirmed healthy. If the lease isn't renewed, the agent loses its authority: no secrets, no network, then frozen, then killed. Containment has five levels, Run, Restrict, Hold, Freeze and Kill, and only a signed reset can bring the agent back down. A small **pure decision kernel** decides every move between levels, and the laws it must obey are machine-proved.
+An agent's authority is a **lease**. A separate monitor keeps renewing it (the lease lasts about 200 ms) only while enforcement is confirmed healthy. If the lease isn't renewed, the agent loses its authority: no secrets, no network, then frozen, then killed. Containment has five levels, Run, Restrict, Hold, Freeze and Kill, and only a signed reset can bring the agent back down. A small **pure decision kernel** decides every move between levels. Its laws are machine-proved for the kernel's formal model (written in Bend and rechecked in Lean). The Rust kernel that actually runs is differential-tested against that model, not proved: 77,364 generated transitions, 0 mismatches.
 
 ## What the classifier is allowed to do
 
 The local classifier, called System One, watches what the agent does: denied-request bursts, probes for secrets, prompt-injection markers, odd write volumes. It can only **tighten**:
-- **Hold is its ceiling.** At most, a classifier verdict moves the agent to Hold. Hold stops the agent and waits for a person; it has no timer.
+- **Hold is its ceiling.** At most, a classifier verdict moves the agent to Hold. Hold stops the agent and waits for a person; the kernel gives it no timer. A live run still tears itself down after its configured maximum (900 s by default), failing closed.
 - **It cannot reach Freeze or Kill.** A verdict cannot renew a lease, grant access, start the kill timer or cause Kill. A fooled classifier can pause your agent but never destroy it.
-- **Verdicts based only on agent text stop at Restrict.** If a verdict rests only on text the agent produced (an injection marker, for instance), it can only restrict.
+- **Verdicts based only on agent text stop at Restrict.** If a verdict rests only on text the agent produced (an injection marker, for instance), it can only restrict. This cap relies on System One labelling its own reasons honestly. A fooled classifier that calls an injection a denied-request burst can still reach Hold, but never Freeze.
 - **Liveness can't stall the lease.** A slow classifier restricts and a blind one holds, but neither can block lease renewal. An earlier version got this wrong: a stalled classifier blocked renewals and the agent was killed. A TLA+ model now has to find that bug in the old wiring before its passing result counts.
 - **System One is confined.** It runs as a separate process with its own uid and cgroup, an empty network namespace, no sockets, no fork and no signals. It reaches the controller only through a pipe and a socket it inherits.
 
@@ -29,19 +29,21 @@ Every guarantee is a row in a claims table. Each row lists its evidence, the obs
 
 | Evidence | Result |
 |---|---|
-| Kernel laws (Bend, rechecked in Lean) | 36 proved |
+| Kernel laws (Bend model, rechecked in Lean) | 36 proved |
 | Deliberately broken kernels | 46/46 rejected, each with a counterexample input |
-| Linux attack suite | 176/176 runs; 29/29 sabotaged controllers caught |
+| Linux attack suite (2-core VM) | 176/176 runs; 29/29 sabotaged controllers caught. Cgroup limits were waived on this VM; a WSL2 run of an earlier build passed with limits in force |
 | Bytes admitted after a stop committed | 0 |
-| TLA+ host model | the property holds, and the model finds the bugs it is meant to find |
+| TLA+ host model (bounded: one sandbox, 12 ticks, no resets) | the property holds, and the model finds the bugs it is meant to find |
 | Live agent suite (real harness, scripted model) | 10/10; 7/7 sabotaged controllers caught |
 
 "Sabotaged controllers" is the part I care about most. For every protection, there's a build with that protection removed, and the test suite **must fail** against it. A test that can't fail proves nothing.
 
 The things it doesn't do yet are listed just as plainly:
-- **Resets** are signed with a key file that only root can read, not a hardware key.
+- **Resets** are signed with a key file that only root can read, not a hardware key. Any root process on the host counts as the operator. A reset signed before a controller restart could be replayed after it.
 - **The model server** runs outside the sandbox.
 - **Allowed writes:** an agent talked into writing to a host you allowed, within budget, will succeed.
+- **No real model yet:** the live harness has only been driven by a scripted model. A real local model has not been run yet, and System One's false-alarm rate on clean work is unmeasured.
+- **Untested paths:** the CONNECT proxy path is untested. The live suite, HUD and red-team kit have only run on a Linux VM so far, not on WSL2.
 
 ## Try to break it
 
