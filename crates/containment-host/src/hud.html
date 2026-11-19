@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Containment HUD</title>
+<style>
+/* Layout: status band on top (mode ladder, counters), filterable event log below. */
+:root {
+  --bg: #f4f6f8; --surface: #ffffff; --sunk: #e9edf2; --ink: #17202b; --muted: #57636f; --line: #d6dde5; --focus: #0b6e75;
+  --run: #2b7a4b; --restrict: #2a63a8; --hold: #7652c4; --freeze: #a86a06; --kill: #b8352a; --ok: #2b7a4b; --bad: #b8352a;
+  --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  --sans: system-ui, "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root {
+  --bg: #10151b; --surface: #171e26; --sunk: #0c1116; --ink: #e4e9ef; --muted: #99a5b3; --line: #2a3440; --focus: #6fd0d6;
+  --run: #5fc287; --restrict: #6ea4ea; --hold: #ab8cf0; --freeze: #e2a63c; --kill: #f07a6d; --ok: #5fc287; --bad: #f07a6d; color-scheme: dark } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 var(--sans); padding: 16px; }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+header { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline; margin-bottom: 14px; }
+h1 { font-size: 1.15rem; margin: 0; }
+.muted { color: var(--muted); font-size: .88rem; }
+.band { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 14px; margin-bottom: 14px; }
+@media (max-width: 800px) { .band { grid-template-columns: minmax(0, 1fr); } }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; }
+.ladder { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.step { border: 2px solid var(--c); color: var(--c); border-radius: 8px; padding: 10px 4px; text-align: center; font-weight: 700; opacity: .45; }
+.step.on { background: var(--c); color: var(--surface); opacity: 1; }
+.why { margin: 10px 0 0; font-size: .92rem; }
+dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: .92rem; }
+dt { color: var(--muted); }
+dd { margin: 0; font-family: var(--mono); font-size: .85rem; overflow-wrap: anywhere; }
+.bar { height: 6px; background: var(--sunk); border-radius: 3px; overflow: hidden; margin-top: 3px; }
+.bar > i { display: block; height: 100%; background: var(--restrict); }
+.tools { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin-bottom: 10px; }
+button { font: inherit; font-size: .85rem; padding: 4px 10px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 6px; cursor: pointer; }
+button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+input[type=search] { font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); min-width: 0; flex: 1 1 200px; }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: .88rem; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: .8rem; position: sticky; top: 0; background: var(--surface); }
+td.t { font-family: var(--mono); white-space: nowrap; color: var(--muted); }
+td.d { font-family: var(--mono); font-size: .82rem; overflow-wrap: anywhere; }
+.k { font-family: var(--mono); font-size: .75rem; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); }
+.deny { color: var(--bad); font-weight: 600; }
+.allow { color: var(--ok); }
+.copied { color: var(--ok); font-size: .8rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Containment HUD</h1>
+  <span class="muted" id="run"></span>
+  <span class="muted" id="conn" aria-live="polite"></span>
+</header>
+<section class="band" aria-label="Current state">
+  <div class="card">
+    <div class="ladder" id="ladder" role="list" aria-label="Containment mode"></div>
+    <p class="why" id="why" aria-live="polite">Waiting for the controller.</p>
+  </div>
+  <div class="card">
+    <dl id="counters"></dl>
+  </div>
+</section>
+<section class="card" aria-label="Events">
+  <div class="tools">
+    <div role="group" aria-label="Filter events">
+      <button type="button" data-k="all" aria-pressed="true">All</button>
+      <button type="button" data-k="mode" aria-pressed="false">Mode</button>
+      <button type="button" data-k="gateway" aria-pressed="false">Gateway</button>
+      <button type="button" data-k="denied" aria-pressed="false">Denied</button>
+      <button type="button" data-k="classifier" aria-pressed="false">Classifier</button>
+    </div>
+    <label for="q" class="muted">Search</label>
+    <input type="search" id="q" placeholder="host, error, code…">
+    <button type="button" id="follow" aria-pressed="true">Follow newest</button>
+    <button type="button" id="copyall">Copy visible as JSON</button>
+    <span class="copied" id="copied" aria-live="polite"></span>
+  </div>
+  <div class="tablewrap" id="wrap" style="max-height: 60vh; overflow-y: auto;">
+    <table>
+      <thead><tr><th scope="col">ms</th><th scope="col">kind</th><th scope="col">what</th><th scope="col">detail</th><th scope="col"><span class="muted">copy</span></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</section>
+<script>
+const MODES = ["run", "restrict", "hold", "freeze", "kill"];
+const WHY = {
+  run: "Running with the authority the policy grants.",
+  restrict: "Restricted: secrets revoked, only baseline egress (inference) allowed. The agent keeps running.",
+  hold: "Held: stopped, waiting for a person. No timer; only a signed reset or stop ends it.",
+  freeze: "Frozen: network cut, processes paused. Kill follows when the grace period ends.",
+  kill: "Killed: processes gone. A signed reset rebuilds the sandbox with a fresh workspace.",
+};
+let events = [], filter = "all", follow = true, lastMode = null;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+$("ladder").innerHTML = MODES.map(m => `<div class="step" role="listitem" data-m="${m}" style="--c: var(--${m})">${m}</div>`).join("");
+
+function what(e) {
+  if (e.kind === "mode") return `${e.from} → ${e.to}`;
+  if (e.kind === "gateway") return `${e.op}${e.host ? " " + e.host : ""}`;
+  if (e.kind === "classifier") return `${e.label} asks ${e.level}`;
+  if (e.kind === "verdict") return `System One: ${e.level}`;
+  return e.kind;
+}
+function detail(e) {
+  if (e.kind === "mode") return esc(`${e.event}; ${(e.actions || []).join(", ")}`);
+  if (e.kind === "gateway") {
+    const verdict = e.ok ? `<span class="allow">allowed</span>` : `<span class="deny">denied</span> ${esc(e.error)}`;
+    const usage = e.usage ? ` tokens ${esc(e.usage.lease_total)}/${esc(e.usage.budget)}` : "";
+    return `${verdict}${e.status ? " HTTP " + esc(e.status) : ""}${usage} ${esc(e.detail)}`;
+  }
+  if (e.kind === "verdict") return `codes ${esc((e.codes || []).join(", ") || "none")}, score ${esc(e.score)}`;
+  return "";
+}
+function matches(e) {
+  const q = $("q").value.trim().toLowerCase();
+  const k = filter === "all" || e.kind === filter || (filter === "denied" && e.kind === "gateway" && !e.ok) || (filter === "classifier" && e.kind === "verdict");
+  return k && (!q || JSON.stringify(e).toLowerCase().includes(q));
+}
+function render() {
+  const visible = events.filter(matches).slice(-2000);
+  $("rows").innerHTML = visible.map((e, i) => `<tr><td class="t">${esc(e.ms)}</td><td><span class="k">${esc(e.kind)}</span></td><td>${esc(what(e))}</td><td class="d">${detail(e)}</td><td><button type="button" data-copy="${events.indexOf(e)}" aria-label="Copy event at ${esc(e.ms)} ms">Copy</button></td></tr>`).join("");
+  if (follow) $("wrap").scrollTop = $("wrap").scrollHeight;
+}
+function counters(status) {
+  const gw = events.filter(e => e.kind === "gateway");
+  const denied = gw.filter(e => !e.ok).length;
+  const lastInfer = [...gw].reverse().find(e => e.usage);
+  const tokens = lastInfer ? `${lastInfer.usage.lease_total} / ${lastInfer.usage.budget}` : "0";
+  const pct = lastInfer ? Math.min(100, 100 * lastInfer.usage.lease_total / lastInfer.usage.budget) : 0;
+  $("counters").innerHTML = `
+    <dt>mode</dt><dd>${esc(status.mode)}</dd>
+    <dt>lease</dt><dd>${["run", "restrict"].includes(status.mode) && status.deadline_ms > status.now_ms ? "renewed, " + esc(status.deadline_ms - status.now_ms) + " ms left" : "not running"}</dd>
+    <dt>requests</dt><dd>${gw.length} (${denied} denied)</dd>
+    <dt>tokens</dt><dd>${esc(tokens)}<div class="bar" aria-hidden="true"><i style="width:${Number(pct) || 0}%"></i></div></dd>
+    <dt>signals</dt><dd>${events.filter(e => e.kind === "classifier").length}</dd>`;
+}
+async function poll() {
+  try {
+    const [st, ev] = await Promise.all([fetch("status").then(r => r.json()), fetch("events?from=" + events.length).then(r => r.json())]);
+    $("conn").textContent = "";
+    events.push(...ev);
+    const mode = st.mode || "unknown";
+    document.querySelectorAll(".step").forEach(s => s.classList.toggle("on", s.dataset.m === mode));
+    if (mode !== lastMode) {
+      const cause = [...events].reverse().find(e => e.kind === "mode" && e.to === mode);
+      $("why").textContent = (WHY[mode] || "") + (cause ? ` Cause: ${cause.event}.` : "");
+      lastMode = mode;
+    }
+    counters(st);
+    if (ev.length) render();
+  } catch (e) {
+    $("conn").textContent = "Run ended or controller unreachable; showing the saved log.";
+  }
+}
+document.querySelectorAll("[data-k]").forEach(b => b.addEventListener("click", () => {
+  filter = b.dataset.k;
+  document.querySelectorAll("[data-k]").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+  render();
+}));
+$("q").addEventListener("input", render);
+$("follow").addEventListener("click", () => { follow = !follow; $("follow").setAttribute("aria-pressed", String(follow)); if (follow) render(); });
+async function copy(text) {
+  try { await navigator.clipboard.writeText(text); $("copied").textContent = "Copied"; }
+  catch { $("copied").textContent = "Copy failed; select the row text instead"; }
+  setTimeout(() => $("copied").textContent = "", 2500);
+}
+$("rows").addEventListener("click", e => { const i = e.target.dataset.copy; if (i !== undefined) copy(JSON.stringify(events[+i], null, 2)); });
+$("copyall").addEventListener("click", () => copy(JSON.stringify(events.filter(matches), null, 2)));
+fetch("info").then(r => r.json()).then(i => $("run").textContent = i.run).catch(() => {});
+poll();
+setInterval(poll, 500);
+</script>
+</body>
+</html>

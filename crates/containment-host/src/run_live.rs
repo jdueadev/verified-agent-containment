@@ -1,6 +1,6 @@
 //! Operator commands for live runs.
 //!
-//! `containment-lab live --policy FILE --task TEXT [--out DIR]` starts a
+//! `containment-lab live --policy FILE --task TEXT [--out DIR] [--hud PORT]` starts a
 //! controller with a real agent harness, streams what the agent does and every
 //! mode change, and saves the run when it ends.
 //!
@@ -156,7 +156,9 @@ pub fn describe(event: &Value) -> Option<String> {
 pub fn summarise(report: &Value) -> String {
     let transitions: Vec<String> = report["transitions"].as_array().into_iter().flatten()
         .filter(|t| t["from"] != t["to"]).map(|t| format!("{} -> {} ({})", t["from"].as_str().unwrap_or("?"), t["to"].as_str().unwrap_or("?"), t["event"].as_str().unwrap_or("?"))).collect();
-    format!("final mode: {}\nmode changes: {}\nclassifier signals: {}\nlive use: {}",
+    let degraded = report["upstream_abort_failures"].as_u64().unwrap_or(0);
+    let warning = if degraded > 0 { format!("\nWARNING: {degraded} upstream connection(s) could only be shut down, not reset; bytes queued before the cut may have been sent") } else { String::new() };
+    format!("final mode: {}\nmode changes: {}\nclassifier signals: {}\nlive use: {}{warning}",
         report["final_mode"].as_str().unwrap_or("?"),
         if transitions.is_empty() { "none".to_owned() } else { transitions.join("; ") },
         report["classifier_signals"].as_array().map_or(0, Vec::len),
@@ -167,6 +169,7 @@ pub fn live(args: &[String]) -> Result<(), Box<dyn Error>> {
     let mut policy = None;
     let mut task = None;
     let mut out = None;
+    let mut hud_port: Option<u16> = None;
     let mut i = 0;
     while i < args.len() {
         let value = args.get(i + 1).cloned();
@@ -174,6 +177,7 @@ pub fn live(args: &[String]) -> Result<(), Box<dyn Error>> {
             "--policy" => policy = value,
             "--task" => task = value,
             "--out" => out = value.map(PathBuf::from),
+            "--hud" => hud_port = Some(value.ok_or("--hud needs a port")?.parse()?),
             "--allow-missing-limits" => {
                 // SAFETY: set before the controller is started; no other threads yet.
                 unsafe { std::env::set_var(LIMITS_WAIVER_ENV, "1") };
@@ -188,12 +192,17 @@ pub fn live(args: &[String]) -> Result<(), Box<dyn Error>> {
     let task = task.ok_or("--task is required")?;
     let mut run = start(&policy, &task, &[], "none")?;
     eprintln!("run {} started; operator: sudo containment-lab ctl --run {} status|stop|reset MODE", run.run_id, run.root.display());
+    if let Some(port) = hud_port {
+        let root = run.root.clone();
+        std::thread::spawn(move || if let Err(e) = crate::hud::serve(root, port) { eprintln!("HUD: {e}") });
+    }
     let report = wait(&mut run, |e| if let Some(line) = describe(e) { println!("{line}") }, |m| println!(">>> mode is now {m}"))?;
     println!("\n{}", summarise(&report));
     let out = out.unwrap_or_else(|| PathBuf::from("results/live").join(&run.run_id));
     fs::create_dir_all(&out)?;
     fs::write(out.join("report.json"), serde_json::to_vec_pretty(&report)?)?;
     let _ = fs::copy(run.private_dir.join("agent.jsonl"), out.join("transcript.jsonl"));
+    let _ = fs::copy(run.private_dir.join("events.jsonl"), out.join("events.jsonl"));
     println!("saved to {}", out.display());
     let _ = fs::remove_dir_all(&run.root);
     Ok(())

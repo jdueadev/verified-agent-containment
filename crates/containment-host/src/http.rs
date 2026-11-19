@@ -33,6 +33,8 @@ fn internal(ip: std::net::IpAddr) -> bool {
             v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() || (s0 & 0xfe00) == 0xfc00 || (s0 & 0xffc0) == 0xfe80
                 || (s0 & 0xffc0) == 0xfec0 || v6.segments()[..6] == [0x64, 0xff9b, 0, 0, 0, 0]
                 || v6.to_ipv4_mapped().is_some_and(|v4| internal(v4.into()))
+                // Deprecated IPv4-compatible form ::a.b.c.d.
+                || (v6.segments()[..6] == [0; 6] && internal(std::net::Ipv4Addr::from((u32::from(v6.segments()[6]) << 16) | u32::from(v6.segments()[7])).into()))
         }
     }
 }
@@ -144,7 +146,7 @@ pub fn send(
 }
 
 /// Reads one line of at most MAX_LINE bytes.
-fn bounded_line(reader: &mut impl BufRead, line: &mut String) -> io::Result<usize> {
+pub(crate) fn bounded_line(reader: &mut impl BufRead, line: &mut String) -> io::Result<usize> {
     line.clear();
     let n = reader.take(MAX_LINE).read_line(line)?;
     if n as u64 == MAX_LINE && !line.ends_with('\n') {
@@ -224,7 +226,7 @@ mod tests {
     #[test]
     fn internal_addresses_are_recognised() {
         for ip in ["127.0.0.1", "10.1.2.3", "192.168.0.1", "172.16.5.4", "169.254.169.254", "100.64.0.1", "0.1.2.3", "224.0.0.1", "240.0.0.1",
-            "::1", "fd00::1", "fe80::1", "fec0::1", "ff02::1", "64:ff9b::a00:1", "::ffff:10.0.0.1"] {
+            "::1", "fd00::1", "fe80::1", "fec0::1", "ff02::1", "64:ff9b::a00:1", "::ffff:10.0.0.1", "::10.0.0.1"] {
             assert!(internal(ip.parse().unwrap()), "{ip}");
         }
         for ip in ["1.1.1.1", "140.82.112.3", "2606:4700::1111"] {

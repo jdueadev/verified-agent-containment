@@ -191,6 +191,7 @@ impl LiveState {
         // Redact both the bare value and prefix + value, longest first.
         let mut secret_values: Vec<String> = creds.values().map(|(_, v)| v.clone()).chain(raw_values).collect();
         secret_values.sort_by_key(|v| std::cmp::Reverse(v.len()));
+        secret_values.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
         secret_values.dedup();
         Ok(Self { policy, model_url, model_header, hosts, canary, used: Mutex::default(), tokens: AtomicU64::new(0), lease: AtomicU64::new(0), task, secret_values })
     }
