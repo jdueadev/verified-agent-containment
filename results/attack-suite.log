@@ -161,6 +161,7 @@ PASS    classifier_stall
 PASS    classifier_blind
 PASS    blind_egress_only
 PASS    lag_after_reset
+PASS    flood_after_reset
 PASS    clock_rollback
 PASS    actuator_retry
 PASS    actuator_dead
@@ -190,4 +191,5 @@ CAUGHT  sabotage memfd_exec via sandbox_escape
 CAUGHT  sabotage classifier_beat_in_health via classifier_stall
 CAUGHT  sabotage lag_episode_never_resets via lag_after_reset
 CAUGHT  sabotage untraced_decisions_ignored via blind_egress_only
-runs 171/171 passed; sabotage 21/21 detected; admitted after commit 0; written after cut 0
+CAUGHT  sabotage overflow_latch_sticks via flood_after_reset
+runs 172/172 passed; sabotage 22/22 detected; admitted after commit 0; written after cut 0

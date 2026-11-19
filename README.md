@@ -18,19 +18,19 @@ The v3 design is in [`docs/design-spec.md`](docs/design-spec.md). Every guarante
 | Original kernel under the law audit | 0 violations in 200,000 inputs | The executable law statements agree with the proofs |
 | Unsafe Rust kernels | 19/19 diverge from the Bend model | The differential test detects these faults |
 | Rust vs Bend, Rust vs WebAssembly | 77,364 transitions each, 0 mismatches | Generated-test agreement, including stale timestamps and resets. Not a proof |
-| Linux attack runs | 171/171 passed | 26 scenarios; 5 timed scenarios repeated 30 times |
+| Linux attack runs | 172/172 passed | 27 scenarios; 5 timed scenarios repeated 30 times |
 | Under CPU load | 68/68 passed | Same suite at `--repeat 10`, with two busy loops on a 2-core VM |
-| Weakened controllers | 21/21 caught | Each removes one protection; the suite must fail |
+| Weakened controllers | 22/22 caught | Each removes one protection; the suite must fail |
 | Bytes admitted after a stop committed | 0 | Across 155 measured stops |
 | Bytes written upstream after the cut | 0 | Same runs. Gateway stamps are HMAC-authenticated at the sink |
 | Browser page | 10/10 sabotaged kernels caught | Checked with native WebAssembly and with the JavaScript fallback |
 
 Timing on Linux 6.18 in a 2-core VM, p50 / p95 / max:
-- Stop committed to egress cut: 0.10 / 0.73 / 2.52 ms.
-- Committed to cgroup frozen: 0.49 / 2.02 / 12.0 ms.
-- Committed to cgroup empty: 1.32 / 3.61 / 6.24 ms.
+- Stop committed to egress cut: 0.08 / 0.87 / 39.1 ms.
+- Committed to cgroup frozen: 0.38 / 1.67 / 39.3 ms.
+- Committed to cgroup empty: 1.11 / 2.47 / 3.11 ms.
 
-Maxima vary between runs on this shared VM: an earlier run of the same build had one `gateway_flood` stop at 93 ms when the enforcer thread was descheduled. Every measured stop, including that one, recorded 0 bytes admitted after commit and 0 written after the cut.
+Maxima vary between runs on this shared VM because the enforcer thread can be descheduled; one run of an earlier build of this change had a `gateway_flood` stop at 93 ms. Every measured stop, including that one, recorded 0 bytes admitted after commit and 0 written after the cut.
 
 Monitor loss to containment stayed under the 200 ms lease, with a maximum of 198.6 ms. Under CPU load, the frozen p95 rose to 9.6 ms and the maximum to 59.8 ms.
 

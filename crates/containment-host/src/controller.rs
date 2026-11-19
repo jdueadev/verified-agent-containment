@@ -55,6 +55,7 @@ struct Weakness {
     classifier_beat_in_health: bool,
     lag_episode_never_resets: bool,
     untraced_decisions_ignored: bool,
+    overflow_latch_sticks: bool,
 }
 
 impl Weakness {
@@ -83,6 +84,7 @@ impl Weakness {
             "classifier_beat_in_health" => out.classifier_beat_in_health = true,
             "lag_episode_never_resets" => out.lag_episode_never_resets = true,
             "untraced_decisions_ignored" => out.untraced_decisions_ignored = true,
+            "overflow_latch_sticks" => out.overflow_latch_sticks = true,
             other => return Err(format!("unknown weakness {other}")),
         }
         Ok(out)
@@ -171,6 +173,8 @@ impl Lag {
 struct Shared {
     start_ns: u64,
     lag: Mutex<Lag>,
+    /// Mirrors `lag.restricted_since.is_some()` so ordinary requests skip the lag lock.
+    lag_episode_open: AtomicBool,
     blind_hold_ms: u64,
     classifier_signals: Mutex<Vec<Value>>,
     skew_ms: AtomicI64,
@@ -524,7 +528,7 @@ impl Shared {
     /// Gateway decisions the classifier never sees still count while blind,
     /// so an agent cannot dodge a blind-window Hold by not logging.
     fn untraced_decision(&self) {
-        if self.weak.untraced_decisions_ignored {
+        if self.weak.untraced_decisions_ignored || !self.lag_episode_open.load(Ordering::SeqCst) {
             return;
         }
         let mut lag = lock(&self.lag);
@@ -554,8 +558,13 @@ impl Shared {
             if episode_over && lag.restricted_since.is_some() && !self.weak.lag_episode_never_resets {
                 lag.clear_episode();
             }
+            // Back in Run (after a reset), a new overflow must restrict again.
+            if running && !self.weak.overflow_latch_sticks {
+                lag.overflow_signalled = false;
+            }
             if lagging && lag.restricted_since.is_none() {
                 lag.restricted_since = Some(now);
+                self.lag_episode_open.store(true, Ordering::SeqCst);
                 lag.unscored_since_restrict = 0;
                 Some(("classifier_lag", Level::Restrict))
             } else if let Some(since) = lag.restricted_since.filter(|_| !lag.held) {
@@ -567,6 +576,9 @@ impl Shared {
                 None
             }
         };
+        if lock(&self.lag).restricted_since.is_none() {
+            self.lag_episode_open.store(false, Ordering::SeqCst);
+        }
         if let Some((label, level)) = signal {
             apply_classifier(self, Some(label), now, level);
         }
@@ -731,7 +743,8 @@ fn forward(shared: &Shared, slot: u64, admit_ns: u64, host: &str, data: &str, cr
 
 fn gateway_handler(shared: &Arc<Shared>, message: Value, classifier: &SyncSender<(u64, String)>) -> Value {
     let received = boot_ns();
-    if message["op"] != "log" {
+    // Only real actions count while blind; malformed requests do not pad the count.
+    if matches!(message["op"].as_str(), Some("egress" | "secret")) {
         shared.untraced_decision();
     }
     if !shared.weak.ignore_expiry {
@@ -954,7 +967,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let kill_faults = match scenario.as_str() { "actuator_dead" => i64::MAX, "reset_races_kill" | "double_reset" => 3, _ => 0 };
     let now = boot_ns();
     let shared = Arc::new(Shared {
-        start_ns, skew_ms: AtomicI64::new(0), config, lag: Mutex::default(), blind_hold_ms: LAB_BLIND_HOLD_MS, classifier_signals: Mutex::default(),
+        start_ns, skew_ms: AtomicI64::new(0), config, lag: Mutex::default(), lag_episode_open: AtomicBool::new(false), blind_hold_ms: LAB_BLIND_HOLD_MS, classifier_signals: Mutex::default(),
         control: Mutex::new(Control::new(Mode::Run, LEASE_TTL_MS)),
         queue: Mutex::default(), queued: Condvar::new(), enforcer_busy: AtomicBool::new(false),
         enforcer_beat: AtomicU64::new(now), classifier_beat: AtomicU64::new(now),
@@ -992,6 +1005,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     {
         let shared = Arc::clone(&shared);
         let stall = matches!(scenario.as_str(), "classifier_stall" | "classifier_blind" | "lag_after_reset" | "blind_egress_only");
+        // flood_after_reset keeps a healthy classifier; only its queue overflows.
         let began = Instant::now();
         thread::spawn(move || loop {
             if stall && began.elapsed() > Duration::from_millis(120) {

@@ -386,6 +386,19 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             flood(gateway.clone());
             idle()
         }
+        "flood_after_reset" => {
+            // Logs only, for the whole run: every overflow must restrict.
+            for _ in 0..8 {
+                let gateway = gateway.clone();
+                thread::spawn(move || loop {
+                    if let Ok(mut client) = Gateway::connect(&gateway) {
+                        while client.send(json!({"op":"log","text":"x".repeat(512)}))["error"] != "closed" {}
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                });
+            }
+            idle()
+        }
         "gateway_churn" => {
             churn(gateway);
             idle()
