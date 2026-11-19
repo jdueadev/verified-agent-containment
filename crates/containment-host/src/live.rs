@@ -138,6 +138,9 @@ pub struct LiveState {
     pub canary: String,
     pub used: Mutex<BTreeMap<String, Use>>,
     pub tokens: AtomicU64,
+    /// Incremented by every accepted reset; reservations from an earlier lease
+    /// are not released into the new one.
+    pub lease: AtomicU64,
     pub task: String,
     /// Exact credential values, redacted from anything returned to the agent.
     pub secret_values: Vec<String>,
@@ -148,12 +151,19 @@ impl LiveState {
         let policy: Policy = toml::from_str(&fs::read_to_string(policy_path)?)?;
         let model_url = Url::parse(&policy.model.endpoint).ok_or("model.endpoint is not an http(s) URL")?;
         let mut creds = BTreeMap::new();
+        let mut raw_values = Vec::new();
         for c in &policy.credential {
             let value = match (&c.value_env, &c.value_file) {
                 (Some(var), None) => std::env::var(var).map_err(|_| format!("credential {}: ${var} is not set", c.name))?,
                 (None, Some(file)) => fs::read_to_string(file).map_err(|e| format!("credential {}: {e}", c.name))?.trim().to_owned(),
                 _ => return Err(format!("credential {}: set exactly one of value_env, value_file", c.name).into()),
             };
+            // Redaction and the canary check work on serialised JSON; characters JSON
+            // escapes would hide a match, so credentials may not contain them.
+            if value.is_empty() || value.chars().any(|ch| ch == '"' || ch == '\\' || ch.is_control()) {
+                return Err(format!("credential {}: empty, or contains quotes, backslashes or control characters", c.name).into());
+            }
+            raw_values.push(value.clone());
             creds.insert(c.name.clone(), (c.header.clone(), format!("{}{value}", c.prefix)));
         }
         let lookup = |name: &Option<String>| -> Result<Option<(String, String)>, Box<dyn Error>> {
@@ -175,8 +185,15 @@ impl LiveState {
             return Err("the model endpoint's origin must not also be listed as a host".into());
         }
         let model_header = lookup(&policy.model.credential)?;
-        let secret_values = creds.values().map(|(_, v)| v.clone()).collect();
-        Ok(Self { policy, model_url, model_header, hosts, canary, used: Mutex::default(), tokens: AtomicU64::new(0), task, secret_values })
+        if model_header.is_some() && !model_url.https && !crate::http::is_loopback_literal(&model_url.host) {
+            return Err("model.credential is only sent over https (or to a loopback address)".into());
+        }
+        // Redact both the bare value and prefix + value, longest first.
+        let mut secret_values: Vec<String> = creds.values().map(|(_, v)| v.clone()).chain(raw_values).collect();
+        secret_values.sort_by_key(|v| std::cmp::Reverse(v.len()));
+        secret_values.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+        secret_values.dedup();
+        Ok(Self { policy, model_url, model_header, hosts, canary, used: Mutex::default(), tokens: AtomicU64::new(0), lease: AtomicU64::new(0), task, secret_values })
     }
 }
 

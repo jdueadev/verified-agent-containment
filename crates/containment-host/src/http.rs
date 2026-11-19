@@ -23,10 +23,19 @@ pub fn is_loopback_literal(host: &str) -> bool {
 /// that means one of these must list the IP literal itself.
 fn internal(ip: std::net::IpAddr) -> bool {
     match ip {
-        std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
-            || v4.is_broadcast() || v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64,
-        std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified() || (v6.segments()[0] & 0xfe00) == 0xfc00
-            || (v6.segments()[0] & 0xffc0) == 0xfe80 || v6.to_ipv4_mapped().is_some_and(|v4| internal(v4.into())),
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_broadcast() || v4.is_multicast()
+                || o[0] == 0 || o[0] >= 240 || (o[0] == 100 && (o[1] & 0xc0) == 64)
+        }
+        std::net::IpAddr::V6(v6) => {
+            let s0 = v6.segments()[0];
+            v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() || (s0 & 0xfe00) == 0xfc00 || (s0 & 0xffc0) == 0xfe80
+                || (s0 & 0xffc0) == 0xfec0 || v6.segments()[..6] == [0x64, 0xff9b, 0, 0, 0, 0]
+                || v6.to_ipv4_mapped().is_some_and(|v4| internal(v4.into()))
+                // Deprecated IPv4-compatible form ::a.b.c.d.
+                || (v6.segments()[..6] == [0; 6] && internal(std::net::Ipv4Addr::from((u32::from(v6.segments()[6]) << 16) | u32::from(v6.segments()[7])).into()))
+        }
     }
 }
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -216,7 +225,8 @@ mod tests {
 
     #[test]
     fn internal_addresses_are_recognised() {
-        for ip in ["127.0.0.1", "10.1.2.3", "192.168.0.1", "172.16.5.4", "169.254.169.254", "100.64.0.1", "::1", "fd00::1", "fe80::1", "::ffff:10.0.0.1"] {
+        for ip in ["127.0.0.1", "10.1.2.3", "192.168.0.1", "172.16.5.4", "169.254.169.254", "100.64.0.1", "0.1.2.3", "224.0.0.1", "240.0.0.1",
+            "::1", "fd00::1", "fe80::1", "fec0::1", "ff02::1", "64:ff9b::a00:1", "::ffff:10.0.0.1", "::10.0.0.1"] {
             assert!(internal(ip.parse().unwrap()), "{ip}");
         }
         for ip in ["1.1.1.1", "140.82.112.3", "2606:4700::1111"] {

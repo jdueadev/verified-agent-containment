@@ -111,6 +111,7 @@ pub fn mock_model(args: &[String]) -> Result<(), Box<dyn Error>> {
             let arguments = serde_json::to_string(&c["arguments"]).unwrap_or_default();
             let escaped = serde_json::to_string(&last_tool).unwrap_or_default();
             let arguments = arguments.replace("{{last_tool}}", escaped.trim_matches('"'));
+            let arguments = fill_files(&arguments);
             json!({"id": format!("call_{n}_{i}"), "type": "function", "function": {"name": c["name"], "arguments": arguments}})
         }).collect();
         let message = json!({"role": "assistant", "content": entry["content"], "tool_calls": if calls.is_empty() { Value::Null } else { json!(calls) }});
@@ -119,6 +120,25 @@ pub fn mock_model(args: &[String]) -> Result<(), Box<dyn Error>> {
             "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}});
         respond(stream, 200, "application/json", body.to_string().as_bytes());
     })
+}
+
+/// Replaces each `{{file:PATH}}` with the trimmed contents of PATH, waiting up
+/// to two seconds for it to appear. The live suite uses this to hand the mock
+/// model a value (the workspace canary) that only exists once the run starts.
+fn fill_files(text: &str) -> String {
+    let mut out = text.to_owned();
+    while let Some(start) = out.find("{{file:") {
+        let Some(len) = out[start..].find("}}") else { break };
+        let path = out[start + 7..start + len].to_owned();
+        let began = std::time::Instant::now();
+        let mut value = fs::read_to_string(&path);
+        while value.is_err() && began.elapsed() < std::time::Duration::from_secs(2) {
+            thread::sleep(std::time::Duration::from_millis(20));
+            value = fs::read_to_string(&path);
+        }
+        out.replace_range(start..start + len + 2, value.unwrap_or_default().trim());
+    }
+    out
 }
 
 /// `fixture-server PORT DIR LOG`: GET serves DIR; other methods are recorded.
@@ -132,7 +152,10 @@ pub fn fixture_server(args: &[String]) -> Result<(), Box<dyn Error>> {
             "body": String::from_utf8_lossy(&request.body)}));
         if request.method == "GET" && request.path == "/echo" {
             // Echoes request headers, as some real services do in errors or debug output.
-            let echoed = json!(request.headers.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>());
+            // Also echoes the bare token after any scheme, as error messages often do.
+            let mut lines: Vec<String> = request.headers.iter().map(|(k, v)| format!("{k}: {v}")).collect();
+            lines.extend(request.headers.iter().filter_map(|(_, v)| v.split_once(' ').map(|(_, token)| format!("invalid token {token}"))));
+            let echoed = json!(lines);
             respond(stream, 200, "application/json", echoed.to_string().as_bytes());
         } else if request.method == "GET" {
             let relative = request.path.trim_start_matches('/').split('?').next().unwrap_or("").to_owned();

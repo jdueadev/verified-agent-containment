@@ -70,6 +70,7 @@ struct Weakness {
     live_write_unchecked: bool,
     live_credential_everywhere: bool,
     live_workspace_reused: bool,
+    hud_log_unredacted: bool,
 }
 
 impl Weakness {
@@ -111,6 +112,7 @@ impl Weakness {
             "live_write_unchecked" => out.live_write_unchecked = true,
             "live_credential_everywhere" => out.live_credential_everywhere = true,
             "live_workspace_reused" => out.live_workspace_reused = true,
+            "hud_log_unredacted" => out.hud_log_unredacted = true,
             other => return Err(format!("unknown weakness {other}")),
         }
         Ok(out)
@@ -162,16 +164,21 @@ struct Upstreams {
     /// Admitted as baseline egress. Restrict keeps these; a stop cuts everything.
     baseline: BTreeSet<u64>,
     cuts: u64,
+    /// Connections that could only be shut down, not reset (queued bytes may still go).
+    abort_failures: u64,
 }
 
 /// Aborts a TCP connection: connect(AF_UNSPEC) makes Linux reset it and drop
 /// any bytes still queued for sending, so nothing handed to the kernel before
 /// the cut leaves after it. Then shuts both directions for the other holders.
-fn abort_stream(stream: &TcpStream) {
+/// Returns false if the reset could not be made (some kernels refuse while a
+/// thread is blocked on the socket); the shutdown still runs.
+fn abort_stream(stream: &TcpStream) -> bool {
     let unspec = libc::sockaddr { sa_family: libc::AF_UNSPEC as libc::sa_family_t, sa_data: [0; 14] };
     // SAFETY: `unspec` is a valid sockaddr for the duration of the call.
-    unsafe { libc::connect(stream.as_raw_fd(), &unspec, std::mem::size_of::<libc::sockaddr>() as libc::socklen_t) };
+    let reset = unsafe { libc::connect(stream.as_raw_fd(), &unspec, std::mem::size_of::<libc::sockaddr>() as libc::socklen_t) } == 0;
     let _ = stream.shutdown(Shutdown::Both);
+    reset
 }
 
 #[derive(Clone, Copy, Default)]
@@ -306,6 +313,14 @@ impl Shared {
             return;
         }
         guard.1 += 1;
+        // The HUD log can be read by anyone holding the HUD link, so it never
+        // carries credentials or the workspace canary (an agent may put either in a URL).
+        if let Some(live) = self.live.as_ref().filter(|_| !self.weak.hud_log_unredacted) {
+            value = redact(live, value);
+            if !live.canary.is_empty() && value.to_string().contains(&live.canary) {
+                value = serde_json::from_str(&value.to_string().replace(&live.canary, "[canary]")).unwrap_or(Value::Null);
+            }
+        }
         value["kind"] = json!(kind);
         value["ms"] = json!(boot_ns().saturating_sub(self.start_ns) / 1_000_000);
         let _ = writeln!(guard.0, "{value}");
@@ -401,7 +416,9 @@ impl Shared {
         for slot in slots {
             upstreams.baseline.remove(&slot);
             if let Some(Some(stream)) = upstreams.active.remove(&slot) {
-                abort_stream(&stream);
+                if !abort_stream(&stream) {
+                    upstreams.abort_failures += 1;
+                }
             }
         }
     }
@@ -868,8 +885,12 @@ fn reset_handler(shared: &Arc<Shared>, message: Value, peer: Option<libc::ucred>
     if accepted {
         // Budgets are per lease: an accepted reset starts a new one.
         if let Some(live) = &shared.live {
-            lock(&live.used).clear();
+            // Held across the lease change so a release cannot interleave with it.
+            let mut used = lock(&live.used);
+            used.clear();
+            live.lease.fetch_add(1, Ordering::SeqCst);
             live.tokens.store(0, Ordering::SeqCst);
+            drop(used);
         }
     }
     json!({"ok": accepted, "mode": mode_name(result.control.mode), "counter": result.control.reset_counter})
@@ -1122,16 +1143,31 @@ fn live_infer(shared: &Shared, live: &LiveState, message: &Value, received: u64)
     let body = request.to_string();
     // The model endpoint is an upstream too: the canary must not reach it.
     if !shared.weak.live_canary_unchecked && !live.canary.is_empty() && body.contains(&live.canary) {
-        shared.apply(Some("canary_exfil"), received, |now_ms| Event::HardRule { now_ms, level: Level::Freeze });
+        // The call is refused either way. A model on this host only restricts the
+        // agent; a remote one means the canary was about to leave, so freeze.
+        let local = crate::http::is_loopback_literal(&live.model_url.host);
+        let level = if local { Level::Restrict } else { Level::Freeze };
+        shared.apply(Some(if local { "canary_to_local_model" } else { "canary_exfil" }), received, |now_ms| Event::HardRule { now_ms, level });
         return denied("denied");
     }
-    // Reserve the call's maximum first, so concurrent calls cannot overspend.
+    // Reserve the call's maximum (prompt estimate plus completion) first, so
+    // concurrent calls cannot overspend. The reservation belongs to this lease.
+    let reserve = reserve + body.len() as u64 / 3;
+    let lease = live.lease.load(Ordering::SeqCst);
     let reserved = live.tokens.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| (used + reserve <= budget).then_some(used + reserve));
     if reserved.is_err() {
         shared.apply(Some("budget_tokens"), received, |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
         return denied("token budget for this lease is used up");
     }
-    let release = |used: u64| live.tokens.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |t| Some(t.saturating_sub(reserve) + used)).map_or(0, |t| t.saturating_sub(reserve) + used);
+    let release = |used: u64| {
+        // Same lock as the reset, so the lease cannot change under this release.
+        let _guard = lock(&live.used);
+        if live.lease.load(Ordering::SeqCst) != lease {
+            // A reset started a new lease; this call's charge belongs to the old one.
+            return live.tokens.load(Ordering::SeqCst);
+        }
+        live.tokens.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |t| Some(t.saturating_sub(reserve) + used)).map_or(0, |t| t.saturating_sub(reserve) + used)
+    };
     // Inference is baseline egress: allowed in Restrict, refused in Hold and above.
     let Some(slot) = admit(shared, true, true) else {
         release(0);
@@ -1736,7 +1772,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         "sink_alive": sink.try_wait()?.is_none(),
         "renew_denied": shared.renew_denied.load(Ordering::Relaxed), "peer_rejected": shared.peer_rejected.load(Ordering::Relaxed),
         "control_rejected": shared.control_rejected.load(Ordering::Relaxed), "reset_rejected": shared.reset_rejected.load(Ordering::Relaxed),
-        "actuator_retries": shared.actuator_retries.load(Ordering::Relaxed), "upstream_cuts": lock(&shared.upstreams).cuts,
+        "actuator_retries": shared.actuator_retries.load(Ordering::Relaxed), "upstream_cuts": lock(&shared.upstreams).cuts, "upstream_abort_failures": lock(&shared.upstreams).abort_failures,
         "gateway_streams": lock(&shared.gateway_streams).len(),
         "open_fds": fs::read_dir("/proc/self/fd").map_or(0, Iterator::count),
         "policy_intact": serde_json::from_str::<Value>(&fs::read_to_string(&policy_path)?).is_ok_and(|value| value == policy),
