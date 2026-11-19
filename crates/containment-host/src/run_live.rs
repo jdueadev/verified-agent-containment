@@ -173,6 +173,12 @@ pub fn live(args: &[String]) -> Result<(), Box<dyn Error>> {
             "--policy" => policy = value,
             "--task" => task = value,
             "--out" => out = value.map(PathBuf::from),
+            "--allow-missing-limits" => {
+                // SAFETY: set before the controller is started; no other threads yet.
+                unsafe { std::env::set_var(LIMITS_WAIVER_ENV, "1") };
+                i += 1;
+                continue;
+            }
             other => return Err(format!("unknown option {other}").into()),
         }
         i += 2;

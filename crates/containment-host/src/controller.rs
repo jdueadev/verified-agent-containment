@@ -212,6 +212,7 @@ struct Shared {
     s1_restarts: AtomicU64,
     s1_dropped_at_down: AtomicU64,
     s1_probe: Mutex<Value>,
+    s1_limits: Mutex<Value>,
     s1_pid: AtomicU32,
     down_hold_ms: u64,
     /// A restarted System One must stay up this long before an outage ends.
@@ -1455,7 +1456,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let now = boot_ns();
     let shared = Arc::new(Shared {
         start_ns, skew_ms: AtomicI64::new(0), config, lag: Mutex::default(), blind_hold_ms,
-        trace_out: Mutex::new(None), s1_down_since: Mutex::new(None), s1_down_held: AtomicBool::new(false), s1_restarts: AtomicU64::new(0), s1_dropped_at_down: AtomicU64::new(0), s1_probe: Mutex::new(Value::Null), s1_pid: AtomicU32::new(0), down_hold_ms, stable_ms: if live.is_some() { LIVE_STABLE_MS } else { LAB_STABLE_MS }, classifier_signals: Mutex::default(), live: live.clone(), work_root: work_root.clone(),
+        trace_out: Mutex::new(None), s1_down_since: Mutex::new(None), s1_down_held: AtomicBool::new(false), s1_restarts: AtomicU64::new(0), s1_dropped_at_down: AtomicU64::new(0), s1_probe: Mutex::new(Value::Null), s1_limits: Mutex::new(Value::Null), s1_pid: AtomicU32::new(0), down_hold_ms, stable_ms: if live.is_some() { LIVE_STABLE_MS } else { LAB_STABLE_MS }, classifier_signals: Mutex::default(), live: live.clone(), work_root: work_root.clone(),
         control: Mutex::new(Control::new(Mode::Run, LEASE_TTL_MS)),
         queue: Mutex::default(), queued: Condvar::new(), enforcer_busy: AtomicBool::new(false),
         enforcer_beat: AtomicU64::new(now), classifier_beat: AtomicU64::new(now),
@@ -1498,8 +1499,19 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         // A sibling of the run cgroup, so the run cgroup holds only the agent.
         let s1_cgroup = s1_cgroup.clone();
         fs::create_dir(&s1_cgroup)?;
-        for (file, value) in [("pids.max", "64"), ("memory.max", "268435456"), ("cpu.weight", "10")] {
+        // Limits fail closed: without them System One could starve the enforcer,
+        // and a stalled enforcer fail-stops the sandbox.
+        let wanted = [("pids.max", "64"), ("memory.max", "268435456"), ("cpu.weight", "10")];
+        let actual: Vec<Value> = wanted.iter().map(|(file, value)| {
             let _ = fs::write(s1_cgroup.join(file), value);
+            let read = fs::read_to_string(s1_cgroup.join(file)).ok().map(|v| v.trim().to_owned());
+            json!({"file": file, "wanted": value, "actual": read})
+        }).collect();
+        let in_force = actual.iter().all(|a| a["actual"] == a["wanted"]);
+        let waived = std::env::var_os(LIMITS_WAIVER_ENV).is_some();
+        *lock(&shared.s1_limits) = json!({"in_force": in_force, "waived": !in_force && waived, "limits": actual});
+        if !in_force && !waived {
+            return Err("System One's cgroup limits (pids, memory, cpu) cannot be applied here; pass --allow-missing-limits to run with rlimits only".into());
         }
         let spec = SystemOneSpec {
             exe: exe.clone(), profile: if live.is_some() { "live" } else { "lab" }, scenario: scenario.clone(), private_file: policy_path.clone(),
@@ -1602,7 +1614,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let report = json!({
         "final_mode": mode_name(final_control.mode), "populated": populated, "frozen": frozen, "survivors": survivors, "generation": generation, "limits": limits, "authority_pending": shared.authority_pending.load(Ordering::SeqCst),
         "transitions": *lock(&shared.transitions), "actions": *lock(&shared.actions), "classifier_signals": *lock(&shared.classifier_signals),
-        "system_one_probe": *lock(&shared.s1_probe),
+        "system_one_probe": *lock(&shared.s1_probe), "system_one_limits": *lock(&shared.s1_limits),
         "live": shared.live.as_ref().map(|l| json!({"tokens": l.tokens.load(Ordering::SeqCst), "used": lock(&l.used).iter().map(|(k, v)| (k.clone(), json!({"requests": v.requests, "bytes": v.bytes}))).collect::<serde_json::Map<_, _>>()})), "system_one_restarts": shared.s1_restarts.load(Ordering::Relaxed), "log_overflow": shared.log_overflow.load(Ordering::Relaxed),
         "dropped_logs": shared.dropped_logs.load(Ordering::Relaxed), "monitor_alive": monitor.try_wait()?.is_none(),
         "sink_alive": sink.try_wait()?.is_none(),

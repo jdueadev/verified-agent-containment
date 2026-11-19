@@ -4,7 +4,7 @@
 //! reached the upstream servers, not what the agent says. Each claim has a
 //! sabotaged controller that must fail its scenario.
 use crate::common::*;
-use crate::run_live::{self, LiveRun};
+use crate::run_live;
 use serde_json::{json, Value};
 use std::error::Error;
 use std::fs;
@@ -265,6 +265,12 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         match args[i].as_str() {
             "--out" => out = PathBuf::from(args.get(i + 1).ok_or("--out needs a value")?),
             "--only" => only = args.get(i + 1).cloned(),
+            "--allow-missing-limits" => {
+                // SAFETY: set before any controller is started.
+                unsafe { std::env::set_var(LIMITS_WAIVER_ENV, "1") };
+                i += 1;
+                continue;
+            }
             other => return Err(format!("unknown option {other}").into()),
         }
         i += 2;
