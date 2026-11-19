@@ -2,15 +2,15 @@
   "actions": [
     {
       "action": "revoke_secrets",
-      "end_ns": 8829309536422,
+      "end_ns": 9383685380588,
       "ok": true,
-      "start_ns": 8829309532792
+      "start_ns": 9383685379459
     },
     {
       "action": "narrow_egress",
-      "end_ns": 8829309544475,
+      "end_ns": 9383685383251,
       "ok": true,
-      "start_ns": 8829309543391
+      "start_ns": 9383685382711
     }
   ],
   "actuator_retries": 0,
@@ -43,7 +43,7 @@
   "live": {
     "tokens": 240,
     "used": {
-      "http://127.0.0.1:41985": {
+      "http://127.0.0.1:40503": {
         "bytes": 13,
         "requests": 1
       }
@@ -88,10 +88,10 @@
         "revoke_secrets",
         "narrow_egress"
       ],
-      "commit_ns": 8829309454029,
+      "commit_ns": 9383685374382,
       "event": "canary_to_local_model",
       "from": "run",
-      "received_ns": 8829309428128,
+      "received_ns": 9383685348477,
       "to": "restrict"
     }
   ],

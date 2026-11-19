@@ -2,15 +2,15 @@
   "actions": [
     {
       "action": "revoke_secrets",
-      "end_ns": 8829581411403,
+      "end_ns": 9383943390332,
       "ok": true,
-      "start_ns": 8829581410052
+      "start_ns": 9383943388199
     },
     {
       "action": "narrow_egress",
-      "end_ns": 8829581415111,
+      "end_ns": 9383943394946,
       "ok": true,
-      "start_ns": 8829581414211
+      "start_ns": 9383943394132
     }
   ],
   "actuator_retries": 0,
@@ -43,7 +43,7 @@
   "live": {
     "tokens": 960,
     "used": {
-      "http://127.0.0.1:41801": {
+      "http://127.0.0.1:38411": {
         "bytes": 69,
         "requests": 5
       }
@@ -88,10 +88,10 @@
         "revoke_secrets",
         "narrow_egress"
       ],
-      "commit_ns": 8829581396842,
+      "commit_ns": 9383943370746,
       "event": "budget_exhausted",
       "from": "run",
-      "received_ns": 8829581392532,
+      "received_ns": 9383943367535,
       "to": "restrict"
     }
   ],
