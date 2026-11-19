@@ -18,5 +18,7 @@ echo "kernel $kernel; cgroup v2 controllers: $(cat /sys/fs/cgroup/cgroup.control
 cargo build --release -p containment-host
 out="results/attack-suite-$(uname -n).json"
 repeat="${1:-30}"; shift || true
-sudo target/release/containment-lab attack-suite --repeat "$repeat" --out "$out" "$@" 2>&1 | tee "${out%.json}.log"
-sudo chown "$(id -u):$(id -g)" "$out" "${out%.json}.log"
+status=0
+sudo target/release/containment-lab attack-suite --repeat "$repeat" --out "$out" "$@" 2>&1 | tee "${out%.json}.log" || status=$?
+[ ! -e "$out" ] || sudo chown "$(id -u):$(id -g)" "$out"
+exit "$status"
