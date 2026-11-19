@@ -123,3 +123,7 @@ pub fn cgroup_root() -> io::Result<PathBuf> {
 pub fn status_error(message: impl Into<String>) -> Value {
     json!({"ok": false, "error": message.into()})
 }
+
+pub fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
