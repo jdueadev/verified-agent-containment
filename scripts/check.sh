@@ -13,3 +13,4 @@ bun tools/differential.mjs target/generated/kernel.mjs target/generated/differen
 scripts/build-wasm.sh
 node tools/wasm_check.mjs target/wasm32-unknown-unknown/release/containment_wasm.wasm target/generated/differential.jsonl | tee results/wasm-differential.json
 python3 tools/mutation_check.py target/generated/kernel.mjs results/mutation-check.json
+python3 tools/claims_check.py

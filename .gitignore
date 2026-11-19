@@ -2,3 +2,4 @@ target/
 results/*.tmp
 *.wasm.tmp
 __pycache__/
+.claude/
