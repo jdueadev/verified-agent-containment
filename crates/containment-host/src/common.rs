@@ -12,6 +12,13 @@ pub const TICK_MS: u64 = 5;
 pub const FREEZE_GRACE_MS: u64 = 400;
 pub const SANDBOX_UID_BASE: u32 = 200_000;
 pub const MAX_LINE_BYTES: u64 = 64 * 1024;
+/// System One liveness (spec section 5). Lag is the age of the oldest trace
+/// event the classifier has not consumed. Lab runs shorten the blind window;
+/// live runs use 60 s (spec section 5.5).
+pub const LAG_RESTRICT_MS: u64 = 500;
+pub const LAB_BLIND_HOLD_MS: u64 = 1_500;
+/// Events that must go unscored while restricted before a blind window holds.
+pub const BLIND_MIN_EVENTS: u64 = 5;
 
 /// Time source for leases. CLOCK_BOOTTIME keeps counting during suspend, so a
 /// suspended host cannot extend a lease.

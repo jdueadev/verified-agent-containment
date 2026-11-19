@@ -158,6 +158,7 @@ PASS    gateway_flood
 PASS    gateway_churn
 PASS    classifier_injection
 PASS    classifier_stall
+PASS    classifier_blind
 PASS    clock_rollback
 PASS    actuator_retry
 PASS    actuator_dead
@@ -184,5 +185,5 @@ CAUGHT  sabotage stale_generation_authority via reset_races_kill
 CAUGHT  sabotage no_enforcer_watchdog via enforcer_stall
 CAUGHT  sabotage single_flag_authority via double_reset
 CAUGHT  sabotage memfd_exec via sandbox_escape
-runs 168/168 passed; sabotage 18/18 detected; admitted after commit 0; written after cut 0
-exit 0
+CAUGHT  sabotage classifier_beat_in_health via classifier_stall
+runs 169/169 passed; sabotage 19/19 detected; admitted after commit 0; written after cut 0

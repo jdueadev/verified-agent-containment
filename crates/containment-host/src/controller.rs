@@ -52,6 +52,7 @@ struct Weakness {
     no_enforcer_watchdog: bool,
     single_flag_authority: bool,
     memfd_exec: bool,
+    classifier_beat_in_health: bool,
 }
 
 impl Weakness {
@@ -77,6 +78,7 @@ impl Weakness {
             "no_enforcer_watchdog" => out.no_enforcer_watchdog = true,
             "single_flag_authority" => out.single_flag_authority = true,
             "memfd_exec" => out.memfd_exec = true,
+            "classifier_beat_in_health" => out.classifier_beat_in_health = true,
             other => return Err(format!("unknown weakness {other}")),
         }
         Ok(out)
@@ -135,8 +137,22 @@ struct Enforced {
     killed: Option<u64>,
 }
 
+/// Classifier lag state. Lag reaches the kernel only as Event::Classifier, so
+/// the proved cap (Hold at most, never Freeze or Kill) covers liveness too.
+#[derive(Default)]
+struct Lag {
+    /// Enqueue times of trace events the classifier has not consumed, oldest first.
+    pending: VecDeque<u64>,
+    restricted_since: Option<u64>,
+    unscored_since_restrict: u64,
+    held: bool,
+}
+
 struct Shared {
     start_ns: u64,
+    lag: Mutex<Lag>,
+    blind_hold_ms: u64,
+    classifier_signals: Mutex<Vec<Value>>,
     skew_ms: AtomicI64,
     config: Config,
     control: Mutex<Control>,
@@ -449,11 +465,58 @@ impl Shared {
         }
     }
 
+    /// Health of the enforcement path only. The classifier is not part of it:
+    /// a slow or dead classifier is reported through `check_lag`, never by
+    /// refusing renewals, because a refused renewal ends in Freeze and Kill.
     fn healthy(&self) -> bool {
         let now = boot_ns();
-        now.saturating_sub(self.enforcer_beat.load(Ordering::Relaxed)) <= HEALTH_LIMIT_NS
-            && now.saturating_sub(self.tick_beat.load(Ordering::Relaxed)) <= HEALTH_LIMIT_NS
-            && now.saturating_sub(self.classifier_beat.load(Ordering::Relaxed)) <= HEALTH_LIMIT_NS
+        let enforcement = now.saturating_sub(self.enforcer_beat.load(Ordering::Relaxed)) <= HEALTH_LIMIT_NS
+            && now.saturating_sub(self.tick_beat.load(Ordering::Relaxed)) <= HEALTH_LIMIT_NS;
+        let classifier = !self.weak.classifier_beat_in_health
+            || now.saturating_sub(self.classifier_beat.load(Ordering::Relaxed)) <= HEALTH_LIMIT_NS;
+        enforcement && classifier
+    }
+
+    /// Records one trace event. A dropped event is still an unscored event.
+    fn trace_enqueued(&self, ns: u64, queued: bool) {
+        let mut lag = lock(&self.lag);
+        if queued {
+            lag.pending.push_back(ns);
+        }
+        if lag.restricted_since.is_some() {
+            lag.unscored_since_restrict += 1;
+        }
+    }
+
+    fn trace_consumed(&self) {
+        lock(&self.lag).pending.pop_front();
+    }
+
+    /// Lag over LAG_RESTRICT_MS restricts. A blind window (restricted longer
+    /// than the hold limit while the agent kept producing unscored events)
+    /// holds. An idle agent produces no events, so it is never held.
+    fn check_lag(&self) {
+        let now = boot_ns();
+        let ms = |ns: u64| now.saturating_sub(ns) / 1_000_000;
+        let signal = {
+            let mut lag = lock(&self.lag);
+            let lagging = lag.pending.front().is_some_and(|&oldest| ms(oldest) > LAG_RESTRICT_MS);
+            if lagging && lag.restricted_since.is_none() {
+                lag.restricted_since = Some(now);
+                lag.unscored_since_restrict = 0;
+                Some(("classifier_lag", Level::Restrict))
+            } else if let Some(since) = lag.restricted_since.filter(|_| !lag.held) {
+                (ms(since) > self.blind_hold_ms && lag.unscored_since_restrict >= BLIND_MIN_EVENTS && lagging).then(|| {
+                    lag.held = true;
+                    ("classifier_blind", Level::Hold)
+                })
+            } else {
+                None
+            }
+        };
+        if let Some((label, level)) = signal {
+            apply_classifier(self, Some(label), now, level);
+        }
     }
 }
 
@@ -558,7 +621,7 @@ fn control_handler(shared: &Arc<Shared>, message: Value, _peer: Option<libc::ucr
         }
         Some("classifier") => {
             let Some(level) = message["level"].as_str().and_then(parse_level) else { return status_error("bad level") };
-            apply_classifier(shared, received, level);
+            apply_classifier(shared, None, received, level);
         }
         Some("reset") => {
             let Some((signed, counter, from_mode, not_after_ms, ttl_ms)) = verify_reset(shared, &message) else {
@@ -579,9 +642,10 @@ fn control_handler(shared: &Arc<Shared>, message: Value, _peer: Option<libc::ucr
     json!({"ok": true, "mode": mode_name(control.mode), "deadline_ms": control.deadline_ms, "now_ms": shared.now_ms(), "clock_ms": control.clock_ms})
 }
 
-fn apply_classifier(shared: &Shared, received: u64, level: Level) {
+fn apply_classifier(shared: &Shared, label: Option<&'static str>, received: u64, level: Level) {
     let uncapped = shared.weak.classifier_uncapped;
-    shared.apply(None, received, |now_ms| if uncapped { Event::HardRule { now_ms, level } } else { Event::Classifier { now_ms, level } });
+    shared.bounded_push(&shared.classifier_signals, json!({"ns": received, "label": label.unwrap_or("classifier"), "level": format!("{level:?}").to_lowercase()}));
+    shared.apply(label, received, |now_ms| if uncapped { Event::HardRule { now_ms, level } } else { Event::Classifier { now_ms, level } });
 }
 
 fn forward(shared: &Shared, slot: u64, admit_ns: u64, host: &str, data: &str, credential: bool) -> bool {
@@ -661,11 +725,14 @@ fn gateway_handler(shared: &Arc<Shared>, message: Value, classifier: &SyncSender
         }
         Some("log") => {
             let text = message["text"].as_str().unwrap_or("").to_owned();
-            if matches!(classifier.try_send(text), Err(TrySendError::Full(_) | TrySendError::Disconnected(_))) {
+            let sent = classifier.try_send(text);
+            shared.trace_enqueued(received, sent.is_ok());
+            if matches!(sent, Err(TrySendError::Full(_) | TrySendError::Disconnected(_))) {
                 shared.dropped_logs.fetch_add(1, Ordering::Relaxed);
                 if !shared.weak.drop_overflow {
                     // Unscored agent output must not leave full authority in place.
-                    shared.apply(Some("classifier_overflow"), received, |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
+                    // It is a classifier liveness signal, so it is capped like one.
+                    apply_classifier(shared, Some("classifier_overflow"), received, Level::Restrict);
                 }
             }
             json!({"ok": true})
@@ -836,7 +903,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let kill_faults = match scenario.as_str() { "actuator_dead" => i64::MAX, "reset_races_kill" | "double_reset" => 3, _ => 0 };
     let now = boot_ns();
     let shared = Arc::new(Shared {
-        start_ns, skew_ms: AtomicI64::new(0), config,
+        start_ns, skew_ms: AtomicI64::new(0), config, lag: Mutex::default(), blind_hold_ms: LAB_BLIND_HOLD_MS, classifier_signals: Mutex::default(),
         control: Mutex::new(Control::new(Mode::Run, LEASE_TTL_MS)),
         queue: Mutex::default(), queued: Condvar::new(), enforcer_busy: AtomicBool::new(false),
         enforcer_beat: AtomicU64::new(now), classifier_beat: AtomicU64::new(now),
@@ -873,7 +940,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     {
         let shared = Arc::clone(&shared);
-        let stall = scenario == "classifier_stall";
+        let stall = matches!(scenario.as_str(), "classifier_stall" | "classifier_blind");
         let began = Instant::now();
         thread::spawn(move || loop {
             if stall && began.elapsed() > Duration::from_millis(120) {
@@ -884,8 +951,9 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             match classifier_rx.recv_timeout(Duration::from_millis(20)) {
                 Ok(text) => {
                     thread::sleep(Duration::from_millis(1));
+                    shared.trace_consumed();
                     if text.contains("score-this") {
-                        apply_classifier(&shared, boot_ns(), Level::Kill);
+                        apply_classifier(&shared, None, boot_ns(), Level::Kill);
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {}
@@ -898,6 +966,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         thread::spawn(move || loop {
             shared.apply(None, boot_ns(), |now_ms| Event::Tick { now_ms });
             shared.tick_beat.store(boot_ns(), Ordering::Relaxed);
+            shared.check_lag();
             // Watchdog: a stalled enforcer cannot be trusted to contain anything.
             if !shared.weak.no_enforcer_watchdog && boot_ns().saturating_sub(shared.enforcer_beat.load(Ordering::Relaxed)) > ENFORCER_STALL_NS {
                 shared.fail_stop("enforcer stalled");
@@ -961,7 +1030,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     };
     let report = json!({
         "final_mode": mode_name(final_control.mode), "populated": populated, "frozen": frozen, "survivors": survivors, "generation": generation, "limits": limits, "authority_pending": shared.authority_pending.load(Ordering::SeqCst),
-        "transitions": *lock(&shared.transitions), "actions": *lock(&shared.actions), "log_overflow": shared.log_overflow.load(Ordering::Relaxed),
+        "transitions": *lock(&shared.transitions), "actions": *lock(&shared.actions), "classifier_signals": *lock(&shared.classifier_signals), "log_overflow": shared.log_overflow.load(Ordering::Relaxed),
         "dropped_logs": shared.dropped_logs.load(Ordering::Relaxed), "monitor_alive": monitor.try_wait()?.is_none(),
         "sink_alive": sink.try_wait()?.is_none(),
         "renew_denied": shared.renew_denied.load(Ordering::Relaxed), "peer_rejected": shared.peer_rejected.load(Ordering::Relaxed),

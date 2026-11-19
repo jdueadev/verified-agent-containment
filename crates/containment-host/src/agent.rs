@@ -66,6 +66,29 @@ fn egress_loop(gateway: &str, host: &str, secret: bool) -> ! {
     }
 }
 
+/// Egress plus trace output. `log_for` limits how long the agent keeps
+/// producing trace events; after that it only sends egress.
+fn logging_loop(gateway: &str, log_for: Option<Duration>) -> ! {
+    let began = std::time::Instant::now();
+    let mut sent = 0_u64;
+    loop {
+        if let Ok(mut client) = Gateway::connect(gateway) {
+            loop {
+                sent += 1;
+                let logging = log_for.is_none_or(|limit| began.elapsed() < limit);
+                if logging && sent.is_multiple_of(4) {
+                    let _ = client.send(json!({"op":"log","text":format!("step {sent}")}));
+                }
+                if client.send(json!({"op":"egress","host":"allowed.test","data":format!("packet-{sent}")}))["error"] == "closed" {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
 fn idle() -> ! {
     loop {
         thread::sleep(Duration::from_secs(1));
@@ -294,7 +317,10 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             egress_loop(gateway, "allowed.test", false)
         }
         "monitor_crash" | "signed_reset" | "reset_races_kill" | "double_reset" | "enforcer_stall" | "recreate_after_kill" | "actuator_retry" | "actuator_dead"
-        | "classifier_stall" | "clock_rollback" => egress_loop(gateway, "allowed.test", false),
+        | "clock_rollback" => egress_loop(gateway, "allowed.test", false),
+        // Trace output stops at 300 ms, so the agent stops producing unscored events.
+        "classifier_stall" => logging_loop(gateway, Some(Duration::from_millis(300))),
+        "classifier_blind" => logging_loop(gateway, None),
         "exfil_race" => {
             for _ in 0..7 {
                 let gateway = gateway.clone();

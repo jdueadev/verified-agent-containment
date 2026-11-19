@@ -4,7 +4,7 @@ Research prototype for a sandbox controller. It removes an agent's authority whe
 
 The trust anchor is a small, pure decision kernel. A local classifier can add warning signals but can only tighten. At most, a classifier verdict can move the agent to Hold, which has no timer. A verdict cannot renew a lease, grant access, start the Kill timer or cause Kill.
 
-That cap covers classifier verdicts only. Today a stalled classifier thread blocks lease renewal, and an expired lease leads to Freeze and then Kill. Containment of System One as a whole is claim C-SYS-1, which is not yet met; [`docs/design-spec.md`](docs/design-spec.md) section 5 gives the fix.
+That cap covers classifier verdicts directly. Classifier liveness is handled the same way: a stalled or overflowing classifier reaches the kernel as a classifier signal (Restrict on lag over 500 ms, Hold after a blind window), never by blocking lease renewal (claim H-S1-01). Containment of System One as a whole is claim C-SYS-1, which still needs the separate System One process and the host model; see [`docs/design-spec.md`](docs/design-spec.md) section 5.
 
 The v3 design is in [`docs/design-spec.md`](docs/design-spec.md). Every guarantee, its evidence and its falsifier is a row in [`claims.toml`](claims.toml), rendered as [`docs/claims.md`](docs/claims.md) and checked by `tools/claims_check.py`. [`docs/design-explainer.html`](docs/design-explainer.html) is a plain-English companion to the spec, with key terms, small interactive demos and reading links for each section; open it in a browser.
 
@@ -18,17 +18,19 @@ The v3 design is in [`docs/design-spec.md`](docs/design-spec.md). Every guarante
 | Original kernel under the law audit | 0 violations in 200,000 inputs | The executable law statements agree with the proofs |
 | Unsafe Rust kernels | 19/19 diverge from the Bend model | The differential test detects these faults |
 | Rust vs Bend, Rust vs WebAssembly | 77,364 transitions each, 0 mismatches | Generated-test agreement, including stale timestamps and resets. Not a proof |
-| Linux attack runs | 168/168 passed | 23 scenarios; 5 timed scenarios repeated 30 times |
+| Linux attack runs | 169/169 passed | 24 scenarios; 5 timed scenarios repeated 30 times |
 | Under CPU load | 68/68 passed | Same suite at `--repeat 10`, with two busy loops on a 2-core VM |
-| Weakened controllers | 18/18 caught | Each removes one protection; the suite must fail |
+| Weakened controllers | 19/19 caught | Each removes one protection; the suite must fail |
 | Bytes admitted after a stop committed | 0 | Across 155 measured stops |
 | Bytes written upstream after the cut | 0 | Same runs. Gateway stamps are HMAC-authenticated at the sink |
 | Browser page | 10/10 sabotaged kernels caught | Checked with native WebAssembly and with the JavaScript fallback |
 
 Timing on Linux 6.18 in a 2-core VM, p50 / p95 / max:
-- Stop committed to egress cut: 0.10 / 1.01 / 1.49 ms.
-- Committed to cgroup frozen: 0.39 / 1.58 / 3.40 ms.
-- Committed to cgroup empty: 1.16 / 1.81 / 2.08 ms.
+- Stop committed to egress cut: 0.07 / 0.93 / 93.2 ms.
+- Committed to cgroup frozen: 0.42 / 1.43 / 93.4 ms.
+- Committed to cgroup empty: 1.13 / 2.12 / 2.34 ms.
+
+The 93 ms maximum is one `gateway_flood` run in which the enforcer thread was descheduled; 30 reruns of that scenario peaked at 1.6 ms, the same as the previous build. No bytes were admitted or written in that window.
 
 Monitor loss to containment stayed under the 200 ms lease, with a maximum of 198.6 ms. Under CPU load, the frozen p95 rose to 9.6 ms and the maximum to 59.8 ms.
 
@@ -113,7 +115,7 @@ Fable 5.2 reviewed the design adversarially in three rounds:
 - **Proofs:** they cover the Bend model. The Rust kernel is checked against it by generated traces. Values in those traces stay below 2^53. Rust saturates at u64 where Bend's naturals do not, which is tighter, not looser.
 - **Law audit:** `tools/law_audit.mjs` restates 35 of the 36 laws in JavaScript; the trace law is covered step by step. It is a second opinion, not the proof.
 - **Outside the proofs:** host actuators, Linux, seccomp, the CPU and the hypervisor. The attack suite tests them; nothing proves them.
-- **Agent and classifier:** the attack agent is scripted, and no LLM agent was run. System One was represented by a deterministic adversarial classifier; the local `jeff` service was not called. The `classifier_stall` scenario currently checks that a stalled classifier stops renewal. The v3 spec reverses this: stalls move the agent to Restrict, and to Hold only after a long blind window.
+- **Agent and classifier:** the attack agent is scripted, and no LLM agent was run. System One was represented by a deterministic adversarial classifier; the local `jeff` service was not called. `classifier_stall` and `classifier_blind` check the v3 liveness rules with the in-process lab classifier; the separate System One process is not built yet.
 - **Known v2 gaps:** the control socket ignores the peer credential, and a reset-v2 signature binds the run id but not the controller instance or boot. Both are listed in `docs/design-spec.md` section 9.
 - **WSL2:** first run on Jon's machine (`results/wsl2/`, Linux 6.18.58.1-microsoft-standard-WSL2, commit 870142c): 167/168, 17/17 sabotage caught, 0 bytes after a stop, and cgroup pids, memory and CPU limits in force with no waiver. The one failure was real: a Windows image written to a memfd and run with `execveat` started WSL's interop interpreter inside the sandbox, because WSL's binfmt handler is kernel-global and its interpreter is preopened. It exited 1 because the interop socket is not reachable from the sandbox, but code outside the sandbox root ran. Fixed by setting `vm.memfd_noexec=2` in the sandbox's PID namespace, with a host-independent probe (`memfd_exec_elf`), a reachable-executable-PE scan, and a `memfd_exec` sabotage. Freeze on WSL2 was slower: committed to frozen p95 66 ms, max 96 ms, while the egress cut stayed under 0.54 ms. The fixed build (d0c0764) passed on WSL2: 168/168 runs, 18/18 sabotage caught including `memfd_exec`, 0 bytes after a stop, limits in force (`results/wsl2/attack-suite-space-heater-d0c0764.json`). Freeze stayed slower there: committed to frozen p95 70 ms, max 97 ms; egress cut p95 0.49 ms.
 - **Trust boundary:** a compromised kernel, root process or hypervisor can defeat the design. Bend 2 is young, and its compiler and parser are not formally verified.
