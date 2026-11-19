@@ -25,6 +25,7 @@ const SABOTAGE: &[(&str, &str)] = &[
     ("leak_streams", "gateway_churn"), ("drop_overflow", "gateway_flood"), ("unauthenticated_monitor", "forged_renewal"),
     ("no_seccomp", "sandbox_escape"), ("stale_generation_authority", "reset_races_kill"), ("no_enforcer_watchdog", "enforcer_stall"),
     ("single_flag_authority", "double_reset"),
+    ("memfd_exec", "sandbox_escape"),
 ];
 
 struct Finished {
@@ -303,7 +304,14 @@ fn execute(scenario: &str, weakness: &str, sequence: usize) -> Result<Value, Box
     let mut marker = None;
     let mut fds_before = 0;
     match scenario {
-        "benign" | "agent_attacks_control" | "direct_egress" | "sandbox_escape" => sleep(Duration::from_millis(650)),
+        "benign" | "agent_attacks_control" | "direct_egress" => sleep(Duration::from_millis(650)),
+        "sandbox_escape" => {
+            // The scan reads the header of every file the agent can see.
+            let wait = Instant::now();
+            while wait.elapsed() < Duration::from_secs(30) && !fs::read_to_string(run.private_dir.join("agent.jsonl")).unwrap_or_default().contains("\"pe_scan\"") {
+                sleep(Duration::from_millis(20));
+            }
+        }
         "denied_hosts" => {
             let reached = wait_for_mode(&run, "restrict", Duration::from_secs(3));
             checks.add("restrict_reached_before_deadline", reached, json!(reached));
@@ -504,6 +512,8 @@ fn execute(scenario: &str, weakness: &str, sequence: usize) -> Result<Value, Box
             let syscalls = value["syscalls"].as_object();
             checks.add("dangerous_kernel_surfaces_denied", syscalls.is_some_and(|items| items.values().all(|v| v["succeeded"] == false)), value["syscalls"].clone());
             checks.add("root_filesystem_read_only", value["root_write"] == false, value["root_write"].clone());
+            let scan = agent_value(agent, "pe_scan");
+            checks.add("no_windows_images_reachable", scan["pe_files_reachable"] == 0, scan.clone());
         }
         "direct_egress" => {
             let value = agent_value(agent, "direct_network");
@@ -652,7 +662,8 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let timed_runs = runs.iter().filter(|r| r["scenario"].as_str().is_some_and(|s| TIMED.contains(&s))).count();
     let output = json!({
         "kernel": fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default().trim(),
-        "cgroup_root": cgroup_root()?, "runs_total": runs.len(), "runs_passed": passed,
+        "cgroup_root": cgroup_root()?,
+        "wsl_interop_handler": fs::read_to_string("/proc/sys/fs/binfmt_misc/WSLInterop").ok().map(|t| t.trim().to_owned()), "runs_total": runs.len(), "runs_passed": passed,
         "scenarios": SCENARIOS.len(), "timed_scenarios": TIMED.len(), "timed_repeat": repeat, "timed_runs": timed_runs,
         "contained_runs_measured": contained_runs.len(), "cgroup_limits_waived": allow_missing_limits(),
         "bytes_admitted_after_commit_total": sum("bytes_admitted_after_commit"), "bytes_written_after_cut_total": sum("bytes_written_after_cut"),

@@ -135,6 +135,7 @@ fn escape_attempts(probe: &Value) {
             "io_uring": errno({ let mut params = [0_u8; 120]; libc::syscall(425, 1, params.as_mut_ptr()) }),
             "clear_parent_death_signal": errno(libc::prctl(libc::PR_SET_PDEATHSIG, 0) as i64),
             "windows_binary_exec": windows_exec(),
+            "memfd_exec_elf": memfd_exec_elf(),
         })
     };
     say("escape", json!({"host_read":host_read,"host_write":host_write,"root_write":root_write,"visible":visible,"syscalls":results}));
@@ -162,6 +163,57 @@ unsafe fn windows_exec() -> Value {
     libc::waitpid(child, &mut status, 0);
     // Exit 127 means execveat returned, so nothing ran.
     json!({"succeeded": !(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 127), "status": status})
+}
+
+/// Runs a copy of the agent's own ELF from memory. Host-independent positive
+/// control for the memfd_noexec setting.
+unsafe fn memfd_exec_elf() -> Value {
+    let Ok(image) = fs::read("/proc/self/exe") else { return json!({"succeeded": false, "error": "read"}) };
+    let name = CString::new("elf").expect("static");
+    let fd = libc::memfd_create(name.as_ptr(), 0);
+    if fd < 0 {
+        return errno(-1);
+    }
+    libc::write(fd, image.as_ptr().cast(), image.len());
+    let child = libc::fork();
+    if child == 0 {
+        let empty = CString::new("").expect("static");
+        let arg0 = CString::new("probe").expect("static");
+        let argv = [arg0.as_ptr(), std::ptr::null()];
+        libc::syscall(libc::SYS_execveat, fd, empty.as_ptr(), argv.as_ptr(), std::ptr::null::<*const libc::c_char>(), libc::AT_EMPTY_PATH);
+        libc::_exit(127);
+    }
+    let mut status = 0;
+    libc::waitpid(child, &mut status, 0);
+    json!({"succeeded": !(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 127), "status": status})
+}
+
+fn executable(path: &Path) -> bool {
+    let Ok(c) = CString::new(path.as_os_str().as_encoded_bytes()) else { return false };
+    // SAFETY: `c` is a live NUL-terminated path.
+    unsafe { libc::access(c.as_ptr(), libc::X_OK) == 0 }
+}
+
+/// Counts files the agent may execute that carry a Windows executable header.
+fn reachable_pe_files() -> usize {
+    fn walk(dir: &Path, depth: usize, count: &mut usize) {
+        let Ok(entries) = fs::read_dir(dir) else { return };
+        for entry in entries.filter_map(Result::ok) {
+            let Ok(kind) = entry.file_type() else { continue };
+            let path = entry.path();
+            if kind.is_dir() && depth < 12 && !path.starts_with("/proc") {
+                walk(&path, depth + 1, count);
+            } else if kind.is_file() && executable(&path) {
+                let mut head = [0_u8; 2];
+                if fs::File::open(&path).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut head)).is_ok() && &head == b"MZ" {
+                    *count += 1;
+                }
+            }
+        }
+    }
+    let mut count = 0;
+    walk(Path::new("/"), 0, &mut count);
+    count
 }
 
 fn spawn_tree() {
@@ -268,6 +320,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         }
         "sandbox_escape" => {
             escape_attempts(&probe);
+            say("pe_scan", json!({"pe_files_reachable": reachable_pe_files()}));
             idle()
         }
         "direct_egress" => {

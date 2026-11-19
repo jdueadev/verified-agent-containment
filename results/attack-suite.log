@@ -183,5 +183,6 @@ CAUGHT  sabotage no_seccomp via sandbox_escape
 CAUGHT  sabotage stale_generation_authority via reset_races_kill
 CAUGHT  sabotage no_enforcer_watchdog via enforcer_stall
 CAUGHT  sabotage single_flag_authority via double_reset
-runs 168/168 passed; sabotage 17/17 detected; admitted after commit 0; written after cut 0
+CAUGHT  sabotage memfd_exec via sandbox_escape
+runs 168/168 passed; sabotage 18/18 detected; admitted after commit 0; written after cut 0
 exit 0

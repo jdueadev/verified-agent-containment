@@ -51,6 +51,7 @@ struct Weakness {
     stale_generation_authority: bool,
     no_enforcer_watchdog: bool,
     single_flag_authority: bool,
+    memfd_exec: bool,
 }
 
 impl Weakness {
@@ -75,6 +76,7 @@ impl Weakness {
             "stale_generation_authority" => out.stale_generation_authority = true,
             "no_enforcer_watchdog" => out.no_enforcer_watchdog = true,
             "single_flag_authority" => out.single_flag_authority = true,
+            "memfd_exec" => out.memfd_exec = true,
             other => return Err(format!("unknown weakness {other}")),
         }
         Ok(out)
@@ -828,7 +830,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         exe: exe.clone(), new_root, private_dir: private_dir.clone(), gateway: gateway.clone(),
         scenario: scenario.clone(), output: private_dir.join("agent.jsonl"), probe,
         share_network: weak.shared_network, expose_private: weak.writable_policy,
-        no_parent_death_signal: weak.no_parent_death_signal, host_root: weak.host_root, seccomp: !weak.no_seccomp,
+        no_parent_death_signal: weak.no_parent_death_signal, host_root: weak.host_root, seccomp: !weak.no_seccomp, memfd_exec: weak.memfd_exec,
     };
     let freeze_faults = match scenario.as_str() { "actuator_retry" => 2, "actuator_dead" => i64::MAX, "reset_races_kill" => 1, "double_reset" => 2, _ => 0 };
     let kill_faults = match scenario.as_str() { "actuator_dead" => i64::MAX, "reset_races_kill" | "double_reset" => 3, _ => 0 };
@@ -915,6 +917,8 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     status.insert("monitor_socket", json!(monitor_socket));
     status.insert("drop_dir", json!(drop_dir));
     status.insert("cgroup_controllers", json!(delegated));
+    // WSL registers a kernel-global binfmt handler that runs Windows images.
+    status.insert("wsl_interop_handler", json!(fs::read_to_string("/proc/sys/fs/binfmt_misc/WSLInterop").ok().map(|t| t.lines().next().unwrap_or("").to_owned())));
     fs::write(private_dir.join("status.tmp"), serde_json::to_vec(&status)?)?;
     fs::rename(private_dir.join("status.tmp"), private_dir.join("status.json"))?;
 

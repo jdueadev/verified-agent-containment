@@ -23,6 +23,7 @@ pub struct SandboxSpec {
     pub no_parent_death_signal: bool,
     pub host_root: bool,
     pub seccomp: bool,
+    pub memfd_exec: bool,
 }
 
 fn check(result: libc::c_int) -> io::Result<()> {
@@ -49,7 +50,7 @@ pub fn spawn(spec: &SandboxSpec, cgroup: &Path, uid: u32) -> io::Result<Child> {
     let config = json!({
         "exe": spec.exe, "new_root": spec.new_root, "private_dir": spec.private_dir, "gateway": spec.gateway,
         "scenario": spec.scenario, "uid": uid, "probe": spec.probe, "expose_private": spec.expose_private,
-        "death_signal": death_signal, "host_root": spec.host_root, "seccomp": spec.seccomp,
+        "death_signal": death_signal, "host_root": spec.host_root, "seccomp": spec.seccomp, "memfd_exec": spec.memfd_exec,
     });
     let mut command = Command::new(&spec.exe);
     command
@@ -298,6 +299,14 @@ pub fn launch(args: &[String]) -> Result<(), Box<dyn Error>> {
         if unsafe { libc::poll(&mut waiting, 1, 0) } != 0 {
             return Err("sandbox launcher exited during start".into());
         }
+    }
+    // Memory-backed files must not be executable in this PID namespace. Otherwise an
+    // agent can run code that is not in its root, including Windows images through
+    // WSL's kernel-global interop handler, whose interpreter is preopened. The sysctl
+    // is per PID namespace and applies to the writer's, so init sets it before the
+    // pivot hides /proc/sys.
+    if config["memfd_exec"] != true {
+        fs::write("/proc/sys/vm/memfd_noexec", "2").map_err(|e| format!("vm.memfd_noexec: {e}"))?;
     }
     let (exe, gateway) = prepare(&config)?;
     // SAFETY: init is single-threaded here.
