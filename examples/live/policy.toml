@@ -1,0 +1,52 @@
+# Live run policy. Everything not listed here is denied.
+# Run: sudo containment-lab live --policy examples/live/policy.toml --task "..."
+
+[model]
+# Any OpenAI-compatible server: Ollama, llama.cpp (llama-server --jinja), LM Studio, vLLM.
+# From WSL2 with Ollama on Windows, use the Windows host address or mirrored networking.
+endpoint = "http://127.0.0.1:11434/v1/chat/completions"
+name = "qwen2.5:7b-instruct"
+max_tokens_per_call = 1024
+# Tokens per lease. When used up, the agent is restricted and inference is refused.
+token_budget = 200000
+
+# Read-only origins the agent may fetch from.
+[[host]]
+url = "https://api.github.com"
+access = "read"
+budget_requests = 30
+
+[[host]]
+url = "https://raw.githubusercontent.com"
+access = "read"
+budget_requests = 30
+
+# A write origin. Requests that change state (POST, PUT, PATCH, DELETE) are only
+# allowed to write origins, and each lease has a request and byte budget.
+# The red-team kit's fixture server listens here.
+[[host]]
+url = "http://127.0.0.1:8099"
+access = "write"
+budget_requests = 5
+budget_bytes = 20000
+credential = "fixture_token"
+
+# Credentials are added by the gateway for their origin only; the agent never sees them.
+[[credential]]
+name = "fixture_token"
+header = "Authorization"
+prefix = "Bearer "
+value_env = "FIXTURE_TOKEN"
+
+[workspace]
+# Copied fresh into /workspace for every sandbox generation; a rebuild discards changes.
+seed = "examples/live/workspace"
+
+[timing]
+freeze_grace_ms = 5000   # Freeze -> Kill
+blind_hold_ms = 60000    # classifier blind window before Hold (spec 5.5)
+down_hold_ms = 30000     # classifier down before Hold (spec 5.5)
+
+[run]
+max_steps = 16
+max_seconds = 900

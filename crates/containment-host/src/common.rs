@@ -11,18 +11,22 @@ pub const HEARTBEAT_MS: u64 = 50;
 pub const TICK_MS: u64 = 5;
 pub const FREEZE_GRACE_MS: u64 = 400;
 pub const SANDBOX_UID_BASE: u32 = 200_000;
-pub const MAX_LINE_BYTES: u64 = 64 * 1024;
+/// Largest gateway request line. Live inference requests carry the conversation.
+pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// System One liveness (spec section 5). Lag is the age of the oldest trace
 /// event the classifier has not consumed. Lab runs shorten the blind window;
 /// live runs use 60 s (spec section 5.5).
 pub const LAG_RESTRICT_MS: u64 = 500;
 pub const LAB_BLIND_HOLD_MS: u64 = 1_500;
+pub const LIVE_BLIND_HOLD_MS: u64 = 60_000;
+pub const LIVE_DOWN_HOLD_MS: u64 = 30_000;
 /// Events that must go unscored while restricted before a blind window holds.
 pub const BLIND_MIN_EVENTS: u64 = 5;
 /// System One down longer than this while the agent acts holds (live: 30 s).
 pub const LAB_DOWN_HOLD_MS: u64 = 1_000;
 /// A restarted System One must stay up this long before an outage ends (live: 5 s).
 pub const LAB_STABLE_MS: u64 = 300;
+pub const LIVE_STABLE_MS: u64 = 5_000;
 /// Set by `--allow-missing-limits`: run even where cgroup limits cannot be applied.
 pub const LIMITS_WAIVER_ENV: &str = "CONTAINMENT_ALLOW_MISSING_LIMITS";
 /// System One runs as uid_base + this offset; generations use lower offsets.
@@ -120,4 +124,8 @@ pub fn cgroup_root() -> io::Result<PathBuf> {
 
 pub fn status_error(message: impl Into<String>) -> Value {
     json!({"ok": false, "error": message.into()})
+}
+
+pub fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

@@ -26,7 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 RANK = {"proved": 5, "checked-bounded": 4, "tested": 3, "assumed": 2, "planned": 1, "stale": 0}
 LAYERS = {"bend-kernel", "rust-kernel", "host", "os", "env"}
-KINDS = {"law", "mutant", "rust-mutant", "scenario", "sabotage", "diff", "tla", "doc"}
+KINDS = {"law", "mutant", "rust-mutant", "scenario", "sabotage", "diff", "tla", "doc", "live", "live-sabotage"}
 
 
 def load_inventory():
@@ -41,7 +41,10 @@ def load_inventory():
     sabotage = re.findall(r'\("([a-z_]+)",\s*"[a-z_]+"\)', sabotage_block)
     scenario_block = harness.split("const SCENARIOS")[1].split("];")[0]
     scenarios = re.findall(r'"([a-z_]+)"', scenario_block)
-    return laws, bend, rust, sabotage, scenarios
+    live_src = (ROOT / "crates/containment-host/src/live_suite.rs").read_text()
+    live_sabotage = re.findall(r'\("([a-z_]+)",\s*"[a-z_]+"\)', live_src.split("const SABOTAGE")[1].split("];")[0])
+    live_scenarios = re.findall(r'"([a-z_]+)"', live_src.split("const SCENARIOS")[1].split("];")[0])
+    return laws, bend, rust, sabotage, scenarios, live_scenarios, live_sabotage
 
 
 def load_results():
@@ -63,7 +66,15 @@ def load_results():
         if path.exists():
             data = json.loads(path.read_text())
             diffs[name] = data.get("mismatches", 1) == 0
-    return bend_ok, rust_ok, scenario_ok, sabotage_ok, diffs
+    live_ok, live_sab_ok = {}, {}
+    live_path = ROOT / "results/live-suite.json"
+    if live_path.exists():
+        live = json.loads(live_path.read_text())
+        for run in live["runs"]:
+            live_ok[run["scenario"]] = live_ok.get(run["scenario"], True) and bool(run["passed"])
+        for item in live["sabotage"]:
+            live_sab_ok[item["weakness"]] = bool(item["detected"])
+    return bend_ok, rust_ok, scenario_ok, sabotage_ok, diffs, live_ok, live_sab_ok
 
 
 def verdict_matches_head():
@@ -99,8 +110,8 @@ def changed_since(commit, paths):
 def main():
     write = "--write" in sys.argv[1:]
     claims = tomllib.loads((ROOT / "claims.toml").read_text())["claim"]
-    laws, bend, rust, sabotage, scenarios = load_inventory()
-    bend_ok, rust_ok, scenario_ok, sabotage_ok, diffs = load_results()
+    laws, bend, rust, sabotage, scenarios, live_scenarios, live_sabotage = load_inventory()
+    bend_ok, rust_ok, scenario_ok, sabotage_ok, diffs, live_ok, live_sab_ok = load_results()
     errors = []
     by_id = {}
     cited = {k: set() for k in KINDS}
@@ -136,6 +147,10 @@ def main():
             return scenario_ok.get(name, False)
         if kind == "diff":
             return diffs.get(name, False)
+        if kind == "live":
+            return live_ok.get(name, False)
+        if kind == "live-sabotage":
+            return live_sab_ok.get(name, False)
         if kind == "doc":
             file, _, text = name.partition("#")
             path = ROOT / file
@@ -159,12 +174,14 @@ def main():
                     errors.append(f"CI-1 {cid}: proof verdict does not match HEAD ({verdict_note})")
                 if kind in {"scenario", "sabotage"} and name not in (scenarios if kind == "scenario" else sabotage):
                     errors.append(f"CI-3 {cid}: {ref} does not exist in harness.rs")
+                if kind in {"live", "live-sabotage"} and name not in (live_scenarios if kind == "live" else live_sabotage):
+                    errors.append(f"CI-3 {cid}: {ref} does not exist in live_suite.rs")
         if status == "proved" and "law" not in kinds:
             errors.append(f"CI-3 {cid}: proved needs a law:")
         if status == "checked-bounded" and "tla" not in kinds:
             errors.append(f"CI-3 {cid}: checked-bounded needs a tla:")
         if status in {"proved", "tested"}:
-            falsifiers = [r for r in evidence if r.partition(":")[0] in {"mutant", "rust-mutant", "sabotage", "diff", "doc"}]
+            falsifiers = [r for r in evidence if r.partition(":")[0] in {"mutant", "rust-mutant", "sabotage", "diff", "doc", "live-sabotage"}]
             if not falsifiers:
                 errors.append(f"CI-3 {cid}: {status} needs a mutant, sabotage, diff or doc check that is caught")
             for ref in evidence:
@@ -189,7 +206,7 @@ def main():
             elif RANK[effective[cid]] > RANK[effective[dep]]:
                 errors.append(f"CI-5 {cid}: {effective[cid]} is stronger than dependency {dep} ({effective[dep]})")
 
-    for kind, names in [("law", laws), ("mutant", bend), ("rust-mutant", rust), ("sabotage", sabotage)]:
+    for kind, names in [("law", laws), ("mutant", bend), ("rust-mutant", rust), ("sabotage", sabotage), ("live-sabotage", live_sabotage)]:
         for name in names:
             if name not in cited[kind]:
                 errors.append(f"CI-2 {kind}:{name} is not cited by any claim")

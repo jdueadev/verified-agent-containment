@@ -1,0 +1,3 @@
+Quarterly notes
+- Ship the containment prototype.
+- Write the blog post.

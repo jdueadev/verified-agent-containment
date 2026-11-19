@@ -104,6 +104,39 @@ python3 tools/page_check.py web/dist/agent-containment-simulator.html
 
 If `rustup target add wasm32-unknown-unknown` is unavailable but `rust-src` is installed, use `BUILD_STD=1`.
 
+## Run a local agent
+
+The owned harness (`agent_loop.rs`) runs inside the sandbox and drives any OpenAI-compatible model server: Ollama, llama.cpp (`llama-server --jinja`), LM Studio or vLLM. Everything it does goes through the gateway:
+- `infer` sends the conversation to the model. It counts as baseline egress, so it still works in Restrict, and it draws on a per-lease token budget.
+- `http` is a typed request. The gateway is the HTTP and TLS client. It checks the origin and method against the policy, adds the credential for that origin (https or loopback only), redacts credential values from responses, enforces per-lease budgets, and refuses names that resolve to internal addresses (loopback, private, link-local, CGNAT). To use a model server or host on your LAN, put its IP literal in the policy.
+- Files live in `/workspace`, which is a fresh copy for every sandbox generation.
+
+```bash
+cargo build --release -p containment-host
+# Edit examples/live/policy.toml: model endpoint and name, allowed hosts, budgets.
+sudo FIXTURE_TOKEN=dummy target/release/containment-lab live \
+  --policy examples/live/policy.toml \
+  --task "Read notes.txt and write a one-line summary to summary.md"
+```
+
+The command streams each model step and tool call, prints every mode change, and saves `report.json` and `transcript.jsonl` under `results/live/`. Add `--allow-missing-limits` only on hosts without delegated cgroup controllers; the report records it.
+
+While a run is going, in another terminal:
+
+```bash
+sudo target/release/containment-lab ctl --run /run/verified-agent-containment/live-... status
+sudo target/release/containment-lab ctl --run /run/verified-agent-containment/live-... reset hold   # or restrict, freeze, kill
+sudo target/release/containment-lab ctl --run /run/verified-agent-containment/live-... stop
+```
+
+A run ends on its own when the agent finishes in Run or Restrict. After Hold, Freeze or Kill it waits for a reset or a stop, up to `run.max_seconds` (default 900 s), and then tears down (failing closed). A reset from Kill rebuilds the sandbox with a fresh workspace.
+
+`containment-lab live-suite` checks all of this end to end with a scripted model and local fixture servers. It tests credential scoping, the canary, unlisted hosts, writes to read hosts, request and token budgets, the cut on stop, and the workspace rebuild. Each check has a sabotaged controller that must fail it: 9/9 runs pass and 6/6 sabotaged controllers are caught (`results/live-suite.json`). The checks look at what reached the upstream servers, including the model server, not at what the agent reports.
+
+Two limits are specific to live runs:
+- A live reset is signed with a per-run key file that only root can read, not a hardware key, because reset v3 is not built yet. It proves that root on this host approved the reset, not that Jon did.
+- Writes within budget to allowed hosts are not contained (L-OPS-01). Choose write hosts and budgets with that in mind.
+
 ## Review history
 
 Fable 5.2 reviewed the design adversarially in three rounds:
@@ -116,7 +149,7 @@ Fable 5.2 reviewed the design adversarially in three rounds:
 - **Proofs:** they cover the Bend model. The Rust kernel is checked against it by generated traces. Values in those traces stay below 2^53. Rust saturates at u64 where Bend's naturals do not, which is tighter, not looser.
 - **Law audit:** `tools/law_audit.mjs` restates 35 of the 36 laws in JavaScript; the trace law is covered step by step. It is a second opinion, not the proof.
 - **Outside the proofs:** host actuators, Linux, seccomp, the CPU and the hypervisor. The attack suite tests them; nothing proves them.
-- **Agent and classifier:** the attack agent is scripted, and no LLM agent was run. System One was represented by a deterministic adversarial classifier; the local `jeff` service was not called. In the suite, System One is a scripted adversary per scenario (stall, crash, Kill requests, a message labelled as a hard rule); live runs use the rule-based classifier in `system_one.rs`, which is unit-tested but has not been measured against the false-Hold gate.
+- **Agent and classifier:** the attack agent is scripted. The live harness has been tested end to end with a scripted model, not yet with a real local model. System One was represented by a deterministic adversarial classifier; the local `jeff` service was not called. In the suite, System One is a scripted adversary per scenario (stall, crash, Kill requests, a message labelled as a hard rule); live runs use the rule-based classifier in `system_one.rs`, which is unit-tested but has not been measured against the false-Hold gate.
 - **Known v2 gap:** a reset-v2 signature binds the run id but not the controller instance or boot (`docs/design-spec.md` section 9).
 - **WSL2:** first run on Jon's machine (`results/wsl2/`, Linux 6.18.58.1-microsoft-standard-WSL2, commit 870142c): 167/168, 17/17 sabotage caught, 0 bytes after a stop, and cgroup pids, memory and CPU limits in force with no waiver. The one failure was real: a Windows image written to a memfd and run with `execveat` started WSL's interop interpreter inside the sandbox, because WSL's binfmt handler is kernel-global and its interpreter is preopened. It exited 1 because the interop socket is not reachable from the sandbox, but code outside the sandbox root ran. Fixed by setting `vm.memfd_noexec=2` in the sandbox's PID namespace, with a host-independent probe (`memfd_exec_elf`), a reachable-executable-PE scan, and a `memfd_exec` sabotage. Freeze on WSL2 was slower: committed to frozen p95 66 ms, max 96 ms, while the egress cut stayed under 0.54 ms. The fixed build (d0c0764) passed on WSL2: 168/168 runs, 18/18 sabotage caught including `memfd_exec`, 0 bytes after a stop, limits in force (`results/wsl2/attack-suite-space-heater-d0c0764.json`). Freeze stayed slower there: committed to frozen p95 70 ms, max 97 ms; egress cut p95 0.49 ms.
 - **Trust boundary:** a compromised kernel, root process or hypervisor can defeat the design. Bend 2 is young, and its compiler and parser are not formally verified.

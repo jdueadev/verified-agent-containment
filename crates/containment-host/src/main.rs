@@ -1,11 +1,17 @@
 //! Linux containment prototype and adversarial test harness.
 
 mod agent;
+mod agent_loop;
 mod common;
 mod controller;
 mod differential;
 mod harness;
 mod helpers;
+mod http;
+mod live;
+mod live_suite;
+mod mock;
+mod run_live;
 mod sandbox;
 mod system_one;
 
@@ -22,8 +28,13 @@ fn main() -> ExitCode {
         Some("sink") => helpers::sink(&args[1..]),
         Some("probe-operator") => helpers::probe_operator(&args[1..]),
         Some("system-one") => system_one::run(&args[1..]),
+        Some("live") => run_live::live(&args[1..]),
+        Some("live-suite") => live_suite::run(&args[1..]),
+        Some("ctl") => run_live::ctl(&args[1..]),
+        Some("mock-model") => mock::mock_model(&args[1..]),
+        Some("fixture-server") => mock::fixture_server(&args[1..]),
         Some("differential-cases") => differential::run(&args[1..]),
-        _ => Err("usage: containment-lab attack-suite [--repeat N] [--out FILE]".into()),
+        _ => Err("usage: containment-lab attack-suite [--repeat N] [--out FILE] | live --policy FILE --task TEXT | ctl --run DIR status|stop|reset MODE".into()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
