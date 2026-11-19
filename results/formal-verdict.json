@@ -6,8 +6,10 @@
   "lean_version": "4.34.0",
   "kernel_stack_note": "Run with LEAN_STACK_SIZE_KB=1048576 through BENDTT because Bend's default 4 GB stack aborted on the 4 GB verification VM.",
   "sha256": {
-    "formal/kernel.bend": "54f03ca5a2ab9788e391d53dd3e4234be65ba6afdc4c4a71214090354841508b",
-    "formal/LAWS.bend": "bf1df95b889d7860fb42adc4629ae2c60490dd61347035dda151044a304acee5",
-    "formal/PROOF.bend": "c8772315d9a5556400c885b91304d7e2164272eb29afe1c047871f643240a24b"
-  }
+    "formal/kernel.bend": "8443aa04e732ce3e5f1ed8d47cbc4761bd014a972255c7a2de2fa67d2cdbec66",
+    "formal/LAWS.bend": "c8c9df414ed8a80278083b14192b33cfc5aa0953cf02ae1aca33ff5557dd8114",
+    "formal/PROOF.bend": "527017c6c6da91fde2e27a7be19dcd98a440c1b2b99eb88cc4f8976191a52189"
+  },
+  "laws": 36,
+  "checked_on": "Jon's machine (Linux 6.8.0-138-generic VM), 2026-11-19, BENDTT wrapper with LEAN_STACK_SIZE_KB=1048576; the emitted 364,824-byte .bendtt also passed the bendtt binary directly"
 }

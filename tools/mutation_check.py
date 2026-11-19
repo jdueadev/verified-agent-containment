@@ -3,30 +3,11 @@
 import json, os, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from kernel_mutants import BEND_MUTANTS, RUST_MUTANTS
+
 ROOT = Path(__file__).resolve().parents[1]
 BEND = os.environ.get("BEND", "bend")
-BEND_MUTANTS = [
-    ("classifier_can_kill", "    case ToKill{}:\n      ToFreeze{}", "    case ToKill{}:\n      ToKill{}"),
-    ("expired_run_stays_live", "raise(cfg, now, ModeRun{}, d, ToFreeze{})", "StepResult{ControlState{ModeRun{}, d}, NoMore{}}"),
-    ("renewal_ignores_maximum", "ControlState{ModeRun{}, Nat.add(now, Nat.min(ttl, max_lease_of(cfg)))}\n    case ModeRestrict{}:", "ControlState{ModeRun{}, Nat.add(now, ttl)}\n    case ModeRestrict{}:"),
-    ("freeze_before_revocation", "case ModeRun{} ToFreeze{}:\n      StepResult{ControlState{ModeFreeze{}, Nat.add(now, grace_of(cfg))}, Next{RevokeSecrets{}, Next{BlockEgress{}, Next{FreezeProcesses{}, NoMore{}}}}}", "case ModeRun{} ToFreeze{}:\n      StepResult{ControlState{ModeFreeze{}, Nat.add(now, grace_of(cfg))}, Next{FreezeProcesses{}, Next{RevokeSecrets{}, Next{BlockEgress{}, NoMore{}}}}}"),
-    ("unsigned_reset_runs", "    case False{}:\n      settle(cfg, now, m, d)", "    case False{}:\n      StepResult{ControlState{ModeRun{}, Nat.add(now, Nat.min(ttl, max_lease_of(cfg)))}, reset_actions(m)}"),
-    ("expired_access_allowed", "    case False{}:\n      False{}\n\ndef authorize", "    case False{}:\n      match r:\n        case AccessRequest{k, g, b}:\n          allow_mode(m, k, g, b)\n\ndef authorize"),
-    ("freeze_allows_access", "    case ModeFreeze{}:\n      False{}\n    case ModeKill{}:\n      False{}\n\ndef allow_with", "    case ModeFreeze{}:\n      granted\n    case ModeKill{}:\n      False{}\n\ndef allow_with"),
-    ("restrict_allows_secret", "        case SecretAccess{}:\n          False{}", "        case SecretAccess{}:\n          granted"),
-    ("restrict_can_lower", "    case ModeRestrict{} ToRestrict{}:\n      StepResult{ControlState{ModeRestrict{}, d}, NoMore{}}", "    case ModeRestrict{} ToRestrict{}:\n      StepResult{ControlState{ModeRun{}, d}, NoMore{}}"),
-]
-RUST_MUTANTS = [
-    ("classifier_can_kill", "let capped = if level == Level::Kill { Level::Freeze } else { level };", "let capped = level;"),
-    ("lease_off_by_one", "if now_ms < control.deadline_ms {\n        return StepResult", "if now_ms <= control.deadline_ms {\n        return StepResult"),
-    ("renewal_ignores_maximum", "now_ms.saturating_add(ttl_ms.min(config.max_lease_ms))", "now_ms.saturating_add(ttl_ms)"),
-    ("freeze_before_revocation", "&[Action::RevokeSecrets, Action::BlockEgress, Action::FreezeProcesses];", "&[Action::FreezeProcesses, Action::RevokeSecrets, Action::BlockEgress];"),
-    ("unsigned_reset_runs", "Event::Reset { now_ms, signed: true, ttl_ms } =>", "Event::Reset { now_ms, ttl_ms, .. } =>"),
-    ("expired_access_allowed", "    if now_ms >= control.deadline_ms {\n        return false;\n    }\n    match control.mode {\n        Mode::Run => request.granted", "    let _ = now_ms;\n    match control.mode {\n        Mode::Run => request.granted"),
-    ("freeze_allows_access", "Mode::Freeze | Mode::Kill => false,", "Mode::Freeze | Mode::Kill => request.granted,"),
-    ("restrict_allows_secret", "request.kind == AccessKind::Egress && request.granted && request.baseline", "request.granted && request.baseline"),
-]
-
 def run(cmd, **kw):
     return subprocess.run(cmd, text=True, capture_output=True, **kw)
 
@@ -34,14 +15,23 @@ def bend_mutants():
     out = []
     source = (ROOT / "formal/kernel.bend").read_text()
     for name, old, new in BEND_MUTANTS:
-        assert source.count(old) >= 1, f"mutation target missing: {name}"
+        assert source.count(old) == 1, f"mutation target missing: {name}"
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "formal"
             shutil.copytree(ROOT / "formal", target)
             (target / "kernel.bend").write_text(source.replace(old, new, 1))
+            # A mutant counts only if it is a valid kernel that the proofs then reject.
+            valid = run([BEND, "kernel.bend", "--check-only"], cwd=target)
+            assert "SOME PROOFS FAIL" not in valid.stdout + valid.stderr, f"mutant does not type-check: {name}"
             result = run([BEND, "PROOF.bend", "--check-only"], cwd=target)
-            rejected = result.returncode != 0 or "SOME PROOFS FAIL" in result.stdout + result.stderr
-            out.append({"mutant": name, "rejected": rejected})
+            text = result.stdout + result.stderr
+            rejected = result.returncode != 0 or "SOME PROOFS FAIL" in text
+            where = next((line.split(":", 1)[1].strip() for line in text.splitlines() if line.startswith("Location:")), None)
+            # Independent evidence: a concrete input on which the mutant breaks a stated law.
+            built = run([BEND, "kernel.bend", "-o", "mutant.mjs"], cwd=target)
+            audit = run(["bun", str(ROOT / "tools/law_audit.mjs"), str(target / "mutant.mjs"), "40000"]) if built.returncode == 0 else None
+            violated = sorted(json.loads(audit.stdout)["violated"]) if audit and audit.returncode == 0 else None
+            out.append({"mutant": name, "rejected": rejected, "first_failure": where, "laws_violated": violated, "witness": bool(violated)})
     return out
 
 def rust_mutants(kernel_mjs):
@@ -53,7 +43,7 @@ def rust_mutants(kernel_mjs):
         path = repo / "crates/containment-kernel/src/lib.rs"
         source = path.read_text()
         for name, old, new in RUST_MUTANTS:
-            assert source.count(old) >= 1, f"mutation target missing: {name}"
+            assert source.count(old) == 1, f"mutation target missing: {name}"
             path.write_text(source.replace(old, new, 1))
             build = run(["cargo", "build", "-q", "-p", "containment-host"], cwd=repo, env=env)
             assert build.returncode == 0, build.stderr[-2000:]
@@ -68,9 +58,11 @@ def main():
     kernel_mjs = sys.argv[1]
     report = {"bend": bend_mutants(), "rust": rust_mutants(kernel_mjs)}
     report["bend_rejected"] = sum(x["rejected"] for x in report["bend"])
+    report["bend_witnessed"] = sum(x["rejected"] and x["witness"] for x in report["bend"])
+    report["original_violations"] = json.loads(run(["bun", str(ROOT / "tools/law_audit.mjs"), kernel_mjs, "200000"], check=True).stdout)["violated"]
     report["rust_rejected"] = sum(x["rejected"] for x in report["rust"])
     report["bend_total"], report["rust_total"] = len(report["bend"]), len(report["rust"])
     Path(sys.argv[2]).write_text(json.dumps(report, indent=2) + "\n")
-    print(json.dumps({k: report[k] for k in ("bend_rejected", "bend_total", "rust_rejected", "rust_total")}))
-    return 0 if report["bend_rejected"] == report["bend_total"] and report["rust_rejected"] == report["rust_total"] else 1
+    print(json.dumps({k: report[k] for k in ("bend_rejected", "bend_witnessed", "bend_total", "rust_rejected", "rust_total")}))
+    return 0 if not report["original_violations"] and report["bend_witnessed"] == report["bend_total"] and report["bend_rejected"] == report["bend_total"] and report["rust_rejected"] == report["rust_total"] else 1
 sys.exit(main())

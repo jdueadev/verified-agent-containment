@@ -2,44 +2,440 @@
   "bend": [
     {
       "mutant": "classifier_can_kill",
-      "rejected": true
+      "rejected": true,
+      "first_failure": "classifier_safe",
+      "laws_violated": [
+        "classifier_cannot_kill",
+        "classifier_stop_enters_hold",
+        "hold_cannot_self_escalate"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "classifier_can_start_freeze",
+      "rejected": true,
+      "first_failure": "classifier_hold",
+      "laws_violated": [
+        "classifier_stop_enters_hold",
+        "hold_cannot_self_escalate"
+      ],
+      "witness": true
     },
     {
       "mutant": "expired_run_stays_live",
-      "rejected": true
+      "rejected": true,
+      "first_failure": "closed_settle",
+      "laws_violated": [
+        "fail_closed"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "expired_restrict_stays_live",
+      "rejected": true,
+      "first_failure": "closed_settle",
+      "laws_violated": [
+        "fail_closed"
+      ],
+      "witness": true
     },
     {
       "mutant": "renewal_ignores_maximum",
-      "rejected": true
+      "rejected": true,
+      "first_failure": "renew_bound",
+      "laws_violated": [
+        "renewal_is_bounded"
+      ],
+      "witness": true
     },
     {
       "mutant": "freeze_before_revocation",
-      "rejected": true
+      "rejected": true,
+      "first_failure": "ordered_settle",
+      "laws_violated": [
+        "authority_removed_first"
+      ],
+      "witness": true
     },
     {
-      "mutant": "unsigned_reset_runs",
-      "rejected": true
+      "mutant": "empty_stop_plan",
+      "rejected": true,
+      "first_failure": "ordered_hard",
+      "laws_violated": [
+        "authority_removed_first",
+        "stop_plan_is_complete"
+      ],
+      "witness": true
     },
     {
-      "mutant": "expired_access_allowed",
-      "rejected": true
+      "mutant": "stop_plan_never_freezes",
+      "rejected": true,
+      "first_failure": "stops_settle",
+      "laws_violated": [
+        "stop_plan_is_complete"
+      ],
+      "witness": true
     },
     {
-      "mutant": "freeze_allows_access",
-      "rejected": true
+      "mutant": "kill_plan_never_kills",
+      "rejected": true,
+      "first_failure": "kills_hard",
+      "laws_violated": [
+        "kill_plan_is_complete"
+      ],
+      "witness": true
     },
     {
-      "mutant": "restrict_allows_secret",
-      "rejected": true
+      "mutant": "hold_kill_without_action",
+      "rejected": true,
+      "first_failure": "kills_hard",
+      "laws_violated": [
+        "kill_plan_is_complete"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "freeze_kill_without_action",
+      "rejected": true,
+      "first_failure": "kills_settle",
+      "laws_violated": [
+        "kill_plan_is_complete"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "freeze_never_escalates",
+      "rejected": true,
+      "first_failure": "freeze_up_settle",
+      "laws_violated": [
+        "freeze_escalates"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "hold_expires_to_kill",
+      "rejected": true,
+      "first_failure": "held_settle",
+      "laws_violated": [
+        "hold_cannot_self_escalate"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "hard_rule_ignored",
+      "rejected": true,
+      "first_failure": "Laws.fail_closed",
+      "laws_violated": [
+        "hard_rule_reaches_level"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "freeze_grace_ignored",
+      "rejected": true,
+      "first_failure": "grace_settle",
+      "laws_violated": [
+        "freeze_entry_uses_grace"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "renewal_extends_freeze",
+      "rejected": true,
+      "first_failure": "freeze_same_renew",
+      "laws_violated": [
+        "freeze_deadline_is_fixed",
+        "freeze_entry_uses_grace"
+      ],
+      "witness": true
     },
     {
       "mutant": "restrict_can_lower",
-      "rejected": true
+      "rejected": true,
+      "first_failure": "tight_classifier",
+      "laws_violated": [
+        "hard_rule_reaches_level",
+        "tighten_only"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "unsigned_reset_runs",
+      "rejected": true,
+      "first_failure": "unsigned_not_accepted",
+      "laws_violated": [
+        "hold_cannot_self_escalate",
+        "reset_cannot_replay",
+        "reset_is_bound_to_mode",
+        "reset_must_be_unexpired",
+        "reset_requires_fresh_counter",
+        "reset_requires_signature"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "reset_counter_replayable",
+      "rejected": true,
+      "first_failure": "ok_reset_requires_fresh_counter",
+      "laws_violated": [
+        "reset_cannot_replay",
+        "reset_requires_fresh_counter"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "reset_not_bound_to_mode",
+      "rejected": true,
+      "first_failure": "ok_reset_requires_fresh_counter",
+      "laws_violated": [
+        "reset_is_bound_to_mode"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "reset_never_expires",
+      "rejected": true,
+      "first_failure": "ok_reset_requires_fresh_counter",
+      "laws_violated": [
+        "reset_must_be_unexpired"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "reset_renews_run",
+      "rejected": true,
+      "first_failure": "ok_reset_requires_fresh_counter",
+      "laws_violated": [
+        "reset_cannot_renew_run"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "reset_counter_not_consumed",
+      "rejected": true,
+      "first_failure": "consume",
+      "laws_violated": [
+        "accepted_reset_consumes_counter"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "reset_ignores_maximum",
+      "rejected": true,
+      "first_failure": "reset_bound",
+      "laws_violated": [
+        "reset_is_bounded"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "kill_reset_thaws_survivors",
+      "rejected": true,
+      "first_failure": "plan_matches",
+      "laws_violated": [
+        "reset_plan_is_complete"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "stale_time_accepted",
+      "rejected": true,
+      "first_failure": "eff_le_with",
+      "laws_violated": [
+        "clock_never_rewinds",
+        "stale_time_uses_clock"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "clock_not_sealed",
+      "rejected": true,
+      "first_failure": "Laws.fail_closed",
+      "laws_violated": [
+        "clock_is_effective_time",
+        "clock_never_rewinds"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "expired_access_allowed",
+      "rejected": true,
+      "first_failure": "expired_denies",
+      "laws_violated": [
+        "expired_lease_denies"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "access_uses_stale_time",
+      "rejected": true,
+      "first_failure": "Laws.access_requires_grant",
+      "laws_violated": [
+        "expired_lease_denies"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "hold_allows_access",
+      "rejected": true,
+      "first_failure": "stopped_lemma",
+      "laws_violated": [
+        "stopped_denies"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "freeze_allows_access",
+      "rejected": true,
+      "first_failure": "stopped_lemma",
+      "laws_violated": [
+        "stopped_denies"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "restrict_allows_secret",
+      "rejected": true,
+      "first_failure": "restrict_secret",
+      "laws_violated": [
+        "restrict_denies_secrets"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "restrict_ignores_baseline",
+      "rejected": true,
+      "first_failure": "restrict_baseline",
+      "laws_violated": [
+        "restrict_egress_needs_baseline"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "access_ignores_grant",
+      "rejected": true,
+      "first_failure": "grant_needed",
+      "laws_violated": [
+        "access_requires_grant"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "hold_freeze_far_deadline",
+      "rejected": true,
+      "first_failure": "grace_hard",
+      "laws_violated": [
+        "freeze_entry_uses_grace"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "restrict_plan_empty",
+      "rejected": true,
+      "first_failure": "restricts_classifier",
+      "laws_violated": [
+        "restrict_plan_is_complete"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "restrict_extends_lease",
+      "rejected": true,
+      "first_failure": "frame_classifier",
+      "laws_violated": [
+        "lease_only_renewal_extends"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "repeated_restrict_extends",
+      "rejected": true,
+      "first_failure": "frame_classifier",
+      "laws_violated": [
+        "lease_only_renewal_extends"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "kill_signal_recovers",
+      "rejected": true,
+      "first_failure": "norecover_classifier",
+      "laws_violated": [
+        "no_recovery_without_reset"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "hold_freeze_thaws",
+      "rejected": true,
+      "first_failure": "norecover_hard",
+      "laws_violated": [
+        "no_recovery_without_reset"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "freeze_repeat_restores",
+      "rejected": true,
+      "first_failure": "norecover_hard",
+      "laws_violated": [
+        "no_recovery_without_reset"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "agent_request_renews",
+      "rejected": true,
+      "first_failure": "Laws.fail_closed",
+      "laws_violated": [
+        "lease_only_renewal_extends"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "classifier_renews",
+      "rejected": true,
+      "first_failure": "Laws.fail_closed",
+      "laws_violated": [
+        "lease_only_renewal_extends"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "events_zero_counter",
+      "rejected": true,
+      "first_failure": "Laws.fail_closed",
+      "laws_violated": [
+        "counter_needs_accepted_reset"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "clock_jumps_forward",
+      "rejected": true,
+      "first_failure": "Laws.fail_closed",
+      "laws_violated": [
+        "clock_is_effective_time"
+      ],
+      "witness": true
+    },
+    {
+      "mutant": "rejected_reset_burns_counter",
+      "rejected": true,
+      "first_failure": "Laws.fail_closed",
+      "laws_violated": [
+        "counter_needs_accepted_reset"
+      ],
+      "witness": true
     }
   ],
   "rust": [
     {
       "mutant": "classifier_can_kill",
+      "rejected": true
+    },
+    {
+      "mutant": "classifier_can_start_freeze",
       "rejected": true
     },
     {
@@ -55,7 +451,47 @@
       "rejected": true
     },
     {
+      "mutant": "empty_stop_plan",
+      "rejected": true
+    },
+    {
+      "mutant": "kill_plan_never_kills",
+      "rejected": true
+    },
+    {
+      "mutant": "hold_expires_to_kill",
+      "rejected": true
+    },
+    {
+      "mutant": "freeze_never_escalates",
+      "rejected": true
+    },
+    {
       "mutant": "unsigned_reset_runs",
+      "rejected": true
+    },
+    {
+      "mutant": "reset_counter_replayable",
+      "rejected": true
+    },
+    {
+      "mutant": "reset_not_bound_to_mode",
+      "rejected": true
+    },
+    {
+      "mutant": "reset_never_expires",
+      "rejected": true
+    },
+    {
+      "mutant": "reset_renews_run",
+      "rejected": true
+    },
+    {
+      "mutant": "kill_reset_thaws_survivors",
+      "rejected": true
+    },
+    {
+      "mutant": "stale_time_accepted",
       "rejected": true
     },
     {
@@ -63,7 +499,7 @@
       "rejected": true
     },
     {
-      "mutant": "freeze_allows_access",
+      "mutant": "hold_allows_access",
       "rejected": true
     },
     {
@@ -71,8 +507,10 @@
       "rejected": true
     }
   ],
-  "bend_rejected": 9,
-  "rust_rejected": 8,
-  "bend_total": 9,
-  "rust_total": 8
+  "bend_rejected": 46,
+  "bend_witnessed": 46,
+  "original_violations": {},
+  "rust_rejected": 19,
+  "bend_total": 46,
+  "rust_total": 19
 }

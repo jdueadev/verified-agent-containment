@@ -10,20 +10,35 @@ pub const MAX_LEASE_MS: u64 = 250;
 pub const HEARTBEAT_MS: u64 = 50;
 pub const TICK_MS: u64 = 5;
 pub const FREEZE_GRACE_MS: u64 = 400;
-pub const SANDBOX_UID: u32 = 65_534;
+pub const SANDBOX_UID_BASE: u32 = 200_000;
+pub const MAX_LINE_BYTES: u64 = 64 * 1024;
 
-pub fn mono_ns() -> u64 {
+/// Time source for leases. CLOCK_BOOTTIME keeps counting during suspend, so a
+/// suspended host cannot extend a lease.
+pub fn boot_ns() -> u64 {
     let mut value = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // SAFETY: `value` is a valid out pointer for the duration of the call.
-    let result = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut value) };
-    assert_eq!(result, 0, "CLOCK_MONOTONIC is unavailable");
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut value) };
+    assert_eq!(result, 0, "CLOCK_BOOTTIME is unavailable");
     value.tv_sec as u64 * 1_000_000_000 + value.tv_nsec as u64
+}
+
+/// MAC over one upstream record. The key never enters the sandbox.
+pub fn record_mac(key: &[u8], admit_ns: u64, write_ns: u64, host: &str, data: &str, credential: &str) -> String {
+    use hmac::{Hmac, Mac};
+    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
+    for part in [admit_ns.to_string().as_str(), write_ns.to_string().as_str(), host, data, credential] {
+        mac.update(&(part.len() as u64).to_be_bytes());
+        mac.update(part.as_bytes());
+    }
+    mac.finalize().into_bytes().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 pub fn mode_name(mode: Mode) -> &'static str {
     match mode {
         Mode::Run => "run",
         Mode::Restrict => "restrict",
+        Mode::Hold => "hold",
         Mode::Freeze => "freeze",
         Mode::Kill => "kill",
     }
@@ -42,9 +57,25 @@ pub fn action_name(action: Action) -> &'static str {
     }
 }
 
+pub fn parse_mode(value: &str) -> Option<Mode> {
+    match value {
+        "run" => Some(Mode::Run),
+        "restrict" => Some(Mode::Restrict),
+        "hold" => Some(Mode::Hold),
+        "freeze" => Some(Mode::Freeze),
+        "kill" => Some(Mode::Kill),
+        _ => None,
+    }
+}
+
+pub fn reset_message(run_id: &str, counter: u64, from_mode: &str, not_after_ms: u64, ttl_ms: u64) -> String {
+    format!("reset-v2|{run_id}|{counter}|{from_mode}|{not_after_ms}|{ttl_ms}")
+}
+
 pub fn parse_level(value: &str) -> Option<Level> {
     match value {
         "restrict" => Some(Level::Restrict),
+        "hold" => Some(Level::Hold),
         "freeze" => Some(Level::Freeze),
         "kill" => Some(Level::Kill),
         _ => None,

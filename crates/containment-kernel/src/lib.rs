@@ -10,6 +10,9 @@
 pub enum Mode {
     Run,
     Restrict,
+    /// Stopped for review. Hold has no deadline, so it cannot escalate by itself.
+    Hold,
+    /// Stopped with a fixed deadline that escalates to Kill.
     Freeze,
     Kill,
 }
@@ -18,6 +21,7 @@ pub enum Mode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Level {
     Restrict,
+    Hold,
     Freeze,
     Kill,
 }
@@ -42,15 +46,26 @@ pub struct Config {
     pub freeze_grace_ms: u64,
 }
 
-/// Mode plus its deadline. Run and Restrict use the lease deadline.
-/// Freeze uses the deadline for escalation to Kill.
+/// Complete kernel state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Control {
     pub mode: Mode,
+    /// Lease deadline in Run and Restrict, escalation deadline in Freeze.
     pub deadline_ms: u64,
+    /// Latest time the kernel has observed.
+    pub clock_ms: u64,
+    /// Highest accepted reset counter.
+    pub reset_counter: u64,
 }
 
-/// Verified input to the kernel.
+impl Control {
+    pub const fn new(mode: Mode, deadline_ms: u64) -> Self {
+        Self { mode, deadline_ms, clock_ms: 0, reset_counter: 0 }
+    }
+}
+
+/// Verified input to the kernel. `signed` is true only after the host has
+/// verified the signature over every signed reset field.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Event {
     Tick { now_ms: u64 },
@@ -58,7 +73,27 @@ pub enum Event {
     Classifier { now_ms: u64, level: Level },
     HardRule { now_ms: u64, level: Level },
     AgentRequest { now_ms: u64 },
-    Reset { now_ms: u64, signed: bool, ttl_ms: u64 },
+    Reset {
+        now_ms: u64,
+        signed: bool,
+        counter: u64,
+        from_mode: Mode,
+        not_after_ms: u64,
+        ttl_ms: u64,
+    },
+}
+
+impl Event {
+    pub const fn now_ms(self) -> u64 {
+        match self {
+            Event::Tick { now_ms }
+            | Event::Renew { now_ms, .. }
+            | Event::Classifier { now_ms, .. }
+            | Event::HardRule { now_ms, .. }
+            | Event::AgentRequest { now_ms }
+            | Event::Reset { now_ms, .. } => now_ms,
+        }
+    }
 }
 
 /// Access category checked at the host boundary.
@@ -112,6 +147,10 @@ impl Actions {
         self.len == 0
     }
 
+    pub fn contains(&self, action: Action) -> bool {
+        self.iter().any(|value| value == action)
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = Action> + '_ {
         self.items[..self.len].iter().filter_map(|value| *value)
     }
@@ -124,7 +163,7 @@ pub struct StepResult {
     pub actions: Actions,
 }
 
-const FREEZE_PLAN: &[Action] = &[Action::RevokeSecrets, Action::BlockEgress, Action::FreezeProcesses];
+const STOP_PLAN: &[Action] = &[Action::RevokeSecrets, Action::BlockEgress, Action::FreezeProcesses];
 const KILL_PLAN: &[Action] = &[
     Action::RevokeSecrets,
     Action::BlockEgress,
@@ -132,7 +171,19 @@ const KILL_PLAN: &[Action] = &[
     Action::KillProcesses,
 ];
 
-fn raise(config: Config, now_ms: u64, control: Control, level: Level) -> StepResult {
+#[derive(Clone, Copy)]
+struct Core {
+    mode: Mode,
+    deadline_ms: u64,
+}
+
+#[derive(Clone, Copy)]
+struct CoreResult {
+    core: Core,
+    actions: Actions,
+}
+
+fn raise(config: Config, now_ms: u64, control: Core, level: Level) -> CoreResult {
     let freeze_deadline = now_ms.saturating_add(config.freeze_grace_ms);
     let (mode, deadline_ms, plan): (Mode, u64, &[Action]) = match (control.mode, level) {
         (Mode::Run, Level::Restrict) => (
@@ -140,78 +191,117 @@ fn raise(config: Config, now_ms: u64, control: Control, level: Level) -> StepRes
             control.deadline_ms,
             &[Action::RevokeSecrets, Action::NarrowEgress],
         ),
-        (Mode::Run | Mode::Restrict, Level::Freeze) => (Mode::Freeze, freeze_deadline, FREEZE_PLAN),
+        (Mode::Run | Mode::Restrict, Level::Hold) => (Mode::Hold, 0, STOP_PLAN),
+        (Mode::Run | Mode::Restrict, Level::Freeze) => (Mode::Freeze, freeze_deadline, STOP_PLAN),
         (Mode::Run | Mode::Restrict, Level::Kill) => (Mode::Kill, 0, KILL_PLAN),
-        (Mode::Freeze, Level::Kill) => (Mode::Kill, 0, &[Action::KillProcesses]),
+        (Mode::Hold, Level::Freeze) => (Mode::Freeze, freeze_deadline, &[]),
+        (Mode::Hold | Mode::Freeze, Level::Kill) => (Mode::Kill, 0, &[Action::KillProcesses]),
         (mode, _) => (mode, control.deadline_ms, &[]),
     };
-    StepResult {
-        control: Control { mode, deadline_ms },
-        actions: Actions::from_slice(plan),
-    }
+    CoreResult { core: Core { mode, deadline_ms }, actions: Actions::from_slice(plan) }
 }
 
-fn settle(config: Config, now_ms: u64, control: Control) -> StepResult {
+fn settle(config: Config, now_ms: u64, control: Core) -> CoreResult {
+    let unchanged = CoreResult { core: control, actions: Actions::none() };
     if now_ms < control.deadline_ms {
-        return StepResult { control, actions: Actions::none() };
+        return unchanged;
     }
     match control.mode {
         Mode::Run | Mode::Restrict => raise(config, now_ms, control, Level::Freeze),
         Mode::Freeze => raise(config, now_ms, control, Level::Kill),
-        Mode::Kill => StepResult { control, actions: Actions::none() },
+        Mode::Hold | Mode::Kill => unchanged,
     }
 }
 
-fn raise_after(config: Config, now_ms: u64, level: Level, first: StepResult) -> StepResult {
-    let second = raise(config, now_ms, first.control, level);
+fn raise_after(config: Config, now_ms: u64, level: Level, first: CoreResult) -> CoreResult {
+    let second = raise(config, now_ms, first.core, level);
     let mut actions = first.actions;
     for action in second.actions.iter() {
         actions.extend(&[action]);
     }
-    StepResult { control: second.control, actions }
+    CoreResult { core: second.core, actions }
 }
 
 fn bounded_deadline(config: Config, now_ms: u64, ttl_ms: u64) -> u64 {
     now_ms.saturating_add(ttl_ms.min(config.max_lease_ms))
 }
 
+fn cap_classifier(level: Level) -> Level {
+    match level {
+        Level::Restrict => Level::Restrict,
+        Level::Hold | Level::Freeze | Level::Kill => Level::Hold,
+    }
+}
+
+fn reset_actions(mode: Mode) -> &'static [Action] {
+    match mode {
+        Mode::Run => &[],
+        Mode::Restrict => &[Action::RestoreAuthority],
+        Mode::Hold | Mode::Freeze => &[Action::ThawProcesses, Action::RestoreAuthority],
+        Mode::Kill => &[Action::RecreateSandbox, Action::RestoreAuthority],
+    }
+}
+
+/// Returns the time used for a timestamp. Stale time is clamped to the clock.
+pub const fn effective_time(now_ms: u64, clock_ms: u64) -> u64 {
+    if now_ms < clock_ms {
+        clock_ms
+    } else {
+        now_ms
+    }
+}
+
+fn reset_accepted(control: Control, event: Event, at_ms: u64) -> Option<u64> {
+    let Event::Reset { signed: true, counter, from_mode, not_after_ms, .. } = event else {
+        return None;
+    };
+    let ok = control.mode != Mode::Run
+        && control.reset_counter < counter
+        && from_mode == control.mode
+        && at_ms <= not_after_ms;
+    ok.then_some(counter)
+}
+
 /// Applies one verified event.
 pub fn step(config: Config, control: Control, event: Event) -> StepResult {
-    match event {
-        Event::Tick { now_ms } | Event::AgentRequest { now_ms } => settle(config, now_ms, control),
-        Event::Renew { now_ms, ttl_ms } => {
-            let mut result = settle(config, now_ms, control);
-            if matches!(result.control.mode, Mode::Run | Mode::Restrict) {
-                result.control.deadline_ms = bounded_deadline(config, now_ms, ttl_ms);
+    let at_ms = effective_time(event.now_ms(), control.clock_ms);
+    let core = Core { mode: control.mode, deadline_ms: control.deadline_ms };
+    let accepted = reset_accepted(control, event, at_ms);
+    let result = match event {
+        Event::Tick { .. } | Event::AgentRequest { .. } => settle(config, at_ms, core),
+        Event::Renew { ttl_ms, .. } => {
+            let mut result = settle(config, at_ms, core);
+            if matches!(result.core.mode, Mode::Run | Mode::Restrict) {
+                result.core.deadline_ms = bounded_deadline(config, at_ms, ttl_ms);
             }
             result
         }
-        Event::Classifier { now_ms, level } => {
-            let capped = if level == Level::Kill { Level::Freeze } else { level };
-            raise_after(config, now_ms, capped, settle(config, now_ms, control))
+        Event::Classifier { level, .. } => {
+            raise_after(config, at_ms, cap_classifier(level), settle(config, at_ms, core))
         }
-        Event::HardRule { now_ms, level } => {
-            raise_after(config, now_ms, level, settle(config, now_ms, control))
+        Event::HardRule { level, .. } => {
+            raise_after(config, at_ms, level, settle(config, at_ms, core))
         }
-        Event::Reset { now_ms, signed: true, ttl_ms } => {
-            let plan: &[Action] = match control.mode {
-                Mode::Run => &[],
-                Mode::Restrict => &[Action::RestoreAuthority],
-                Mode::Freeze => &[Action::ThawProcesses, Action::RestoreAuthority],
-                Mode::Kill => &[Action::RecreateSandbox, Action::RestoreAuthority],
-            };
-            StepResult {
-                control: Control { mode: Mode::Run, deadline_ms: bounded_deadline(config, now_ms, ttl_ms) },
-                actions: Actions::from_slice(plan),
-            }
-        }
-        Event::Reset { now_ms, signed: false, .. } => settle(config, now_ms, control),
+        Event::Reset { ttl_ms, .. } if accepted.is_some() => CoreResult {
+            core: Core { mode: Mode::Run, deadline_ms: bounded_deadline(config, at_ms, ttl_ms) },
+            actions: Actions::from_slice(reset_actions(control.mode)),
+        },
+        Event::Reset { .. } => settle(config, at_ms, core),
+    };
+    StepResult {
+        control: Control {
+            mode: result.core.mode,
+            deadline_ms: result.core.deadline_ms,
+            clock_ms: at_ms,
+            reset_counter: accepted.unwrap_or(control.reset_counter),
+        },
+        actions: result.actions,
     }
 }
 
 /// Checks one access request. An expired lease is denied even before a tick.
 pub fn authorize(now_ms: u64, control: Control, request: AccessRequest) -> bool {
-    if now_ms >= control.deadline_ms {
+    if effective_time(now_ms, control.clock_ms) >= control.deadline_ms {
         return false;
     }
     match control.mode {
@@ -219,6 +309,6 @@ pub fn authorize(now_ms: u64, control: Control, request: AccessRequest) -> bool 
         Mode::Restrict => {
             request.kind == AccessKind::Egress && request.granted && request.baseline
         }
-        Mode::Freeze | Mode::Kill => false,
+        Mode::Hold | Mode::Freeze | Mode::Kill => false,
     }
 }

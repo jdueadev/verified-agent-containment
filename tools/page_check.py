@@ -10,7 +10,10 @@ tmp = Path(tempfile.mkdtemp()) / "index.html"
 tmp.write_text(html)
 report = []
 
-def run(browser, native, scheme, width):
+def mode(page):
+    return page.evaluate("[...document.querySelectorAll('.step')].findIndex(e => e.classList.contains('on'))")
+
+def run(browser, native, scheme, width, full):
     context = browser.new_context(viewport={"width": width, "height": 900}, color_scheme=scheme)
     page = context.new_page()
     errors = []
@@ -20,34 +23,45 @@ def run(browser, native, scheme, width):
         page.add_init_script("WebAssembly.instantiate=()=>Promise.reject(new Error('blocked'))")
     page.goto(tmp.as_uri())
     page.wait_for_function("document.getElementById('engine').textContent.includes('kernel') && !document.getElementById('engine').textContent.includes('Loading')")
-    engine = page.inner_text("#engine")
-    page.select_option("#scenario", "classifier")
-    page.click("#runScenario")
-    page.wait_for_selector(".state.freeze.active", timeout=4000)
-    page.wait_for_timeout(300)
-    classifier_kill = page.locator(".state.kill.active").count()
-    page.select_option("#scenario", "recovery")
-    page.click("#runScenario")
-    page.wait_for_selector(".state.freeze.active", timeout=4000)
-    page.wait_for_selector(".state.run.active", timeout=5000)
+    item = {"native": native, "scheme": scheme, "width": width, "engine": page.inner_text("#engine")}
+    page.click("#sc-classifier")
+    page.wait_for_function("document.querySelector('.step.m2').classList.contains('on')", timeout=4000)
+    page.wait_for_timeout(4500)
+    item["classifier_stays_hold"] = mode(page) == 2
+    page.click("#sc-reset")
+    page.wait_for_timeout(4600)
     log = page.inner_text("#log")
-    page.click("#fuzz")
-    page.wait_for_function("document.getElementById('fuzz').textContent.startsWith('Tested')", timeout=30000)
-    laws = page.locator("#laws code").all_inner_texts()
+    item["reset_story"] = log.count("Reset rejected") >= 4 and log.count("Signed reset accepted") == 1
+    page.click("#sc-dead")
+    page.wait_for_selector("#failstop:not([hidden])", timeout=15000)
+    item["fail_stop_shown"] = True
+    if full:
+        page.click("#fuzz")
+        page.wait_for_function("document.getElementById('fuzzResult').textContent.includes('transitions checked') || document.getElementById('fuzzResult').textContent.includes('Failures')", timeout=60000)
+        item["safe_kernel"] = page.inner_text("#fuzzResult")
+        page.click("#runAll")
+        page.wait_for_function("document.getElementById('runAll').textContent.startsWith('Caught')", timeout=120000)
+        item["bench"] = page.inner_text("#runAll")
+        item["bench_missed"] = page.locator("#bench .pill.bad").count()
     page.keyboard.press("Tab")
-    focus = page.evaluate("document.activeElement && document.activeElement.tagName")
-    overflow = page.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth")
+    item["focus"] = page.evaluate("document.activeElement && document.activeElement.tagName")
+    item["overflow"] = page.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth")
     if shots:
         shots.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=str(shots / f"{'native' if native else 'fallback'}-{scheme}-{width}.png"), full_page=True)
     context.close()
-    item = {"native": native, "scheme": scheme, "width": width, "engine": engine, "classifier_kill": classifier_kill, "signed_reset_seen": "Signed reset" in log and "Forged reset" in log, "laws": laws, "focus": focus, "overflow": overflow, "errors": errors}
+    item["errors"] = errors
     report.append(item)
-    return classifier_kill == 0 and item["signed_reset_seen"] and len(laws) == 6 and all(x == "0 failures" for x in laws) and focus and overflow <= 0 and not errors and ("WebAssembly kernel" in engine if native else "JavaScript build" in engine)
+    ok = item["classifier_stays_hold"] and item["reset_story"] and item["focus"] and item["overflow"] <= 0 and not errors
+    ok = ok and (("WebAssembly" in item["engine"]) if native else ("JavaScript build" in item["engine"]))
+    if full:
+        total = len(json.loads(page_file.read_text().split("const KERNELS=")[1].split(";const EVIDENCE")[0])["variants"])
+        ok = ok and "0 law failures" in item["safe_kernel"] and item["bench"] == f"Caught {total} of {total}" and item["bench_missed"] == 0
+    return ok
 
 with sync_playwright() as p:
     browser = p.chromium.launch()
-    ok = [run(browser, True, "light", 1280), run(browser, True, "dark", 400), run(browser, False, "light", 1280)]
+    ok = [run(browser, True, "light", 1280, True), run(browser, True, "dark", 400, False), run(browser, False, "light", 1280, True)]
     browser.close()
 print(json.dumps(report, indent=1))
 sys.exit(0 if all(ok) else 1)

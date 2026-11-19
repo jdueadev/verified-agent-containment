@@ -1,3 +1,4 @@
 target/
 results/*.tmp
 *.wasm.tmp
+__pycache__/

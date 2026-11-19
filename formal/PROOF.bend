@@ -44,94 +44,171 @@ def add_mono(now: Nat, -a: Nat, -b: Nat, h: {Nat.is_le(a, b) == True{} : Bool}) 
     case 1n+p:
       add_mono(p, a, b, h)
 
-def closed_settle(+cfg: K.KernelConfig, inn: Bool, +now: Nat, m: K.ContainmentMode, +d: Nat, h: {inn == False{} : Bool}) -> {Laws.is_live(Laws.mode_of(K.settle_with(cfg, inn, now, m, d))) == False{} : Bool}:
+def eq_refl(n: Nat) -> {Nat.is_eq(n, n) == True{} : Bool}:
+  match n:
+    case 0n:
+      {==}
+    case 1n+p:
+      eq_refl(p)
+
+def le_refl(n: Nat) -> {Nat.is_le(n, n) == True{} : Bool}:
+  match n:
+    case 0n:
+      {==}
+    case 1n+p:
+      le_refl(p)
+
+def lt_irrefl(n: Nat) -> {Nat.is_lt(n, n) == False{} : Bool}:
+  match n:
+    case 0n:
+      {==}
+    case 1n+p:
+      lt_irrefl(p)
+
+def not_lt_le(a: Nat, +b: Nat, h: {Nat.is_lt(a, b) == False{} : Bool}) -> {Nat.is_le(b, a) == True{} : Bool}:
+  match a b:
+    case 0n 0n:
+      {==}
+    case 0n 1n+q:
+      Empty.absurd({Nat.is_le(1n+q, 0n) == True{} : Bool}, true_is_not_false(h))
+    case 1n+p 0n:
+      {==}
+    case 1n+p 1n+q:
+      not_lt_le(p, q, h)
+
+def eff_le_with(stale: Bool, +now: Nat, +clock: Nat, h: {Nat.is_lt(now, clock) == stale : Bool}) -> {Nat.is_le(clock, K.effective_with(stale, now, clock)) == True{} : Bool}:
+  match stale:
+    case True{}:
+      le_refl(clock)
+    case False{}:
+      not_lt_le(now, clock, h)
+
+def eff_le(+now: Nat, +clock: Nat) -> {Nat.is_le(clock, K.effective_time(now, clock)) == True{} : Bool}:
+  eff_le_with(Nat.is_lt(now, clock), now, clock, {==})
+
+def eff_stale(stale: Bool, +now: Nat, +clock: Nat, h: {stale == True{} : Bool}) -> {K.effective_with(stale, now, clock) == clock : Nat}:
+  match stale:
+    case True{}:
+      {==}
+    case False{}:
+      Empty.absurd({K.effective_with(False{}, now, clock) == clock : Nat}, false_is_not_true(h))
+
+def closed_settle(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, h: {inn == False{} : Bool}) -> {Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, m, d)))) == False{} : Bool}:
   match inn:
     case True{}:
       match m:
         case K.ModeRun{}:
-          Empty.absurd({Laws.is_live(Laws.mode_of(K.settle_with(cfg, True{}, now, K.ModeRun{}, d))) == False{} : Bool}, true_is_not_false(h))
+          Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, True{}, at, K.ModeRun{}, d)))) == False{} : Bool}, true_is_not_false(h))
         case K.ModeRestrict{}:
-          Empty.absurd({Laws.is_live(Laws.mode_of(K.settle_with(cfg, True{}, now, K.ModeRestrict{}, d))) == False{} : Bool}, true_is_not_false(h))
+          Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, True{}, at, K.ModeRestrict{}, d)))) == False{} : Bool}, true_is_not_false(h))
+        case K.ModeHold{}:
+          Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, True{}, at, K.ModeHold{}, d)))) == False{} : Bool}, true_is_not_false(h))
         case K.ModeFreeze{}:
-          Empty.absurd({Laws.is_live(Laws.mode_of(K.settle_with(cfg, True{}, now, K.ModeFreeze{}, d))) == False{} : Bool}, true_is_not_false(h))
+          Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))) == False{} : Bool}, true_is_not_false(h))
         case K.ModeKill{}:
-          Empty.absurd({Laws.is_live(Laws.mode_of(K.settle_with(cfg, True{}, now, K.ModeKill{}, d))) == False{} : Bool}, true_is_not_false(h))
+          Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))) == False{} : Bool}, true_is_not_false(h))
     case False{}:
       match m:
         case K.ModeRun{}:
           {==}
         case K.ModeRestrict{}:
           {==}
+        case K.ModeHold{}:
+          {==}
         case K.ModeFreeze{}:
           {==}
         case K.ModeKill{}:
           {==}
 
-def closed_renew(+cfg: K.KernelConfig, inn: Bool, +now: Nat, m: K.ContainmentMode, +d: Nat, ttl: Nat, h: {inn == False{} : Bool}) -> {Laws.is_live(Laws.mode_of(K.renew_after(cfg, now, ttl, K.settle_with(cfg, inn, now, m, d)))) == False{} : Bool}:
+def closed_renew(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +ttl: Nat, h: {inn == False{} : Bool}) -> {Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, m, d))))) == False{} : Bool}:
   match inn:
     case True{}:
       match m:
         case K.ModeRun{}:
-          Empty.absurd({Laws.is_live(Laws.mode_of(K.renew_after(cfg, now, ttl, K.settle_with(cfg, True{}, now, K.ModeRun{}, d)))) == False{} : Bool}, true_is_not_false(h))
+          Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, True{}, at, K.ModeRun{}, d))))) == False{} : Bool}, true_is_not_false(h))
         case K.ModeRestrict{}:
-          Empty.absurd({Laws.is_live(Laws.mode_of(K.renew_after(cfg, now, ttl, K.settle_with(cfg, True{}, now, K.ModeRestrict{}, d)))) == False{} : Bool}, true_is_not_false(h))
+          Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, True{}, at, K.ModeRestrict{}, d))))) == False{} : Bool}, true_is_not_false(h))
+        case K.ModeHold{}:
+          Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))) == False{} : Bool}, true_is_not_false(h))
         case K.ModeFreeze{}:
-          Empty.absurd({Laws.is_live(Laws.mode_of(K.renew_after(cfg, now, ttl, K.settle_with(cfg, True{}, now, K.ModeFreeze{}, d)))) == False{} : Bool}, true_is_not_false(h))
+          Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == False{} : Bool}, true_is_not_false(h))
         case K.ModeKill{}:
-          Empty.absurd({Laws.is_live(Laws.mode_of(K.renew_after(cfg, now, ttl, K.settle_with(cfg, True{}, now, K.ModeKill{}, d)))) == False{} : Bool}, true_is_not_false(h))
+          Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))) == False{} : Bool}, true_is_not_false(h))
     case False{}:
       match m:
         case K.ModeRun{}:
           {==}
         case K.ModeRestrict{}:
           {==}
+        case K.ModeHold{}:
+          {==}
         case K.ModeFreeze{}:
           {==}
         case K.ModeKill{}:
           {==}
 
-def closed_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, m: K.ContainmentMode, +d: Nat, level: K.SeverityLevel, h: {inn == False{} : Bool}) -> {Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(level), K.settle_with(cfg, inn, now, m, d)))) == False{} : Bool}:
+def closed_classifier(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel, h: {inn == False{} : Bool}) -> {Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, m, d))))) == False{} : Bool}:
   match inn:
     case True{}:
       match m:
         case K.ModeRun{}:
           match level:
             case K.ToRestrict{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, now, K.ModeRun{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeRun{}, d))))) == False{} : Bool}, true_is_not_false(h))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeRun{}, d))))) == False{} : Bool}, true_is_not_false(h))
             case K.ToFreeze{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, now, K.ModeRun{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeRun{}, d))))) == False{} : Bool}, true_is_not_false(h))
             case K.ToKill{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, now, K.ModeRun{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeRun{}, d))))) == False{} : Bool}, true_is_not_false(h))
         case K.ModeRestrict{}:
           match level:
             case K.ToRestrict{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, now, K.ModeRestrict{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeRestrict{}, d))))) == False{} : Bool}, true_is_not_false(h))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeRestrict{}, d))))) == False{} : Bool}, true_is_not_false(h))
             case K.ToFreeze{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, now, K.ModeRestrict{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeRestrict{}, d))))) == False{} : Bool}, true_is_not_false(h))
             case K.ToKill{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, now, K.ModeRestrict{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeRestrict{}, d))))) == False{} : Bool}, true_is_not_false(h))
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))) == False{} : Bool}, true_is_not_false(h))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))) == False{} : Bool}, true_is_not_false(h))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))) == False{} : Bool}, true_is_not_false(h))
+            case K.ToKill{}:
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))) == False{} : Bool}, true_is_not_false(h))
         case K.ModeFreeze{}:
           match level:
             case K.ToRestrict{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, now, K.ModeFreeze{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == False{} : Bool}, true_is_not_false(h))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == False{} : Bool}, true_is_not_false(h))
             case K.ToFreeze{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, now, K.ModeFreeze{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == False{} : Bool}, true_is_not_false(h))
             case K.ToKill{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, now, K.ModeFreeze{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == False{} : Bool}, true_is_not_false(h))
         case K.ModeKill{}:
           match level:
             case K.ToRestrict{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, now, K.ModeKill{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))) == False{} : Bool}, true_is_not_false(h))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))) == False{} : Bool}, true_is_not_false(h))
             case K.ToFreeze{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, now, K.ModeKill{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))) == False{} : Bool}, true_is_not_false(h))
             case K.ToKill{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, now, K.ModeKill{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))) == False{} : Bool}, true_is_not_false(h))
     case False{}:
       match m:
         case K.ModeRun{}:
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
@@ -139,6 +216,18 @@ def closed_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, m: K.Containme
         case K.ModeRestrict{}:
           match level:
             case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
               {==}
             case K.ToFreeze{}:
               {==}
@@ -148,6 +237,8 @@ def closed_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, m: K.Containme
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
@@ -156,53 +247,75 @@ def closed_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, m: K.Containme
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
               {==}
 
-def closed_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, m: K.ContainmentMode, +d: Nat, level: K.SeverityLevel, h: {inn == False{} : Bool}) -> {Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, level, K.settle_with(cfg, inn, now, m, d)))) == False{} : Bool}:
+def closed_hard(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel, h: {inn == False{} : Bool}) -> {Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, m, d))))) == False{} : Bool}:
   match inn:
     case True{}:
       match m:
         case K.ModeRun{}:
           match level:
             case K.ToRestrict{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.ToRestrict{}, K.settle_with(cfg, True{}, now, K.ModeRun{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, True{}, at, K.ModeRun{}, d))))) == False{} : Bool}, true_is_not_false(h))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, True{}, at, K.ModeRun{}, d))))) == False{} : Bool}, true_is_not_false(h))
             case K.ToFreeze{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.ToFreeze{}, K.settle_with(cfg, True{}, now, K.ModeRun{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, True{}, at, K.ModeRun{}, d))))) == False{} : Bool}, true_is_not_false(h))
             case K.ToKill{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.ToKill{}, K.settle_with(cfg, True{}, now, K.ModeRun{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, True{}, at, K.ModeRun{}, d))))) == False{} : Bool}, true_is_not_false(h))
         case K.ModeRestrict{}:
           match level:
             case K.ToRestrict{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.ToRestrict{}, K.settle_with(cfg, True{}, now, K.ModeRestrict{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, True{}, at, K.ModeRestrict{}, d))))) == False{} : Bool}, true_is_not_false(h))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, True{}, at, K.ModeRestrict{}, d))))) == False{} : Bool}, true_is_not_false(h))
             case K.ToFreeze{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.ToFreeze{}, K.settle_with(cfg, True{}, now, K.ModeRestrict{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, True{}, at, K.ModeRestrict{}, d))))) == False{} : Bool}, true_is_not_false(h))
             case K.ToKill{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.ToKill{}, K.settle_with(cfg, True{}, now, K.ModeRestrict{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, True{}, at, K.ModeRestrict{}, d))))) == False{} : Bool}, true_is_not_false(h))
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))) == False{} : Bool}, true_is_not_false(h))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))) == False{} : Bool}, true_is_not_false(h))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))) == False{} : Bool}, true_is_not_false(h))
+            case K.ToKill{}:
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))) == False{} : Bool}, true_is_not_false(h))
         case K.ModeFreeze{}:
           match level:
             case K.ToRestrict{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.ToRestrict{}, K.settle_with(cfg, True{}, now, K.ModeFreeze{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == False{} : Bool}, true_is_not_false(h))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == False{} : Bool}, true_is_not_false(h))
             case K.ToFreeze{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.ToFreeze{}, K.settle_with(cfg, True{}, now, K.ModeFreeze{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == False{} : Bool}, true_is_not_false(h))
             case K.ToKill{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.ToKill{}, K.settle_with(cfg, True{}, now, K.ModeFreeze{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == False{} : Bool}, true_is_not_false(h))
         case K.ModeKill{}:
           match level:
             case K.ToRestrict{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.ToRestrict{}, K.settle_with(cfg, True{}, now, K.ModeKill{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))) == False{} : Bool}, true_is_not_false(h))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))) == False{} : Bool}, true_is_not_false(h))
             case K.ToFreeze{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.ToFreeze{}, K.settle_with(cfg, True{}, now, K.ModeKill{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))) == False{} : Bool}, true_is_not_false(h))
             case K.ToKill{}:
-              Empty.absurd({Laws.is_live(Laws.mode_of(K.raise_after(cfg, now, K.ToKill{}, K.settle_with(cfg, True{}, now, K.ModeKill{}, d)))) == False{} : Bool}, true_is_not_false(h))
+              Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))) == False{} : Bool}, true_is_not_false(h))
     case False{}:
       match m:
         case K.ModeRun{}:
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
@@ -210,6 +323,18 @@ def closed_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, m: K.ContainmentMode
         case K.ModeRestrict{}:
           match level:
             case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
               {==}
             case K.ToFreeze{}:
               {==}
@@ -219,6 +344,8 @@ def closed_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, m: K.ContainmentMode
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
@@ -227,12 +354,36 @@ def closed_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, m: K.ContainmentMode
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
               {==}
 
-def tight_settle(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMode, +d: Nat) -> {Laws.rank_at_least(Laws.mode_of(K.settle_with(cfg, inn, now, m, d)), m) == True{} : Bool}:
+def closed_reset(+cfg: K.KernelConfig, acc: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +counter: Nat, +n: Nat, +ttl: Nat, h: {Nat.is_lt(at, d) == False{} : Bool}, r: {acc == False{} : Bool}) -> {Laws.is_live(Laws.mode_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, m, d)))) == False{} : Bool}:
+  match acc:
+    case True{}:
+      Empty.absurd({Laws.is_live(Laws.mode_of(K.seal(at, K.next_counter_with(True{}, counter, n), K.reset_with(cfg, True{}, at, ttl, m, d)))) == False{} : Bool}, true_is_not_false(r))
+    case False{}:
+      closed_settle(cfg, Nat.is_lt(at, d), at, m, d, counter, h)
+
+def Laws.fail_closed(cfg, m, d, clock, counter, e, h, r):
+  match e:
+    case K.ClockTick{+now}:
+      closed_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, h)
+    case K.AgentRequest{+now}:
+      closed_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, h)
+    case K.Renew{+now, +ttl}:
+      closed_renew(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, ttl, h)
+    case K.Classifier{+now, +level}:
+      closed_classifier(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level, h)
+    case K.HardRule{+now, +level}:
+      closed_hard(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level, h)
+    case K.Reset{+now, +s, +n, +f, +na, +ttl}:
+      closed_reset(cfg, K.reset_ok(m, counter, s, n, f, na, K.effective_time(now, clock)), K.effective_time(now, clock), m, d, counter, n, ttl, h, r)
+
+def tight_settle(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat) -> {Laws.rank_at_least(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, m, d))), m) == True{} : Bool}:
   match inn:
     case True{}:
       match m:
@@ -240,6 +391,8 @@ def tight_settle(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMo
           {==}
         case K.ModeRestrict{}:
           {==}
+        case K.ModeHold{}:
+          {==}
         case K.ModeFreeze{}:
           {==}
         case K.ModeKill{}:
@@ -250,12 +403,14 @@ def tight_settle(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMo
           {==}
         case K.ModeRestrict{}:
           {==}
+        case K.ModeHold{}:
+          {==}
         case K.ModeFreeze{}:
           {==}
         case K.ModeKill{}:
           {==}
 
-def tight_renew(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMode, +d: Nat, ttl: Nat) -> {Laws.rank_at_least(Laws.mode_of(K.renew_after(cfg, now, ttl, K.settle_with(cfg, inn, now, m, d))), m) == True{} : Bool}:
+def tight_renew(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +ttl: Nat) -> {Laws.rank_at_least(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, m, d)))), m) == True{} : Bool}:
   match inn:
     case True{}:
       match m:
@@ -263,6 +418,8 @@ def tight_renew(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMod
           {==}
         case K.ModeRestrict{}:
           {==}
+        case K.ModeHold{}:
+          {==}
         case K.ModeFreeze{}:
           {==}
         case K.ModeKill{}:
@@ -273,12 +430,14 @@ def tight_renew(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMod
           {==}
         case K.ModeRestrict{}:
           {==}
+        case K.ModeHold{}:
+          {==}
         case K.ModeFreeze{}:
           {==}
         case K.ModeKill{}:
           {==}
 
-def tight_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMode, +d: Nat, level: K.SeverityLevel) -> {Laws.rank_at_least(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(level), K.settle_with(cfg, inn, now, m, d))), m) == True{} : Bool}:
+def tight_classifier(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel) -> {Laws.rank_at_least(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, m, d)))), m) == True{} : Bool}:
   match inn:
     case True{}:
       match m:
@@ -286,6 +445,8 @@ def tight_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.Containme
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
@@ -293,6 +454,18 @@ def tight_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.Containme
         case K.ModeRestrict{}:
           match level:
             case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
               {==}
             case K.ToFreeze{}:
               {==}
@@ -302,6 +475,8 @@ def tight_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.Containme
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
@@ -309,6 +484,8 @@ def tight_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.Containme
         case K.ModeKill{}:
           match level:
             case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
               {==}
             case K.ToFreeze{}:
               {==}
@@ -320,6 +497,8 @@ def tight_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.Containme
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
@@ -327,6 +506,18 @@ def tight_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.Containme
         case K.ModeRestrict{}:
           match level:
             case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
               {==}
             case K.ToFreeze{}:
               {==}
@@ -336,6 +527,8 @@ def tight_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.Containme
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
@@ -344,12 +537,14 @@ def tight_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.Containme
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
               {==}
 
-def tight_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMode, +d: Nat, level: K.SeverityLevel) -> {Laws.rank_at_least(Laws.mode_of(K.raise_after(cfg, now, level, K.settle_with(cfg, inn, now, m, d))), m) == True{} : Bool}:
+def tight_hard(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel) -> {Laws.rank_at_least(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, m, d)))), m) == True{} : Bool}:
   match inn:
     case True{}:
       match m:
@@ -357,6 +552,8 @@ def tight_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMode
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
@@ -364,6 +561,18 @@ def tight_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMode
         case K.ModeRestrict{}:
           match level:
             case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
               {==}
             case K.ToFreeze{}:
               {==}
@@ -373,6 +582,8 @@ def tight_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMode
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
@@ -380,6 +591,8 @@ def tight_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMode
         case K.ModeKill{}:
           match level:
             case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
               {==}
             case K.ToFreeze{}:
               {==}
@@ -391,6 +604,8 @@ def tight_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMode
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
@@ -398,6 +613,18 @@ def tight_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMode
         case K.ModeRestrict{}:
           match level:
             case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
               {==}
             case K.ToFreeze{}:
               {==}
@@ -407,6 +634,8 @@ def tight_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMode
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
@@ -415,30 +644,1248 @@ def tight_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMode
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
               {==}
 
-def killed_settle(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +d: Nat) -> {Laws.is_kill(Laws.mode_of(K.settle_with(cfg, inn, now, K.ModeKill{}, d))) == True{} : Bool}:
+def tight_reset(+cfg: K.KernelConfig, acc: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +counter: Nat, +n: Nat, +ttl: Nat, r: {acc == False{} : Bool}) -> {Laws.rank_at_least(Laws.mode_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, m, d))), m) == True{} : Bool}:
+  match acc:
+    case True{}:
+      Empty.absurd({Laws.rank_at_least(Laws.mode_of(K.seal(at, K.next_counter_with(True{}, counter, n), K.reset_with(cfg, True{}, at, ttl, m, d))), m) == True{} : Bool}, true_is_not_false(r))
+    case False{}:
+      tight_settle(cfg, Nat.is_lt(at, d), at, m, d, counter)
+
+def Laws.tighten_only(cfg, m, d, clock, counter, e, r):
+  match e:
+    case K.ClockTick{+now}:
+      tight_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter)
+    case K.AgentRequest{+now}:
+      tight_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter)
+    case K.Renew{+now, +ttl}:
+      tight_renew(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, ttl)
+    case K.Classifier{+now, +level}:
+      tight_classifier(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level)
+    case K.HardRule{+now, +level}:
+      tight_hard(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level)
+    case K.Reset{+now, +s, +n, +f, +na, +ttl}:
+      tight_reset(cfg, K.reset_ok(m, counter, s, n, f, na, K.effective_time(now, clock)), K.effective_time(now, clock), m, d, counter, n, ttl, r)
+
+def rank_refl(+m: K.ContainmentMode) -> {Laws.rank_at_least(m, m) == True{} : Bool}:
+  match m:
+    case K.ModeRun{}:
+      {==}
+    case K.ModeRestrict{}:
+      {==}
+    case K.ModeHold{}:
+      {==}
+    case K.ModeFreeze{}:
+      {==}
+    case K.ModeKill{}:
+      {==}
+
+def rank_trans(+a: K.ContainmentMode, +b: K.ContainmentMode, +c: K.ContainmentMode, x: {Laws.rank_at_least(a, b) == True{} : Bool}, y: {Laws.rank_at_least(b, c) == True{} : Bool}) -> {Laws.rank_at_least(a, c) == True{} : Bool}:
+  match a:
+    case K.ModeRun{}:
+      match b:
+        case K.ModeRun{}:
+          match c:
+            case K.ModeRun{}:
+              {==}
+            case K.ModeRestrict{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeHold{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeHold{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
+        case K.ModeRestrict{}:
+          match c:
+            case K.ModeRun{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeRun{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeRestrict{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeHold{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeHold{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(x))
+        case K.ModeHold{}:
+          match c:
+            case K.ModeRun{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeRun{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeRestrict{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeHold{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeHold{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(x))
+        case K.ModeFreeze{}:
+          match c:
+            case K.ModeRun{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeRun{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeRestrict{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeHold{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeHold{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(x))
+        case K.ModeKill{}:
+          match c:
+            case K.ModeRun{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeRun{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeRestrict{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeHold{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeHold{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(x))
+    case K.ModeRestrict{}:
+      match b:
+        case K.ModeRun{}:
+          match c:
+            case K.ModeRun{}:
+              {==}
+            case K.ModeRestrict{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeHold{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeHold{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
+        case K.ModeRestrict{}:
+          match c:
+            case K.ModeRun{}:
+              {==}
+            case K.ModeRestrict{}:
+              {==}
+            case K.ModeHold{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeHold{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
+        case K.ModeHold{}:
+          match c:
+            case K.ModeRun{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeRun{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeRestrict{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeHold{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeHold{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(x))
+        case K.ModeFreeze{}:
+          match c:
+            case K.ModeRun{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeRun{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeRestrict{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeHold{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeHold{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(x))
+        case K.ModeKill{}:
+          match c:
+            case K.ModeRun{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeRun{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeRestrict{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeHold{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeHold{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(x))
+    case K.ModeHold{}:
+      match b:
+        case K.ModeRun{}:
+          match c:
+            case K.ModeRun{}:
+              {==}
+            case K.ModeRestrict{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeHold{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeHold{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeHold{}, K.ModeHold{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeHold{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeHold{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
+        case K.ModeRestrict{}:
+          match c:
+            case K.ModeRun{}:
+              {==}
+            case K.ModeRestrict{}:
+              {==}
+            case K.ModeHold{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeHold{}, K.ModeHold{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeHold{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeHold{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
+        case K.ModeHold{}:
+          match c:
+            case K.ModeRun{}:
+              {==}
+            case K.ModeRestrict{}:
+              {==}
+            case K.ModeHold{}:
+              {==}
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeHold{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeHold{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
+        case K.ModeFreeze{}:
+          match c:
+            case K.ModeRun{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeHold{}, K.ModeRun{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeRestrict{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeHold{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeHold{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeHold{}, K.ModeHold{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeHold{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeHold{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(x))
+        case K.ModeKill{}:
+          match c:
+            case K.ModeRun{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeHold{}, K.ModeRun{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeRestrict{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeHold{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeHold{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeHold{}, K.ModeHold{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeHold{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeHold{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(x))
+    case K.ModeFreeze{}:
+      match b:
+        case K.ModeRun{}:
+          match c:
+            case K.ModeRun{}:
+              {==}
+            case K.ModeRestrict{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeHold{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeHold{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
+        case K.ModeRestrict{}:
+          match c:
+            case K.ModeRun{}:
+              {==}
+            case K.ModeRestrict{}:
+              {==}
+            case K.ModeHold{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeHold{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
+        case K.ModeHold{}:
+          match c:
+            case K.ModeRun{}:
+              {==}
+            case K.ModeRestrict{}:
+              {==}
+            case K.ModeHold{}:
+              {==}
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
+        case K.ModeFreeze{}:
+          match c:
+            case K.ModeRun{}:
+              {==}
+            case K.ModeRestrict{}:
+              {==}
+            case K.ModeHold{}:
+              {==}
+            case K.ModeFreeze{}:
+              {==}
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
+        case K.ModeKill{}:
+          match c:
+            case K.ModeRun{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeRun{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeRestrict{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeHold{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeHold{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(x))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(x))
+    case K.ModeKill{}:
+      match b:
+        case K.ModeRun{}:
+          match c:
+            case K.ModeRun{}:
+              {==}
+            case K.ModeRestrict{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeKill{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeHold{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeKill{}, K.ModeHold{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeKill{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeKill{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
+        case K.ModeRestrict{}:
+          match c:
+            case K.ModeRun{}:
+              {==}
+            case K.ModeRestrict{}:
+              {==}
+            case K.ModeHold{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeKill{}, K.ModeHold{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeKill{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeKill{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
+        case K.ModeHold{}:
+          match c:
+            case K.ModeRun{}:
+              {==}
+            case K.ModeRestrict{}:
+              {==}
+            case K.ModeHold{}:
+              {==}
+            case K.ModeFreeze{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeKill{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(y))
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeKill{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
+        case K.ModeFreeze{}:
+          match c:
+            case K.ModeRun{}:
+              {==}
+            case K.ModeRestrict{}:
+              {==}
+            case K.ModeHold{}:
+              {==}
+            case K.ModeFreeze{}:
+              {==}
+            case K.ModeKill{}:
+              Empty.absurd({Laws.rank_at_least(K.ModeKill{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
+        case K.ModeKill{}:
+          match c:
+            case K.ModeRun{}:
+              {==}
+            case K.ModeRestrict{}:
+              {==}
+            case K.ModeHold{}:
+              {==}
+            case K.ModeFreeze{}:
+              {==}
+            case K.ModeKill{}:
+              {==}
+
+def unsigned_not_accepted(+m: K.ContainmentMode, +counter: Nat, e: K.ControlEvent, +at: Nat, u: {Laws.signed_of(e) == False{} : Bool}) -> {K.is_accepted_reset(m, counter, e, at) == False{} : Bool}:
+  match e:
+    case K.ClockTick{now}:
+      {==}
+    case K.Renew{now, ttl}:
+      {==}
+    case K.Classifier{now, level}:
+      {==}
+    case K.HardRule{now, level}:
+      {==}
+    case K.AgentRequest{now}:
+      {==}
+    case K.Reset{now, s, n, f, na, ttl}:
+      match s:
+        case True{}:
+          Empty.absurd({K.reset_ok(m, counter, True{}, n, f, na, at) == False{} : Bool}, true_is_not_false(u))
+        case False{}:
+          {==}
+
+def tighten_state(+cfg: K.KernelConfig, +c: K.ControlState, +e: K.ControlEvent, u: {Laws.signed_of(e) == False{} : Bool}) -> {Laws.rank_at_least(Laws.state_mode(Laws.control_of(K.step(cfg, c, e))), Laws.state_mode(c)) == True{} : Bool}:
+  match c:
+    case K.ControlState{+m, +d, +clock, +counter}:
+      Laws.tighten_only(cfg, m, d, clock, counter, e, unsigned_not_accepted(m, counter, e, Laws.at_time(e, clock), u))
+
+def Laws.no_sequence_lowers_containment(es, cfg, c, u):
+  match es:
+    case Nil{}:
+      rank_refl(Laws.state_mode(c))
+    case Con{+e, +t}:
+      (ue, ut) = u
+      +next = Laws.control_of(K.step(cfg, c, e))
+      rank_trans(Laws.state_mode(Laws.replay(t, cfg, next)), Laws.state_mode(next), Laws.state_mode(c), Laws.no_sequence_lowers_containment(t, cfg, next, ut), tighten_state(cfg, c, e, ue))
+
+def renew_bound(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +ttl: Nat) -> {Laws.implies(Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, m, d))))), Nat.is_le(Laws.deadline_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, m, d)))), Nat.add(at, K.max_lease_of(cfg)))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          add_mono(at, Nat.min(ttl, K.max_lease_of(cfg)), K.max_lease_of(cfg), min_le(ttl, K.max_lease_of(cfg)))
+        case K.ModeRestrict{}:
+          add_mono(at, Nat.min(ttl, K.max_lease_of(cfg)), K.max_lease_of(cfg), min_le(ttl, K.max_lease_of(cfg)))
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          {==}
+        case K.ModeKill{}:
+          {==}
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          {==}
+        case K.ModeKill{}:
+          {==}
+
+def Laws.renewal_is_bounded(cfg, m, d, clock, counter, now, ttl):
+  renew_bound(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, ttl)
+
+def clock_settle(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +clock: Nat, q: {Nat.is_le(clock, at) == True{} : Bool}) -> {Nat.is_le(clock, Laws.clock_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, m, d)))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          q
+        case K.ModeRestrict{}:
+          q
+        case K.ModeHold{}:
+          q
+        case K.ModeFreeze{}:
+          q
+        case K.ModeKill{}:
+          q
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          q
+        case K.ModeRestrict{}:
+          q
+        case K.ModeHold{}:
+          q
+        case K.ModeFreeze{}:
+          q
+        case K.ModeKill{}:
+          q
+
+def clock_renew(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +ttl: Nat, +clock: Nat, q: {Nat.is_le(clock, at) == True{} : Bool}) -> {Nat.is_le(clock, Laws.clock_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, m, d))))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          q
+        case K.ModeRestrict{}:
+          q
+        case K.ModeHold{}:
+          q
+        case K.ModeFreeze{}:
+          q
+        case K.ModeKill{}:
+          q
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          q
+        case K.ModeRestrict{}:
+          q
+        case K.ModeHold{}:
+          q
+        case K.ModeFreeze{}:
+          q
+        case K.ModeKill{}:
+          q
+
+def clock_classifier(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel, +clock: Nat, q: {Nat.is_le(clock, at) == True{} : Bool}) -> {Nat.is_le(clock, Laws.clock_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, m, d))))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              q
+            case K.ToHold{}:
+              q
+            case K.ToFreeze{}:
+              q
+            case K.ToKill{}:
+              q
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              q
+            case K.ToHold{}:
+              q
+            case K.ToFreeze{}:
+              q
+            case K.ToKill{}:
+              q
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              q
+            case K.ToHold{}:
+              q
+            case K.ToFreeze{}:
+              q
+            case K.ToKill{}:
+              q
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              q
+            case K.ToHold{}:
+              q
+            case K.ToFreeze{}:
+              q
+            case K.ToKill{}:
+              q
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              q
+            case K.ToHold{}:
+              q
+            case K.ToFreeze{}:
+              q
+            case K.ToKill{}:
+              q
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              q
+            case K.ToHold{}:
+              q
+            case K.ToFreeze{}:
+              q
+            case K.ToKill{}:
+              q
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              q
+            case K.ToHold{}:
+              q
+            case K.ToFreeze{}:
+              q
+            case K.ToKill{}:
+              q
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              q
+            case K.ToHold{}:
+              q
+            case K.ToFreeze{}:
+              q
+            case K.ToKill{}:
+              q
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              q
+            case K.ToHold{}:
+              q
+            case K.ToFreeze{}:
+              q
+            case K.ToKill{}:
+              q
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              q
+            case K.ToHold{}:
+              q
+            case K.ToFreeze{}:
+              q
+            case K.ToKill{}:
+              q
+
+def clock_hard(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel, +clock: Nat, q: {Nat.is_le(clock, at) == True{} : Bool}) -> {Nat.is_le(clock, Laws.clock_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, m, d))))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              q
+            case K.ToHold{}:
+              q
+            case K.ToFreeze{}:
+              q
+            case K.ToKill{}:
+              q
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              q
+            case K.ToHold{}:
+              q
+            case K.ToFreeze{}:
+              q
+            case K.ToKill{}:
+              q
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              q
+            case K.ToHold{}:
+              q
+            case K.ToFreeze{}:
+              q
+            case K.ToKill{}:
+              q
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              q
+            case K.ToHold{}:
+              q
+            case K.ToFreeze{}:
+              q
+            case K.ToKill{}:
+              q
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              q
+            case K.ToHold{}:
+              q
+            case K.ToFreeze{}:
+              q
+            case K.ToKill{}:
+              q
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              q
+            case K.ToHold{}:
+              q
+            case K.ToFreeze{}:
+              q
+            case K.ToKill{}:
+              q
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              q
+            case K.ToHold{}:
+              q
+            case K.ToFreeze{}:
+              q
+            case K.ToKill{}:
+              q
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              q
+            case K.ToHold{}:
+              q
+            case K.ToFreeze{}:
+              q
+            case K.ToKill{}:
+              q
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              q
+            case K.ToHold{}:
+              q
+            case K.ToFreeze{}:
+              q
+            case K.ToKill{}:
+              q
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              q
+            case K.ToHold{}:
+              q
+            case K.ToFreeze{}:
+              q
+            case K.ToKill{}:
+              q
+
+def clock_reset(+cfg: K.KernelConfig, acc: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +counter: Nat, +n: Nat, +ttl: Nat, +clock: Nat, q: {Nat.is_le(clock, at) == True{} : Bool}) -> {Nat.is_le(clock, Laws.clock_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, m, d)))) == True{} : Bool}:
+  match acc:
+    case True{}:
+      q
+    case False{}:
+      clock_settle(cfg, Nat.is_lt(at, d), at, m, d, counter, clock, q)
+
+def Laws.clock_never_rewinds(cfg, m, d, clock, counter, e):
+  match e:
+    case K.ClockTick{+now}:
+      clock_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, clock, eff_le(now, clock))
+    case K.AgentRequest{+now}:
+      clock_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, clock, eff_le(now, clock))
+    case K.Renew{+now, +ttl}:
+      clock_renew(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, ttl, clock, eff_le(now, clock))
+    case K.Classifier{+now, +level}:
+      clock_classifier(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level, clock, eff_le(now, clock))
+    case K.HardRule{+now, +level}:
+      clock_hard(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level, clock, eff_le(now, clock))
+    case K.Reset{+now, +s, +n, +f, +na, +ttl}:
+      clock_reset(cfg, K.reset_ok(m, counter, s, n, f, na, K.effective_time(now, clock)), K.effective_time(now, clock), m, d, counter, n, ttl, clock, eff_le(now, clock))
+
+def clock_exact_settle(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat) -> {Laws.clock_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, m, d))) == at : Nat}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          {==}
+        case K.ModeKill{}:
+          {==}
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          {==}
+        case K.ModeKill{}:
+          {==}
+
+def clock_exact_renew(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +ttl: Nat) -> {Laws.clock_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, m, d)))) == at : Nat}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          {==}
+        case K.ModeKill{}:
+          {==}
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          {==}
+        case K.ModeKill{}:
+          {==}
+
+def clock_exact_classifier(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel) -> {Laws.clock_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, m, d)))) == at : Nat}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+
+def clock_exact_hard(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel) -> {Laws.clock_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, m, d)))) == at : Nat}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+
+def clock_exact_reset(+cfg: K.KernelConfig, acc: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +counter: Nat, +n: Nat, +ttl: Nat) -> {Laws.clock_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, m, d))) == at : Nat}:
+  match acc:
+    case True{}:
+      {==}
+    case False{}:
+      clock_exact_settle(cfg, Nat.is_lt(at, d), at, m, d, counter)
+
+def Laws.clock_is_effective_time(cfg, m, d, clock, counter, e):
+  match e:
+    case K.ClockTick{+now}:
+      clock_exact_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter)
+    case K.AgentRequest{+now}:
+      clock_exact_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter)
+    case K.Renew{+now, +ttl}:
+      clock_exact_renew(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, ttl)
+    case K.Classifier{+now, +level}:
+      clock_exact_classifier(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level)
+    case K.HardRule{+now, +level}:
+      clock_exact_hard(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level)
+    case K.Reset{+now, +s, +n, +f, +na, +ttl}:
+      clock_exact_reset(cfg, K.reset_ok(m, counter, s, n, f, na, K.effective_time(now, clock)), K.effective_time(now, clock), m, d, counter, n, ttl)
+
+def Laws.stale_time_uses_clock(now, clock, h):
+  eff_stale(Nat.is_lt(now, clock), now, clock, h)
+
+def classifier_safe(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, level: K.SeverityLevel, k: {Laws.is_kill(m) == False{} : Bool}, h: {inn == True{} : Bool}) -> {Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, m, d))))) == False{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))) == False{} : Bool}, true_is_not_false(k))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))) == False{} : Bool}, true_is_not_false(k))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))) == False{} : Bool}, true_is_not_false(k))
+            case K.ToKill{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))) == False{} : Bool}, true_is_not_false(k))
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeRun{}, d))))) == False{} : Bool}, false_is_not_true(h))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeRun{}, d))))) == False{} : Bool}, false_is_not_true(h))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeRun{}, d))))) == False{} : Bool}, false_is_not_true(h))
+            case K.ToKill{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeRun{}, d))))) == False{} : Bool}, false_is_not_true(h))
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeRestrict{}, d))))) == False{} : Bool}, false_is_not_true(h))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeRestrict{}, d))))) == False{} : Bool}, false_is_not_true(h))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeRestrict{}, d))))) == False{} : Bool}, false_is_not_true(h))
+            case K.ToKill{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeRestrict{}, d))))) == False{} : Bool}, false_is_not_true(h))
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeHold{}, d))))) == False{} : Bool}, false_is_not_true(h))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeHold{}, d))))) == False{} : Bool}, false_is_not_true(h))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeHold{}, d))))) == False{} : Bool}, false_is_not_true(h))
+            case K.ToKill{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeHold{}, d))))) == False{} : Bool}, false_is_not_true(h))
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))) == False{} : Bool}, false_is_not_true(h))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))) == False{} : Bool}, false_is_not_true(h))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))) == False{} : Bool}, false_is_not_true(h))
+            case K.ToKill{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))) == False{} : Bool}, false_is_not_true(h))
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))) == False{} : Bool}, false_is_not_true(h))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))) == False{} : Bool}, false_is_not_true(h))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))) == False{} : Bool}, false_is_not_true(h))
+            case K.ToKill{}:
+              Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))) == False{} : Bool}, false_is_not_true(h))
+
+def Laws.classifier_cannot_kill(cfg, m, d, clock, counter, now, level, k, h):
+  classifier_safe(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level, k, h)
+
+def classifier_hold(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, level: K.SeverityLevel, l: {Laws.is_live(m) == True{} : Bool}, s: {Laws.is_restrict_level(level) == False{} : Bool}, h: {inn == True{} : Bool}) -> {Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, m, d))))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeRun{}, d))))) == True{} : Bool}, true_is_not_false(s))
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeRestrict{}, d))))) == True{} : Bool}, true_is_not_false(s))
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))) == True{} : Bool}, false_is_not_true(l))
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeRun{}, d))))) == True{} : Bool}, false_is_not_true(h))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeRun{}, d))))) == True{} : Bool}, false_is_not_true(h))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeRun{}, d))))) == True{} : Bool}, false_is_not_true(h))
+            case K.ToKill{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeRun{}, d))))) == True{} : Bool}, false_is_not_true(h))
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeRestrict{}, d))))) == True{} : Bool}, false_is_not_true(h))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeRestrict{}, d))))) == True{} : Bool}, false_is_not_true(h))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeRestrict{}, d))))) == True{} : Bool}, false_is_not_true(h))
+            case K.ToKill{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeRestrict{}, d))))) == True{} : Bool}, false_is_not_true(h))
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeHold{}, d))))) == True{} : Bool}, false_is_not_true(h))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeHold{}, d))))) == True{} : Bool}, false_is_not_true(h))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeHold{}, d))))) == True{} : Bool}, false_is_not_true(h))
+            case K.ToKill{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeHold{}, d))))) == True{} : Bool}, false_is_not_true(h))
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))) == True{} : Bool}, false_is_not_true(h))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))) == True{} : Bool}, false_is_not_true(h))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))) == True{} : Bool}, false_is_not_true(h))
+            case K.ToKill{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))) == True{} : Bool}, false_is_not_true(h))
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))) == True{} : Bool}, false_is_not_true(h))
+            case K.ToHold{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))) == True{} : Bool}, false_is_not_true(h))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))) == True{} : Bool}, false_is_not_true(h))
+            case K.ToKill{}:
+              Empty.absurd({Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))) == True{} : Bool}, false_is_not_true(h))
+
+def Laws.classifier_stop_enters_hold(cfg, m, d, clock, counter, now, level, l, s, h):
+  classifier_hold(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level, l, s, h)
+
+def held_settle(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +d: Nat, +cnt: Nat) -> {Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, K.ModeHold{}, d)))) == True{} : Bool}:
   match inn:
     case True{}:
       {==}
     case False{}:
       {==}
 
-def killed_renew(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +d: Nat, ttl: Nat) -> {Laws.is_kill(Laws.mode_of(K.renew_after(cfg, now, ttl, K.settle_with(cfg, inn, now, K.ModeKill{}, d)))) == True{} : Bool}:
+def held_renew(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +d: Nat, +cnt: Nat, +ttl: Nat) -> {Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, K.ModeHold{}, d))))) == True{} : Bool}:
   match inn:
     case True{}:
       {==}
     case False{}:
       {==}
 
-def killed_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +d: Nat, level: K.SeverityLevel) -> {Laws.is_kill(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(level), K.settle_with(cfg, inn, now, K.ModeKill{}, d)))) == True{} : Bool}:
+def held_classifier(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +d: Nat, +cnt: Nat, +level: K.SeverityLevel) -> {Laws.is_hold(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, K.ModeHold{}, d))))) == True{} : Bool}:
   match inn:
     case True{}:
       match level:
         case K.ToRestrict{}:
+          {==}
+        case K.ToHold{}:
           {==}
         case K.ToFreeze{}:
           {==}
@@ -448,17 +1895,1683 @@ def killed_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +d: Nat, level
       match level:
         case K.ToRestrict{}:
           {==}
+        case K.ToHold{}:
+          {==}
         case K.ToFreeze{}:
           {==}
         case K.ToKill{}:
           {==}
 
-def killed_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +d: Nat, level: K.SeverityLevel) -> {Laws.is_kill(Laws.mode_of(K.raise_after(cfg, now, level, K.settle_with(cfg, inn, now, K.ModeKill{}, d)))) == True{} : Bool}:
+def hold_step(+cfg: K.KernelConfig, +d: Nat, +clock: Nat, +counter: Nat, e: K.ControlEvent, p: {Laws.is_passive(e) == True{} : Bool}) -> {Laws.is_hold(Laws.mode_of(K.step(cfg, K.ControlState{K.ModeHold{}, d, clock, counter}, e))) == True{} : Bool}:
+  match e:
+    case K.ClockTick{+now}:
+      held_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter)
+    case K.AgentRequest{+now}:
+      held_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter)
+    case K.Renew{+now, +ttl}:
+      held_renew(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter, ttl)
+    case K.Classifier{+now, +level}:
+      held_classifier(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter, level)
+    case K.HardRule{+now, +level}:
+      Empty.absurd({Laws.is_hold(Laws.mode_of(K.step(cfg, K.ControlState{K.ModeHold{}, d, clock, counter}, K.HardRule{now, level}))) == True{} : Bool}, false_is_not_true(p))
+    case K.Reset{+now, s, +n, +f, +na, +ttl}:
+      match s:
+        case True{}:
+          Empty.absurd({Laws.is_hold(Laws.mode_of(K.step(cfg, K.ControlState{K.ModeHold{}, d, clock, counter}, K.Reset{now, True{}, n, f, na, ttl}))) == True{} : Bool}, false_is_not_true(p))
+        case False{}:
+          held_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter)
+
+def hold_mode(+cfg: K.KernelConfig, m: K.ContainmentMode, +d: Nat, +clock: Nat, +counter: Nat, +e: K.ControlEvent, h: {Laws.is_hold(m) == True{} : Bool}, p: {Laws.is_passive(e) == True{} : Bool}) -> {Laws.is_hold(Laws.mode_of(K.step(cfg, K.ControlState{m, d, clock, counter}, e))) == True{} : Bool}:
+  match m:
+    case K.ModeRun{}:
+      Empty.absurd({Laws.is_hold(Laws.mode_of(K.step(cfg, K.ControlState{K.ModeRun{}, d, clock, counter}, e))) == True{} : Bool}, false_is_not_true(h))
+    case K.ModeRestrict{}:
+      Empty.absurd({Laws.is_hold(Laws.mode_of(K.step(cfg, K.ControlState{K.ModeRestrict{}, d, clock, counter}, e))) == True{} : Bool}, false_is_not_true(h))
+    case K.ModeHold{}:
+      hold_step(cfg, d, clock, counter, e, p)
+    case K.ModeFreeze{}:
+      Empty.absurd({Laws.is_hold(Laws.mode_of(K.step(cfg, K.ControlState{K.ModeFreeze{}, d, clock, counter}, e))) == True{} : Bool}, false_is_not_true(h))
+    case K.ModeKill{}:
+      Empty.absurd({Laws.is_hold(Laws.mode_of(K.step(cfg, K.ControlState{K.ModeKill{}, d, clock, counter}, e))) == True{} : Bool}, false_is_not_true(h))
+
+def hold_state(+cfg: K.KernelConfig, +c: K.ControlState, +e: K.ControlEvent, h: {Laws.is_hold(Laws.state_mode(c)) == True{} : Bool}, p: {Laws.is_passive(e) == True{} : Bool}) -> {Laws.is_hold(Laws.mode_of(K.step(cfg, c, e))) == True{} : Bool}:
+  match c:
+    case K.ControlState{+m, +d, +clock, +counter}:
+      hold_mode(cfg, m, d, clock, counter, e, h, p)
+
+def Laws.hold_cannot_self_escalate(es, cfg, c, h, p):
+  match es:
+    case Nil{}:
+      h
+    case Con{+e, +t}:
+      (pe, pt) = p
+      Laws.hold_cannot_self_escalate(t, cfg, Laws.control_of(K.step(cfg, c, e)), hold_state(cfg, c, e, h, pe), pt)
+
+def reset_ordered(+m: K.ContainmentMode) -> {Laws.stop_is_ordered(K.reset_actions(m), Laws.secrets_gone(m), Laws.egress_gone(m)) == True{} : Bool}:
+  match m:
+    case K.ModeRun{}:
+      {==}
+    case K.ModeRestrict{}:
+      {==}
+    case K.ModeHold{}:
+      {==}
+    case K.ModeFreeze{}:
+      {==}
+    case K.ModeKill{}:
+      {==}
+
+def ordered_settle(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat) -> {Laws.stop_is_ordered(Laws.plan_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, m, d))), Laws.secrets_gone(m), Laws.egress_gone(m)) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          {==}
+        case K.ModeKill{}:
+          {==}
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          {==}
+        case K.ModeKill{}:
+          {==}
+
+def ordered_renew(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +ttl: Nat) -> {Laws.stop_is_ordered(Laws.plan_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, m, d)))), Laws.secrets_gone(m), Laws.egress_gone(m)) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          {==}
+        case K.ModeKill{}:
+          {==}
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          {==}
+        case K.ModeKill{}:
+          {==}
+
+def ordered_classifier(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel) -> {Laws.stop_is_ordered(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, m, d)))), Laws.secrets_gone(m), Laws.egress_gone(m)) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+
+def ordered_hard(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel) -> {Laws.stop_is_ordered(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, m, d)))), Laws.secrets_gone(m), Laws.egress_gone(m)) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+
+def ordered_reset(+cfg: K.KernelConfig, acc: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +counter: Nat, +n: Nat, +ttl: Nat) -> {Laws.stop_is_ordered(Laws.plan_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, m, d))), Laws.secrets_gone(m), Laws.egress_gone(m)) == True{} : Bool}:
+  match acc:
+    case True{}:
+      reset_ordered(m)
+    case False{}:
+      ordered_settle(cfg, Nat.is_lt(at, d), at, m, d, counter)
+
+def Laws.authority_removed_first(cfg, m, d, clock, counter, e):
+  match e:
+    case K.ClockTick{+now}:
+      ordered_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter)
+    case K.AgentRequest{+now}:
+      ordered_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter)
+    case K.Renew{+now, +ttl}:
+      ordered_renew(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, ttl)
+    case K.Classifier{+now, +level}:
+      ordered_classifier(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level)
+    case K.HardRule{+now, +level}:
+      ordered_hard(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level)
+    case K.Reset{+now, +s, +n, +f, +na, +ttl}:
+      ordered_reset(cfg, K.reset_ok(m, counter, s, n, f, na, K.effective_time(now, clock)), K.effective_time(now, clock), m, d, counter, n, ttl)
+
+def stops_settle(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, l: {Laws.is_live(m) == True{} : Bool}) -> {Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, m, d)))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, m, d))))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, True{}, at, K.ModeHold{}, d)))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeFreeze{}:
+          Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeKill{}:
+          Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))) == True{} : Bool}, false_is_not_true(l))
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, False{}, at, K.ModeHold{}, d)))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.settle_with(cfg, False{}, at, K.ModeHold{}, d))))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeFreeze{}:
+          Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d)))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeKill{}:
+          Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))) == True{} : Bool}, false_is_not_true(l))
+
+def stops_renew(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +ttl: Nat, l: {Laws.is_live(m) == True{} : Bool}) -> {Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, m, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, m, d)))))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, True{}, at, K.ModeHold{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeFreeze{}:
+          Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeKill{}:
+          Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, False{}, at, K.ModeHold{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, False{}, at, K.ModeHold{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeFreeze{}:
+          Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeKill{}:
+          Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+
+def stops_classifier(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel, l: {Laws.is_live(m) == True{} : Bool}) -> {Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, m, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, m, d)))))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeHold{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeHold{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeHold{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeHold{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeHold{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeHold{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeHold{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeHold{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeHold{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeHold{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeHold{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeHold{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+
+def stops_hard(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel, l: {Laws.is_live(m) == True{} : Bool}) -> {Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, m, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, m, d)))))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, True{}, at, K.ModeHold{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, True{}, at, K.ModeHold{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, True{}, at, K.ModeHold{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, True{}, at, K.ModeHold{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, True{}, at, K.ModeHold{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, False{}, at, K.ModeHold{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, False{}, at, K.ModeHold{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, False{}, at, K.ModeHold{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, False{}, at, K.ModeHold{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, False{}, at, K.ModeHold{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, False{}, at, K.ModeHold{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, False{}, at, K.ModeHold{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, False{}, at, K.ModeHold{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))))) == True{} : Bool}, false_is_not_true(l))
+
+def stops_reset(+cfg: K.KernelConfig, acc: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +counter: Nat, +n: Nat, +ttl: Nat, l: {Laws.is_live(m) == True{} : Bool}, r: {acc == False{} : Bool}) -> {Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, m, d)))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, m, d))))) == True{} : Bool}:
+  match acc:
+    case True{}:
+      Empty.absurd({Laws.implies(Laws.is_stopped(Laws.mode_of(K.seal(at, K.next_counter_with(True{}, counter, n), K.reset_with(cfg, True{}, at, ttl, m, d)))), Laws.has_stop_plan(Laws.plan_of(K.seal(at, K.next_counter_with(True{}, counter, n), K.reset_with(cfg, True{}, at, ttl, m, d))))) == True{} : Bool}, true_is_not_false(r))
+    case False{}:
+      stops_settle(cfg, Nat.is_lt(at, d), at, m, d, counter, l)
+
+def Laws.stop_plan_is_complete(cfg, m, d, clock, counter, e, l, r):
+  match e:
+    case K.ClockTick{+now}:
+      stops_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, l)
+    case K.AgentRequest{+now}:
+      stops_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, l)
+    case K.Renew{+now, +ttl}:
+      stops_renew(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, ttl, l)
+    case K.Classifier{+now, +level}:
+      stops_classifier(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level, l)
+    case K.HardRule{+now, +level}:
+      stops_hard(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level, l)
+    case K.Reset{+now, +s, +n, +f, +na, +ttl}:
+      stops_reset(cfg, K.reset_ok(m, counter, s, n, f, na, K.effective_time(now, clock)), K.effective_time(now, clock), m, d, counter, n, ttl, l, r)
+
+def kills_settle(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, k: {Laws.is_kill(m) == False{} : Bool}) -> {Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, m, d)))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, m, d))), 4n)) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          {==}
+        case K.ModeKill{}:
+          Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))), 4n)) == True{} : Bool}, true_is_not_false(k))
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          {==}
+        case K.ModeKill{}:
+          Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.settle_with(cfg, False{}, at, K.ModeKill{}, d))), 4n)) == True{} : Bool}, true_is_not_false(k))
+
+def kills_renew(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +ttl: Nat, k: {Laws.is_kill(m) == False{} : Bool}) -> {Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, m, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, m, d)))), 4n)) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          {==}
+        case K.ModeKill{}:
+          Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), 4n)) == True{} : Bool}, true_is_not_false(k))
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          {==}
+        case K.ModeKill{}:
+          Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), 4n)) == True{} : Bool}, true_is_not_false(k))
+
+def kills_classifier(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel, k: {Laws.is_kill(m) == False{} : Bool}) -> {Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, m, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, m, d)))), 4n)) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), 4n)) == True{} : Bool}, true_is_not_false(k))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), 4n)) == True{} : Bool}, true_is_not_false(k))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), 4n)) == True{} : Bool}, true_is_not_false(k))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), 4n)) == True{} : Bool}, true_is_not_false(k))
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), 4n)) == True{} : Bool}, true_is_not_false(k))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), 4n)) == True{} : Bool}, true_is_not_false(k))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), 4n)) == True{} : Bool}, true_is_not_false(k))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), 4n)) == True{} : Bool}, true_is_not_false(k))
+
+def kills_hard(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel, k: {Laws.is_kill(m) == False{} : Bool}) -> {Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, m, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, m, d)))), 4n)) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), 4n)) == True{} : Bool}, true_is_not_false(k))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), 4n)) == True{} : Bool}, true_is_not_false(k))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), 4n)) == True{} : Bool}, true_is_not_false(k))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), 4n)) == True{} : Bool}, true_is_not_false(k))
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), 4n)) == True{} : Bool}, true_is_not_false(k))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), 4n)) == True{} : Bool}, true_is_not_false(k))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), 4n)) == True{} : Bool}, true_is_not_false(k))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), 4n)) == True{} : Bool}, true_is_not_false(k))
+
+def kills_reset(+cfg: K.KernelConfig, acc: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +counter: Nat, +n: Nat, +ttl: Nat, k: {Laws.is_kill(m) == False{} : Bool}, r: {acc == False{} : Bool}) -> {Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, m, d)))), Laws.plan_has(Laws.plan_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, m, d))), 4n)) == True{} : Bool}:
+  match acc:
+    case True{}:
+      Empty.absurd({Laws.implies(Laws.is_kill(Laws.mode_of(K.seal(at, K.next_counter_with(True{}, counter, n), K.reset_with(cfg, True{}, at, ttl, m, d)))), Laws.plan_has(Laws.plan_of(K.seal(at, K.next_counter_with(True{}, counter, n), K.reset_with(cfg, True{}, at, ttl, m, d))), 4n)) == True{} : Bool}, true_is_not_false(r))
+    case False{}:
+      kills_settle(cfg, Nat.is_lt(at, d), at, m, d, counter, k)
+
+def Laws.kill_plan_is_complete(cfg, m, d, clock, counter, e, k, r):
+  match e:
+    case K.ClockTick{+now}:
+      kills_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, k)
+    case K.AgentRequest{+now}:
+      kills_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, k)
+    case K.Renew{+now, +ttl}:
+      kills_renew(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, ttl, k)
+    case K.Classifier{+now, +level}:
+      kills_classifier(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level, k)
+    case K.HardRule{+now, +level}:
+      kills_hard(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level, k)
+    case K.Reset{+now, +s, +n, +f, +na, +ttl}:
+      kills_reset(cfg, K.reset_ok(m, counter, s, n, f, na, K.effective_time(now, clock)), K.effective_time(now, clock), m, d, counter, n, ttl, k, r)
+
+def freeze_up_settle(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +d: Nat, +cnt: Nat, h: {inn == False{} : Bool}) -> {Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, K.ModeFreeze{}, d)))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))) == True{} : Bool}, true_is_not_false(h))
+    case False{}:
+      {==}
+
+def freeze_up_renew(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +d: Nat, +cnt: Nat, +ttl: Nat, h: {inn == False{} : Bool}) -> {Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, K.ModeFreeze{}, d))))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == True{} : Bool}, true_is_not_false(h))
+    case False{}:
+      {==}
+
+def freeze_up_classifier(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +d: Nat, +cnt: Nat, +level: K.SeverityLevel, h: {inn == False{} : Bool}) -> {Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, K.ModeFreeze{}, d))))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match level:
+        case K.ToRestrict{}:
+          Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == True{} : Bool}, true_is_not_false(h))
+        case K.ToHold{}:
+          Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == True{} : Bool}, true_is_not_false(h))
+        case K.ToFreeze{}:
+          Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == True{} : Bool}, true_is_not_false(h))
+        case K.ToKill{}:
+          Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == True{} : Bool}, true_is_not_false(h))
+    case False{}:
+      match level:
+        case K.ToRestrict{}:
+          {==}
+        case K.ToHold{}:
+          {==}
+        case K.ToFreeze{}:
+          {==}
+        case K.ToKill{}:
+          {==}
+
+def freeze_up_hard(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +d: Nat, +cnt: Nat, +level: K.SeverityLevel, h: {inn == False{} : Bool}) -> {Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, K.ModeFreeze{}, d))))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match level:
+        case K.ToRestrict{}:
+          Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == True{} : Bool}, true_is_not_false(h))
+        case K.ToHold{}:
+          Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == True{} : Bool}, true_is_not_false(h))
+        case K.ToFreeze{}:
+          Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == True{} : Bool}, true_is_not_false(h))
+        case K.ToKill{}:
+          Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))) == True{} : Bool}, true_is_not_false(h))
+    case False{}:
+      match level:
+        case K.ToRestrict{}:
+          {==}
+        case K.ToHold{}:
+          {==}
+        case K.ToFreeze{}:
+          {==}
+        case K.ToKill{}:
+          {==}
+
+def freeze_up_reset(+cfg: K.KernelConfig, acc: Bool, +at: Nat, +d: Nat, +counter: Nat, +n: Nat, +ttl: Nat, h: {Nat.is_lt(at, d) == False{} : Bool}, r: {acc == False{} : Bool}) -> {Laws.is_kill(Laws.mode_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, K.ModeFreeze{}, d)))) == True{} : Bool}:
+  match acc:
+    case True{}:
+      Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, K.next_counter_with(True{}, counter, n), K.reset_with(cfg, True{}, at, ttl, K.ModeFreeze{}, d)))) == True{} : Bool}, true_is_not_false(r))
+    case False{}:
+      freeze_up_settle(cfg, Nat.is_lt(at, d), at, d, counter, h)
+
+def Laws.freeze_escalates(cfg, d, clock, counter, e, h, r):
+  match e:
+    case K.ClockTick{+now}:
+      freeze_up_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter, h)
+    case K.AgentRequest{+now}:
+      freeze_up_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter, h)
+    case K.Renew{+now, +ttl}:
+      freeze_up_renew(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter, ttl, h)
+    case K.Classifier{+now, +level}:
+      freeze_up_classifier(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter, level, h)
+    case K.HardRule{+now, +level}:
+      freeze_up_hard(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter, level, h)
+    case K.Reset{+now, +s, +n, +f, +na, +ttl}:
+      freeze_up_reset(cfg, K.reset_ok(K.ModeFreeze{}, counter, s, n, f, na, K.effective_time(now, clock)), K.effective_time(now, clock), d, counter, n, ttl, h, r)
+
+def freeze_same_settle(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +d: Nat, +cnt: Nat) -> {Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, K.ModeFreeze{}, d)))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, K.ModeFreeze{}, d))), d)) == True{} : Bool}:
+  match inn:
+    case True{}:
+      eq_refl(d)
+    case False{}:
+      {==}
+
+def freeze_same_renew(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +d: Nat, +cnt: Nat, +ttl: Nat) -> {Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, K.ModeFreeze{}, d)))), d)) == True{} : Bool}:
+  match inn:
+    case True{}:
+      eq_refl(d)
+    case False{}:
+      {==}
+
+def freeze_same_classifier(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +d: Nat, +cnt: Nat, +level: K.SeverityLevel) -> {Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, K.ModeFreeze{}, d)))), d)) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match level:
+        case K.ToRestrict{}:
+          eq_refl(d)
+        case K.ToHold{}:
+          eq_refl(d)
+        case K.ToFreeze{}:
+          eq_refl(d)
+        case K.ToKill{}:
+          eq_refl(d)
+    case False{}:
+      match level:
+        case K.ToRestrict{}:
+          {==}
+        case K.ToHold{}:
+          {==}
+        case K.ToFreeze{}:
+          {==}
+        case K.ToKill{}:
+          {==}
+
+def freeze_same_hard(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +d: Nat, +cnt: Nat, +level: K.SeverityLevel) -> {Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, K.ModeFreeze{}, d)))), d)) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match level:
+        case K.ToRestrict{}:
+          eq_refl(d)
+        case K.ToHold{}:
+          eq_refl(d)
+        case K.ToFreeze{}:
+          eq_refl(d)
+        case K.ToKill{}:
+          {==}
+    case False{}:
+      match level:
+        case K.ToRestrict{}:
+          {==}
+        case K.ToHold{}:
+          {==}
+        case K.ToFreeze{}:
+          {==}
+        case K.ToKill{}:
+          {==}
+
+def freeze_same_reset(+cfg: K.KernelConfig, acc: Bool, +at: Nat, +d: Nat, +counter: Nat, +n: Nat, +ttl: Nat, r: {acc == False{} : Bool}) -> {Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, K.ModeFreeze{}, d)))), Nat.is_eq(Laws.deadline_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, K.ModeFreeze{}, d))), d)) == True{} : Bool}:
+  match acc:
+    case True{}:
+      Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, K.next_counter_with(True{}, counter, n), K.reset_with(cfg, True{}, at, ttl, K.ModeFreeze{}, d)))), Nat.is_eq(Laws.deadline_of(K.seal(at, K.next_counter_with(True{}, counter, n), K.reset_with(cfg, True{}, at, ttl, K.ModeFreeze{}, d))), d)) == True{} : Bool}, true_is_not_false(r))
+    case False{}:
+      freeze_same_settle(cfg, Nat.is_lt(at, d), at, d, counter)
+
+def Laws.freeze_deadline_is_fixed(cfg, d, clock, counter, e, r):
+  match e:
+    case K.ClockTick{+now}:
+      freeze_same_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter)
+    case K.AgentRequest{+now}:
+      freeze_same_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter)
+    case K.Renew{+now, +ttl}:
+      freeze_same_renew(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter, ttl)
+    case K.Classifier{+now, +level}:
+      freeze_same_classifier(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter, level)
+    case K.HardRule{+now, +level}:
+      freeze_same_hard(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter, level)
+    case K.Reset{+now, +s, +n, +f, +na, +ttl}:
+      freeze_same_reset(cfg, K.reset_ok(K.ModeFreeze{}, counter, s, n, f, na, K.effective_time(now, clock)), K.effective_time(now, clock), d, counter, n, ttl, r)
+
+def grace_settle(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, l: {Laws.before_freeze(m) == True{} : Bool}) -> {Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, m, d)))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, m, d))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeKill{}:
+          Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          eq_refl(Nat.add(at, K.grace_of(cfg)))
+        case K.ModeRestrict{}:
+          eq_refl(Nat.add(at, K.grace_of(cfg)))
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d)))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeKill{}:
+          Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.settle_with(cfg, False{}, at, K.ModeKill{}, d))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+
+def grace_renew(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +ttl: Nat, l: {Laws.before_freeze(m) == True{} : Bool}) -> {Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, m, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, m, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeKill{}:
+          Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          eq_refl(Nat.add(at, K.grace_of(cfg)))
+        case K.ModeRestrict{}:
+          eq_refl(Nat.add(at, K.grace_of(cfg)))
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeKill{}:
+          Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+
+def grace_classifier(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel, l: {Laws.before_freeze(m) == True{} : Bool}) -> {Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, m, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, m, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              eq_refl(Nat.add(at, K.grace_of(cfg)))
+            case K.ToHold{}:
+              eq_refl(Nat.add(at, K.grace_of(cfg)))
+            case K.ToFreeze{}:
+              eq_refl(Nat.add(at, K.grace_of(cfg)))
+            case K.ToKill{}:
+              eq_refl(Nat.add(at, K.grace_of(cfg)))
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              eq_refl(Nat.add(at, K.grace_of(cfg)))
+            case K.ToHold{}:
+              eq_refl(Nat.add(at, K.grace_of(cfg)))
+            case K.ToFreeze{}:
+              eq_refl(Nat.add(at, K.grace_of(cfg)))
+            case K.ToKill{}:
+              eq_refl(Nat.add(at, K.grace_of(cfg)))
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToHold{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+
+def grace_hard(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel, l: {Laws.before_freeze(m) == True{} : Bool}) -> {Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, m, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, m, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              eq_refl(Nat.add(at, K.grace_of(cfg)))
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              eq_refl(Nat.add(at, K.grace_of(cfg)))
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              eq_refl(Nat.add(at, K.grace_of(cfg)))
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, True{}, at, K.ModeFreeze{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, True{}, at, K.ModeKill{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              eq_refl(Nat.add(at, K.grace_of(cfg)))
+            case K.ToHold{}:
+              eq_refl(Nat.add(at, K.grace_of(cfg)))
+            case K.ToFreeze{}:
+              eq_refl(Nat.add(at, K.grace_of(cfg)))
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              eq_refl(Nat.add(at, K.grace_of(cfg)))
+            case K.ToHold{}:
+              eq_refl(Nat.add(at, K.grace_of(cfg)))
+            case K.ToFreeze{}:
+              eq_refl(Nat.add(at, K.grace_of(cfg)))
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              eq_refl(Nat.add(at, K.grace_of(cfg)))
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, False{}, at, K.ModeFreeze{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToRestrict{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToHold{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToHold{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToFreeze{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToFreeze{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+            case K.ToKill{}:
+              Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d))))), Nat.is_eq(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.ToKill{}, K.settle_with(cfg, False{}, at, K.ModeKill{}, d)))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, false_is_not_true(l))
+
+def grace_reset(+cfg: K.KernelConfig, acc: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +counter: Nat, +n: Nat, +ttl: Nat, l: {Laws.before_freeze(m) == True{} : Bool}, r: {acc == False{} : Bool}) -> {Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, m, d)))), Nat.is_eq(Laws.deadline_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, m, d))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}:
+  match acc:
+    case True{}:
+      Empty.absurd({Laws.implies(Laws.is_freeze(Laws.mode_of(K.seal(at, K.next_counter_with(True{}, counter, n), K.reset_with(cfg, True{}, at, ttl, m, d)))), Nat.is_eq(Laws.deadline_of(K.seal(at, K.next_counter_with(True{}, counter, n), K.reset_with(cfg, True{}, at, ttl, m, d))), Nat.add(at, K.grace_of(cfg)))) == True{} : Bool}, true_is_not_false(r))
+    case False{}:
+      grace_settle(cfg, Nat.is_lt(at, d), at, m, d, counter, l)
+
+def Laws.freeze_entry_uses_grace(cfg, m, d, clock, counter, e, l, r):
+  match e:
+    case K.ClockTick{+now}:
+      grace_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, l)
+    case K.AgentRequest{+now}:
+      grace_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, l)
+    case K.Renew{+now, +ttl}:
+      grace_renew(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, ttl, l)
+    case K.Classifier{+now, +level}:
+      grace_classifier(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level, l)
+    case K.HardRule{+now, +level}:
+      grace_hard(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level, l)
+    case K.Reset{+now, +s, +n, +f, +na, +ttl}:
+      grace_reset(cfg, K.reset_ok(m, counter, s, n, f, na, K.effective_time(now, clock)), K.effective_time(now, clock), m, d, counter, n, ttl, l, r)
+
+def frame_settle(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat) -> {Laws.implies(Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, m, d)))), Nat.is_le(Laws.deadline_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, m, d))), d)) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          le_refl(d)
+        case K.ModeRestrict{}:
+          le_refl(d)
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          {==}
+        case K.ModeKill{}:
+          {==}
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          {==}
+        case K.ModeKill{}:
+          {==}
+
+def frame_classifier(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel) -> {Laws.implies(Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, m, d))))), Nat.is_le(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, m, d)))), d)) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              le_refl(d)
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              le_refl(d)
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+
+def frame_hard(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel) -> {Laws.implies(Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, m, d))))), Nat.is_le(Laws.deadline_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, m, d)))), d)) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              le_refl(d)
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              le_refl(d)
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+
+def frame_reset(+cfg: K.KernelConfig, acc: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +counter: Nat, +n: Nat, +ttl: Nat, r: {acc == False{} : Bool}) -> {Laws.implies(Laws.is_live(Laws.mode_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, m, d)))), Nat.is_le(Laws.deadline_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, m, d))), d)) == True{} : Bool}:
+  match acc:
+    case True{}:
+      Empty.absurd({Laws.implies(Laws.is_live(Laws.mode_of(K.seal(at, K.next_counter_with(True{}, counter, n), K.reset_with(cfg, True{}, at, ttl, m, d)))), Nat.is_le(Laws.deadline_of(K.seal(at, K.next_counter_with(True{}, counter, n), K.reset_with(cfg, True{}, at, ttl, m, d))), d)) == True{} : Bool}, true_is_not_false(r))
+    case False{}:
+      frame_settle(cfg, Nat.is_lt(at, d), at, m, d, counter)
+
+def frame_renew(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +ttl: Nat, n: {True{} == False{} : Bool}) -> {Laws.implies(Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, m, d))))), Nat.is_le(Laws.deadline_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, m, d)))), d)) == True{} : Bool}:
+  Empty.absurd({Laws.implies(Laws.is_live(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, m, d))))), Nat.is_le(Laws.deadline_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, m, d)))), d)) == True{} : Bool}, true_is_not_false(n))
+
+def Laws.lease_only_renewal_extends(cfg, m, d, clock, counter, e, n, r):
+  match e:
+    case K.ClockTick{+now}:
+      frame_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter)
+    case K.AgentRequest{+now}:
+      frame_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter)
+    case K.Renew{+now, +ttl}:
+      frame_renew(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, ttl, n)
+    case K.Classifier{+now, +level}:
+      frame_classifier(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level)
+    case K.HardRule{+now, +level}:
+      frame_hard(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level)
+    case K.Reset{+now, +s, +n, +f, +na, +ttl}:
+      frame_reset(cfg, K.reset_ok(m, counter, s, n, f, na, K.effective_time(now, clock)), K.effective_time(now, clock), m, d, counter, n, ttl, r)
+
+def restricts_settle(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +d: Nat, +cnt: Nat) -> {Laws.implies(Laws.is_restrict(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, K.ModeRun{}, d)))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, K.ModeRun{}, d))), 0n) && Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, K.ModeRun{}, d))), 1n)) == True{} : Bool}:
+  match inn:
+    case True{}:
+      {==}
+    case False{}:
+      {==}
+
+def restricts_renew(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +d: Nat, +cnt: Nat, +ttl: Nat) -> {Laws.implies(Laws.is_restrict(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, K.ModeRun{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, K.ModeRun{}, d)))), 0n) && Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, K.ModeRun{}, d)))), 1n)) == True{} : Bool}:
+  match inn:
+    case True{}:
+      {==}
+    case False{}:
+      {==}
+
+def restricts_classifier(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +d: Nat, +cnt: Nat, +level: K.SeverityLevel) -> {Laws.implies(Laws.is_restrict(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, K.ModeRun{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, K.ModeRun{}, d)))), 0n) && Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, K.ModeRun{}, d)))), 1n)) == True{} : Bool}:
   match inn:
     case True{}:
       match level:
         case K.ToRestrict{}:
           {==}
+        case K.ToHold{}:
+          {==}
         case K.ToFreeze{}:
           {==}
         case K.ToKill{}:
@@ -467,18 +3580,67 @@ def killed_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +d: Nat, level: K.Se
       match level:
         case K.ToRestrict{}:
           {==}
+        case K.ToHold{}:
+          {==}
         case K.ToFreeze{}:
           {==}
         case K.ToKill{}:
           {==}
 
-def ordered_settle(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMode, +d: Nat) -> {Laws.stop_is_ordered(Laws.plan_of(K.settle_with(cfg, inn, now, m, d)), Laws.secrets_gone(m), Laws.egress_gone(m)) == True{} : Bool}:
+def restricts_hard(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +d: Nat, +cnt: Nat, +level: K.SeverityLevel) -> {Laws.implies(Laws.is_restrict(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, K.ModeRun{}, d))))), Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, K.ModeRun{}, d)))), 0n) && Laws.plan_has(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, K.ModeRun{}, d)))), 1n)) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match level:
+        case K.ToRestrict{}:
+          {==}
+        case K.ToHold{}:
+          {==}
+        case K.ToFreeze{}:
+          {==}
+        case K.ToKill{}:
+          {==}
+    case False{}:
+      match level:
+        case K.ToRestrict{}:
+          {==}
+        case K.ToHold{}:
+          {==}
+        case K.ToFreeze{}:
+          {==}
+        case K.ToKill{}:
+          {==}
+
+def restricts_reset(+cfg: K.KernelConfig, acc: Bool, +at: Nat, +d: Nat, +counter: Nat, +n: Nat, +ttl: Nat, r: {acc == False{} : Bool}) -> {Laws.implies(Laws.is_restrict(Laws.mode_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, K.ModeRun{}, d)))), Laws.plan_has(Laws.plan_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, K.ModeRun{}, d))), 0n) && Laws.plan_has(Laws.plan_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, K.ModeRun{}, d))), 1n)) == True{} : Bool}:
+  match acc:
+    case True{}:
+      Empty.absurd({Laws.implies(Laws.is_restrict(Laws.mode_of(K.seal(at, K.next_counter_with(True{}, counter, n), K.reset_with(cfg, True{}, at, ttl, K.ModeRun{}, d)))), Laws.plan_has(Laws.plan_of(K.seal(at, K.next_counter_with(True{}, counter, n), K.reset_with(cfg, True{}, at, ttl, K.ModeRun{}, d))), 0n) && Laws.plan_has(Laws.plan_of(K.seal(at, K.next_counter_with(True{}, counter, n), K.reset_with(cfg, True{}, at, ttl, K.ModeRun{}, d))), 1n)) == True{} : Bool}, true_is_not_false(r))
+    case False{}:
+      restricts_settle(cfg, Nat.is_lt(at, d), at, d, counter)
+
+def Laws.restrict_plan_is_complete(cfg, d, clock, counter, e, r):
+  match e:
+    case K.ClockTick{+now}:
+      restricts_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter)
+    case K.AgentRequest{+now}:
+      restricts_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter)
+    case K.Renew{+now, +ttl}:
+      restricts_renew(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter, ttl)
+    case K.Classifier{+now, +level}:
+      restricts_classifier(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter, level)
+    case K.HardRule{+now, +level}:
+      restricts_hard(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter, level)
+    case K.Reset{+now, +s, +n, +f, +na, +ttl}:
+      restricts_reset(cfg, K.reset_ok(K.ModeRun{}, counter, s, n, f, na, K.effective_time(now, clock)), K.effective_time(now, clock), d, counter, n, ttl, r)
+
+def norecover_settle(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat) -> {Laws.has_recovery(Laws.plan_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, m, d)))) == False{} : Bool}:
   match inn:
     case True{}:
       match m:
         case K.ModeRun{}:
           {==}
         case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
           {==}
         case K.ModeFreeze{}:
           {==}
@@ -489,19 +3651,23 @@ def ordered_settle(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.Containment
         case K.ModeRun{}:
           {==}
         case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
           {==}
         case K.ModeFreeze{}:
           {==}
         case K.ModeKill{}:
           {==}
 
-def ordered_renew(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMode, +d: Nat, ttl: Nat) -> {Laws.stop_is_ordered(Laws.plan_of(K.renew_after(cfg, now, ttl, K.settle_with(cfg, inn, now, m, d))), Laws.secrets_gone(m), Laws.egress_gone(m)) == True{} : Bool}:
+def norecover_renew(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +ttl: Nat) -> {Laws.has_recovery(Laws.plan_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, m, d))))) == False{} : Bool}:
   match inn:
     case True{}:
       match m:
         case K.ModeRun{}:
           {==}
         case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
           {==}
         case K.ModeFreeze{}:
           {==}
@@ -512,19 +3678,23 @@ def ordered_renew(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentM
         case K.ModeRun{}:
           {==}
         case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
           {==}
         case K.ModeFreeze{}:
           {==}
         case K.ModeKill{}:
           {==}
 
-def ordered_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMode, +d: Nat, level: K.SeverityLevel) -> {Laws.stop_is_ordered(Laws.plan_of(K.raise_after(cfg, now, K.cap_classifier(level), K.settle_with(cfg, inn, now, m, d))), Laws.secrets_gone(m), Laws.egress_gone(m)) == True{} : Bool}:
+def norecover_classifier(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel) -> {Laws.has_recovery(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, m, d))))) == False{} : Bool}:
   match inn:
     case True{}:
       match m:
         case K.ModeRun{}:
           match level:
             case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
               {==}
             case K.ToFreeze{}:
               {==}
@@ -534,6 +3704,18 @@ def ordered_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.Contain
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
@@ -542,6 +3724,8 @@ def ordered_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.Contain
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
@@ -549,6 +3733,8 @@ def ordered_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.Contain
         case K.ModeKill{}:
           match level:
             case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
               {==}
             case K.ToFreeze{}:
               {==}
@@ -560,6 +3746,8 @@ def ordered_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.Contain
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
@@ -567,6 +3755,18 @@ def ordered_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.Contain
         case K.ModeRestrict{}:
           match level:
             case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
               {==}
             case K.ToFreeze{}:
               {==}
@@ -576,6 +3776,8 @@ def ordered_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.Contain
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
@@ -583,19 +3785,23 @@ def ordered_classifier(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.Contain
         case K.ModeKill{}:
           match level:
             case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
               {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
               {==}
 
-def ordered_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMode, +d: Nat, level: K.SeverityLevel) -> {Laws.stop_is_ordered(Laws.plan_of(K.raise_after(cfg, now, level, K.settle_with(cfg, inn, now, m, d))), Laws.secrets_gone(m), Laws.egress_gone(m)) == True{} : Bool}:
+def norecover_hard(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel) -> {Laws.has_recovery(Laws.plan_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, m, d))))) == False{} : Bool}:
   match inn:
     case True{}:
       match m:
         case K.ModeRun{}:
           match level:
             case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
               {==}
             case K.ToFreeze{}:
               {==}
@@ -605,6 +3811,18 @@ def ordered_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMo
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
@@ -613,6 +3831,8 @@ def ordered_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMo
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
@@ -620,6 +3840,8 @@ def ordered_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMo
         case K.ModeKill{}:
           match level:
             case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
               {==}
             case K.ToFreeze{}:
               {==}
@@ -631,6 +3853,8 @@ def ordered_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMo
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
@@ -638,6 +3862,18 @@ def ordered_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMo
         case K.ModeRestrict{}:
           match level:
             case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
               {==}
             case K.ToFreeze{}:
               {==}
@@ -647,6 +3883,8 @@ def ordered_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMo
           match level:
             case K.ToRestrict{}:
               {==}
+            case K.ToHold{}:
+              {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
@@ -654,91 +3892,46 @@ def ordered_hard(+cfg: K.KernelConfig, inn: Bool, +now: Nat, +m: K.ContainmentMo
         case K.ModeKill{}:
           match level:
             case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
               {==}
             case K.ToFreeze{}:
               {==}
             case K.ToKill{}:
               {==}
 
-def classifier_safe(+cfg: K.KernelConfig, inn: Bool, +now: Nat, m: K.ContainmentMode, +d: Nat, level: K.SeverityLevel, k: {Laws.is_kill(m) == False{} : Bool}, h: {inn == True{} : Bool}) -> {Laws.is_kill(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(level), K.settle_with(cfg, inn, now, m, d)))) == False{} : Bool}:
-  match inn:
+def norecover_reset(+cfg: K.KernelConfig, acc: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +counter: Nat, +n: Nat, +ttl: Nat, r: {acc == False{} : Bool}) -> {Laws.has_recovery(Laws.plan_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, m, d)))) == False{} : Bool}:
+  match acc:
     case True{}:
-      match m:
-        case K.ModeRun{}:
-          match level:
-            case K.ToRestrict{}:
-              {==}
-            case K.ToFreeze{}:
-              {==}
-            case K.ToKill{}:
-              {==}
-        case K.ModeRestrict{}:
-          match level:
-            case K.ToRestrict{}:
-              {==}
-            case K.ToFreeze{}:
-              {==}
-            case K.ToKill{}:
-              {==}
-        case K.ModeFreeze{}:
-          match level:
-            case K.ToRestrict{}:
-              {==}
-            case K.ToFreeze{}:
-              {==}
-            case K.ToKill{}:
-              {==}
-        case K.ModeKill{}:
-          match level:
-            case K.ToRestrict{}:
-              Empty.absurd({Laws.is_kill(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, True{}, now, K.ModeKill{}, d)))) == False{} : Bool}, true_is_not_false(k))
-            case K.ToFreeze{}:
-              Empty.absurd({Laws.is_kill(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, True{}, now, K.ModeKill{}, d)))) == False{} : Bool}, true_is_not_false(k))
-            case K.ToKill{}:
-              Empty.absurd({Laws.is_kill(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, True{}, now, K.ModeKill{}, d)))) == False{} : Bool}, true_is_not_false(k))
+      Empty.absurd({Laws.has_recovery(Laws.plan_of(K.seal(at, K.next_counter_with(True{}, counter, n), K.reset_with(cfg, True{}, at, ttl, m, d)))) == False{} : Bool}, true_is_not_false(r))
     case False{}:
-      match m:
-        case K.ModeRun{}:
-          match level:
-            case K.ToRestrict{}:
-              Empty.absurd({Laws.is_kill(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, now, K.ModeRun{}, d)))) == False{} : Bool}, false_is_not_true(h))
-            case K.ToFreeze{}:
-              Empty.absurd({Laws.is_kill(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, now, K.ModeRun{}, d)))) == False{} : Bool}, false_is_not_true(h))
-            case K.ToKill{}:
-              Empty.absurd({Laws.is_kill(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, now, K.ModeRun{}, d)))) == False{} : Bool}, false_is_not_true(h))
-        case K.ModeRestrict{}:
-          match level:
-            case K.ToRestrict{}:
-              Empty.absurd({Laws.is_kill(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, now, K.ModeRestrict{}, d)))) == False{} : Bool}, false_is_not_true(h))
-            case K.ToFreeze{}:
-              Empty.absurd({Laws.is_kill(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, now, K.ModeRestrict{}, d)))) == False{} : Bool}, false_is_not_true(h))
-            case K.ToKill{}:
-              Empty.absurd({Laws.is_kill(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, now, K.ModeRestrict{}, d)))) == False{} : Bool}, false_is_not_true(h))
-        case K.ModeFreeze{}:
-          match level:
-            case K.ToRestrict{}:
-              Empty.absurd({Laws.is_kill(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, now, K.ModeFreeze{}, d)))) == False{} : Bool}, false_is_not_true(h))
-            case K.ToFreeze{}:
-              Empty.absurd({Laws.is_kill(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, now, K.ModeFreeze{}, d)))) == False{} : Bool}, false_is_not_true(h))
-            case K.ToKill{}:
-              Empty.absurd({Laws.is_kill(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, now, K.ModeFreeze{}, d)))) == False{} : Bool}, false_is_not_true(h))
-        case K.ModeKill{}:
-          match level:
-            case K.ToRestrict{}:
-              Empty.absurd({Laws.is_kill(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToRestrict{}), K.settle_with(cfg, False{}, now, K.ModeKill{}, d)))) == False{} : Bool}, false_is_not_true(h))
-            case K.ToFreeze{}:
-              Empty.absurd({Laws.is_kill(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToFreeze{}), K.settle_with(cfg, False{}, now, K.ModeKill{}, d)))) == False{} : Bool}, false_is_not_true(h))
-            case K.ToKill{}:
-              Empty.absurd({Laws.is_kill(Laws.mode_of(K.raise_after(cfg, now, K.cap_classifier(K.ToKill{}), K.settle_with(cfg, False{}, now, K.ModeKill{}, d)))) == False{} : Bool}, false_is_not_true(h))
+      norecover_settle(cfg, Nat.is_lt(at, d), at, m, d, counter)
 
-def renew_bound(+cfg: K.KernelConfig, inn: Bool, +now: Nat, m: K.ContainmentMode, +d: Nat, ttl: Nat) -> {Laws.implies(Laws.is_live(Laws.mode_of(K.renew_after(cfg, now, ttl, K.settle_with(cfg, inn, now, m, d)))), Nat.is_le(Laws.deadline_of(K.renew_after(cfg, now, ttl, K.settle_with(cfg, inn, now, m, d))), Nat.add(now, K.max_lease_of(cfg)))) == True{} : Bool}:
+def Laws.no_recovery_without_reset(cfg, m, d, clock, counter, e, r):
+  match e:
+    case K.ClockTick{+now}:
+      norecover_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter)
+    case K.AgentRequest{+now}:
+      norecover_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter)
+    case K.Renew{+now, +ttl}:
+      norecover_renew(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, ttl)
+    case K.Classifier{+now, +level}:
+      norecover_classifier(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level)
+    case K.HardRule{+now, +level}:
+      norecover_hard(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level)
+    case K.Reset{+now, +s, +n, +f, +na, +ttl}:
+      norecover_reset(cfg, K.reset_ok(m, counter, s, n, f, na, K.effective_time(now, clock)), K.effective_time(now, clock), m, d, counter, n, ttl, r)
+
+def frame_counter_settle(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat) -> {Laws.counter_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, m, d))) == cnt : Nat}:
   match inn:
     case True{}:
       match m:
         case K.ModeRun{}:
-          add_mono(now, Nat.min(ttl, K.max_lease_of(cfg)), K.max_lease_of(cfg), min_le(ttl, K.max_lease_of(cfg)))
+          {==}
         case K.ModeRestrict{}:
-          add_mono(now, Nat.min(ttl, K.max_lease_of(cfg)), K.max_lease_of(cfg), min_le(ttl, K.max_lease_of(cfg)))
+          {==}
+        case K.ModeHold{}:
+          {==}
         case K.ModeFreeze{}:
           {==}
         case K.ModeKill{}:
@@ -749,10 +3942,767 @@ def renew_bound(+cfg: K.KernelConfig, inn: Bool, +now: Nat, m: K.ContainmentMode
           {==}
         case K.ModeRestrict{}:
           {==}
+        case K.ModeHold{}:
+          {==}
         case K.ModeFreeze{}:
           {==}
         case K.ModeKill{}:
           {==}
+
+def frame_counter_renew(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +ttl: Nat) -> {Laws.counter_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, m, d)))) == cnt : Nat}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          {==}
+        case K.ModeKill{}:
+          {==}
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          {==}
+        case K.ModeRestrict{}:
+          {==}
+        case K.ModeHold{}:
+          {==}
+        case K.ModeFreeze{}:
+          {==}
+        case K.ModeKill{}:
+          {==}
+
+def frame_counter_classifier(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel) -> {Laws.counter_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, m, d)))) == cnt : Nat}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+
+def frame_counter_hard(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel) -> {Laws.counter_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, m, d)))) == cnt : Nat}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+
+def frame_counter_reset(+cfg: K.KernelConfig, acc: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +counter: Nat, +n: Nat, +ttl: Nat, r: {acc == False{} : Bool}) -> {Laws.counter_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, m, d))) == counter : Nat}:
+  match acc:
+    case True{}:
+      Empty.absurd({Laws.counter_of(K.seal(at, K.next_counter_with(True{}, counter, n), K.reset_with(cfg, True{}, at, ttl, m, d))) == counter : Nat}, true_is_not_false(r))
+    case False{}:
+      frame_counter_settle(cfg, Nat.is_lt(at, d), at, m, d, counter)
+
+def Laws.counter_needs_accepted_reset(cfg, m, d, clock, counter, e, r):
+  match e:
+    case K.ClockTick{+now}:
+      frame_counter_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter)
+    case K.AgentRequest{+now}:
+      frame_counter_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter)
+    case K.Renew{+now, +ttl}:
+      frame_counter_renew(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, ttl)
+    case K.Classifier{+now, +level}:
+      frame_counter_classifier(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level)
+    case K.HardRule{+now, +level}:
+      frame_counter_hard(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level)
+    case K.Reset{+now, +s, +n, +f, +na, +ttl}:
+      frame_counter_reset(cfg, K.reset_ok(m, counter, s, n, f, na, K.effective_time(now, clock)), K.effective_time(now, clock), m, d, counter, n, ttl, r)
+
+def hard_level(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +m: K.ContainmentMode, +d: Nat, +cnt: Nat, +level: K.SeverityLevel) -> {Laws.rank_at_least(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, m, d)))), Laws.level_mode(level)) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+    case False{}:
+      match m:
+        case K.ModeRun{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeRestrict{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeHold{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeFreeze{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+        case K.ModeKill{}:
+          match level:
+            case K.ToRestrict{}:
+              {==}
+            case K.ToHold{}:
+              {==}
+            case K.ToFreeze{}:
+              {==}
+            case K.ToKill{}:
+              {==}
+
+def Laws.hard_rule_reaches_level(cfg, m, d, clock, counter, now, level):
+  hard_level(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), m, d, counter, level)
+
+def killed_settle(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +d: Nat, +cnt: Nat) -> {Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.settle_with(cfg, inn, at, K.ModeKill{}, d)))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      {==}
+    case False{}:
+      {==}
+
+def killed_renew(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +d: Nat, +cnt: Nat, +ttl: Nat) -> {Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.renew_after(cfg, at, ttl, K.settle_with(cfg, inn, at, K.ModeKill{}, d))))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      {==}
+    case False{}:
+      {==}
+
+def killed_classifier(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +d: Nat, +cnt: Nat, +level: K.SeverityLevel) -> {Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, K.cap_classifier(level), K.settle_with(cfg, inn, at, K.ModeKill{}, d))))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match level:
+        case K.ToRestrict{}:
+          {==}
+        case K.ToHold{}:
+          {==}
+        case K.ToFreeze{}:
+          {==}
+        case K.ToKill{}:
+          {==}
+    case False{}:
+      match level:
+        case K.ToRestrict{}:
+          {==}
+        case K.ToHold{}:
+          {==}
+        case K.ToFreeze{}:
+          {==}
+        case K.ToKill{}:
+          {==}
+
+def killed_hard(+cfg: K.KernelConfig, inn: Bool, +at: Nat, +d: Nat, +cnt: Nat, +level: K.SeverityLevel) -> {Laws.is_kill(Laws.mode_of(K.seal(at, cnt, K.raise_after(cfg, at, level, K.settle_with(cfg, inn, at, K.ModeKill{}, d))))) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match level:
+        case K.ToRestrict{}:
+          {==}
+        case K.ToHold{}:
+          {==}
+        case K.ToFreeze{}:
+          {==}
+        case K.ToKill{}:
+          {==}
+    case False{}:
+      match level:
+        case K.ToRestrict{}:
+          {==}
+        case K.ToHold{}:
+          {==}
+        case K.ToFreeze{}:
+          {==}
+        case K.ToKill{}:
+          {==}
+
+def killed_reset(+cfg: K.KernelConfig, acc: Bool, +at: Nat, +d: Nat, +counter: Nat, +n: Nat, +ttl: Nat, r: {acc == False{} : Bool}) -> {Laws.is_kill(Laws.mode_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, K.ModeKill{}, d)))) == True{} : Bool}:
+  match acc:
+    case True{}:
+      Empty.absurd({Laws.is_kill(Laws.mode_of(K.seal(at, K.next_counter_with(True{}, counter, n), K.reset_with(cfg, True{}, at, ttl, K.ModeKill{}, d)))) == True{} : Bool}, true_is_not_false(r))
+    case False{}:
+      killed_settle(cfg, Nat.is_lt(at, d), at, d, counter)
+
+def Laws.kill_needs_accepted_reset(cfg, d, clock, counter, e, r):
+  match e:
+    case K.ClockTick{+now}:
+      killed_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter)
+    case K.AgentRequest{+now}:
+      killed_settle(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter)
+    case K.Renew{+now, +ttl}:
+      killed_renew(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter, ttl)
+    case K.Classifier{+now, +level}:
+      killed_classifier(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter, level)
+    case K.HardRule{+now, +level}:
+      killed_hard(cfg, Nat.is_lt(K.effective_time(now, clock), d), K.effective_time(now, clock), d, counter, level)
+    case K.Reset{+now, +s, +n, +f, +na, +ttl}:
+      killed_reset(cfg, K.reset_ok(K.ModeKill{}, counter, s, n, f, na, K.effective_time(now, clock)), K.effective_time(now, clock), d, counter, n, ttl, r)
+
+def chain_a(x: Bool, a: Bool, b: Bool, c: Bool) -> {Laws.implies(x && (a && (b && c)), a) == True{} : Bool}:
+  match x:
+    case True{}:
+      match a:
+        case True{}:
+          match b:
+            case True{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+            case False{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+        case False{}:
+          match b:
+            case True{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+            case False{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+    case False{}:
+      match a:
+        case True{}:
+          match b:
+            case True{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+            case False{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+        case False{}:
+          match b:
+            case True{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+            case False{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+
+def chain_b(x: Bool, a: Bool, b: Bool, c: Bool) -> {Laws.implies(x && (a && (b && c)), b) == True{} : Bool}:
+  match x:
+    case True{}:
+      match a:
+        case True{}:
+          match b:
+            case True{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+            case False{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+        case False{}:
+          match b:
+            case True{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+            case False{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+    case False{}:
+      match a:
+        case True{}:
+          match b:
+            case True{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+            case False{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+        case False{}:
+          match b:
+            case True{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+            case False{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+
+def chain_c(x: Bool, a: Bool, b: Bool, c: Bool) -> {Laws.implies(x && (a && (b && c)), c) == True{} : Bool}:
+  match x:
+    case True{}:
+      match a:
+        case True{}:
+          match b:
+            case True{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+            case False{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+        case False{}:
+          match b:
+            case True{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+            case False{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+    case False{}:
+      match a:
+        case True{}:
+          match b:
+            case True{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+            case False{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+        case False{}:
+          match b:
+            case True{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+            case False{}:
+              match c:
+                case True{}:
+                  {==}
+                case False{}:
+                  {==}
+
+def chain_no_a(x: Bool, a: Bool, b: Bool, h: {a == False{} : Bool}) -> {x && (a && b) == False{} : Bool}:
+  match x:
+    case True{}:
+      match a:
+        case True{}:
+          Empty.absurd({True{} && (True{} && b) == False{} : Bool}, true_is_not_false(h))
+        case False{}:
+          {==}
+    case False{}:
+      match a:
+        case True{}:
+          Empty.absurd({False{} && (True{} && b) == False{} : Bool}, true_is_not_false(h))
+        case False{}:
+          {==}
+
+def Laws.reset_requires_signature(m, counter, n, f, not_after, at):
+  {==}
+
+def ok_reset_requires_fresh_counter(+m: K.ContainmentMode, +counter: Nat, s: Bool, +n: Nat, +f: K.ContainmentMode, +na: Nat, +at: Nat) -> {Laws.implies(K.reset_ok(m, counter, s, n, f, na, at), Nat.is_lt(counter, n)) == True{} : Bool}:
+  match s:
+    case True{}:
+      chain_a(K.not_run(m), Nat.is_lt(counter, n), K.same_mode(f, m), Nat.is_le(at, na))
+    case False{}:
+      {==}
+
+def Laws.reset_requires_fresh_counter(m, counter, s, n, f, not_after, at):
+  ok_reset_requires_fresh_counter(m, counter, s, n, f, not_after, at)
+
+def ok_reset_is_bound_to_mode(+m: K.ContainmentMode, +counter: Nat, s: Bool, +n: Nat, +f: K.ContainmentMode, +na: Nat, +at: Nat) -> {Laws.implies(K.reset_ok(m, counter, s, n, f, na, at), K.same_mode(f, m)) == True{} : Bool}:
+  match s:
+    case True{}:
+      chain_b(K.not_run(m), Nat.is_lt(counter, n), K.same_mode(f, m), Nat.is_le(at, na))
+    case False{}:
+      {==}
+
+def Laws.reset_is_bound_to_mode(m, counter, s, n, f, not_after, at):
+  ok_reset_is_bound_to_mode(m, counter, s, n, f, not_after, at)
+
+def ok_reset_must_be_unexpired(+m: K.ContainmentMode, +counter: Nat, s: Bool, +n: Nat, +f: K.ContainmentMode, +na: Nat, +at: Nat) -> {Laws.implies(K.reset_ok(m, counter, s, n, f, na, at), Nat.is_le(at, na)) == True{} : Bool}:
+  match s:
+    case True{}:
+      chain_c(K.not_run(m), Nat.is_lt(counter, n), K.same_mode(f, m), Nat.is_le(at, na))
+    case False{}:
+      {==}
+
+def Laws.reset_must_be_unexpired(m, counter, s, n, f, not_after, at):
+  ok_reset_must_be_unexpired(m, counter, s, n, f, not_after, at)
+
+def run_no_reset(+counter: Nat, s: Bool, +n: Nat, f: K.ContainmentMode, +na: Nat, +at: Nat) -> {K.reset_ok(K.ModeRun{}, counter, s, n, f, na, at) == False{} : Bool}:
+  match s:
+    case True{}:
+      {==}
+    case False{}:
+      {==}
+
+def Laws.reset_cannot_renew_run(counter, s, n, f, not_after, at):
+  run_no_reset(counter, s, n, f, not_after, at)
+
+def no_replay(+m: K.ContainmentMode, s: Bool, +n: Nat, +f: K.ContainmentMode, +na: Nat, +at: Nat) -> {K.reset_ok(m, n, s, n, f, na, at) == False{} : Bool}:
+  match s:
+    case True{}:
+      chain_no_a(K.not_run(m), Nat.is_lt(n, n), K.same_mode(f, m) && Nat.is_le(at, na), lt_irrefl(n))
+    case False{}:
+      {==}
+
+def Laws.reset_cannot_replay(m, s, n, f, not_after, at):
+  no_replay(m, s, n, f, not_after, at)
+
+def consume(+cfg: K.KernelConfig, acc: Bool, +at: Nat, +ttl: Nat, +m: K.ContainmentMode, +d: Nat, +counter: Nat, +n: Nat, h: {acc == True{} : Bool}) -> {Laws.counter_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, m, d))) == n : Nat}:
+  match acc:
+    case True{}:
+      {==}
+    case False{}:
+      Empty.absurd({Laws.counter_of(K.seal(at, K.next_counter_with(False{}, counter, n), K.reset_with(cfg, False{}, at, ttl, m, d))) == n : Nat}, false_is_not_true(h))
+
+def reset_bound(+cfg: K.KernelConfig, acc: Bool, +at: Nat, +ttl: Nat, +m: K.ContainmentMode, +d: Nat, +counter: Nat, +n: Nat, h: {acc == True{} : Bool}) -> {Nat.is_le(Laws.deadline_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, m, d))), Nat.add(at, K.max_lease_of(cfg))) == True{} : Bool}:
+  match acc:
+    case True{}:
+      add_mono(at, Nat.min(ttl, K.max_lease_of(cfg)), K.max_lease_of(cfg), min_le(ttl, K.max_lease_of(cfg)))
+    case False{}:
+      Empty.absurd({Nat.is_le(Laws.deadline_of(K.seal(at, K.next_counter_with(False{}, counter, n), K.reset_with(cfg, False{}, at, ttl, m, d))), Nat.add(at, K.max_lease_of(cfg))) == True{} : Bool}, false_is_not_true(h))
+
+def plan_matches(+m: K.ContainmentMode) -> {K.reset_actions(m) == Laws.recovery_plan(m) : K.ActionPlan}:
+  match m:
+    case K.ModeRun{}:
+      {==}
+    case K.ModeRestrict{}:
+      {==}
+    case K.ModeHold{}:
+      {==}
+    case K.ModeFreeze{}:
+      {==}
+    case K.ModeKill{}:
+      {==}
+
+def reset_plan(+cfg: K.KernelConfig, acc: Bool, +at: Nat, +ttl: Nat, +m: K.ContainmentMode, +d: Nat, +counter: Nat, +n: Nat, h: {acc == True{} : Bool}) -> {Laws.plan_of(K.seal(at, K.next_counter_with(acc, counter, n), K.reset_with(cfg, acc, at, ttl, m, d))) == Laws.recovery_plan(m) : K.ActionPlan}:
+  match acc:
+    case True{}:
+      plan_matches(m)
+    case False{}:
+      Empty.absurd({Laws.plan_of(K.seal(at, K.next_counter_with(False{}, counter, n), K.reset_with(cfg, False{}, at, ttl, m, d))) == Laws.recovery_plan(m) : K.ActionPlan}, false_is_not_true(h))
+
+def Laws.accepted_reset_consumes_counter(cfg, m, d, clock, counter, now, s, n, f, not_after, ttl, h):
+  consume(cfg, K.reset_ok(m, counter, s, n, f, not_after, K.effective_time(now, clock)), K.effective_time(now, clock), ttl, m, d, counter, n, h)
+
+def Laws.reset_is_bounded(cfg, m, d, clock, counter, now, s, n, f, not_after, ttl, h):
+  reset_bound(cfg, K.reset_ok(m, counter, s, n, f, not_after, K.effective_time(now, clock)), K.effective_time(now, clock), ttl, m, d, counter, n, h)
+
+def Laws.reset_plan_is_complete(cfg, m, d, clock, counter, now, s, n, f, not_after, ttl, h):
+  reset_plan(cfg, K.reset_ok(m, counter, s, n, f, not_after, K.effective_time(now, clock)), K.effective_time(now, clock), ttl, m, d, counter, n, h)
 
 def grant_needed(inn: Bool, m: K.ContainmentMode, k: K.AccessKind, +g: Bool, b: Bool) -> {Laws.implies(K.allow_with(inn, m, K.AccessRequest{k, g, b}), g) == True{} : Bool}:
   match inn:
@@ -818,6 +4768,36 @@ def grant_needed(inn: Bool, m: K.ContainmentMode, k: K.AccessKind, +g: Bool, b: 
                       {==}
                     case False{}:
                       {==}
+        case K.ModeHold{}:
+          match k:
+            case K.EgressAccess{}:
+              match g:
+                case True{}:
+                  match b:
+                    case True{}:
+                      {==}
+                    case False{}:
+                      {==}
+                case False{}:
+                  match b:
+                    case True{}:
+                      {==}
+                    case False{}:
+                      {==}
+            case K.SecretAccess{}:
+              match g:
+                case True{}:
+                  match b:
+                    case True{}:
+                      {==}
+                    case False{}:
+                      {==}
+                case False{}:
+                  match b:
+                    case True{}:
+                      {==}
+                    case False{}:
+                      {==}
         case K.ModeFreeze{}:
           match k:
             case K.EgressAccess{}:
@@ -911,6 +4891,36 @@ def grant_needed(inn: Bool, m: K.ContainmentMode, k: K.AccessKind, +g: Bool, b: 
                     case False{}:
                       {==}
         case K.ModeRestrict{}:
+          match k:
+            case K.EgressAccess{}:
+              match g:
+                case True{}:
+                  match b:
+                    case True{}:
+                      {==}
+                    case False{}:
+                      {==}
+                case False{}:
+                  match b:
+                    case True{}:
+                      {==}
+                    case False{}:
+                      {==}
+            case K.SecretAccess{}:
+              match g:
+                case True{}:
+                  match b:
+                    case True{}:
+                      {==}
+                    case False{}:
+                      {==}
+                case False{}:
+                  match b:
+                    case True{}:
+                      {==}
+                    case False{}:
+                      {==}
+        case K.ModeHold{}:
           match k:
             case K.EgressAccess{}:
               match g:
@@ -1016,6 +5026,8 @@ def stopped_lemma(inn: Bool, m: K.ContainmentMode, k: K.AccessKind, g: Bool, b: 
           Empty.absurd({K.allow_with(True{}, K.ModeRun{}, K.AccessRequest{k, g, b}) == False{} : Bool}, false_is_not_true(s))
         case K.ModeRestrict{}:
           Empty.absurd({K.allow_with(True{}, K.ModeRestrict{}, K.AccessRequest{k, g, b}) == False{} : Bool}, false_is_not_true(s))
+        case K.ModeHold{}:
+          {==}
         case K.ModeFreeze{}:
           {==}
         case K.ModeKill{}:
@@ -1026,6 +5038,8 @@ def stopped_lemma(inn: Bool, m: K.ContainmentMode, k: K.AccessKind, g: Bool, b: 
           Empty.absurd({K.allow_with(False{}, K.ModeRun{}, K.AccessRequest{k, g, b}) == False{} : Bool}, false_is_not_true(s))
         case K.ModeRestrict{}:
           Empty.absurd({K.allow_with(False{}, K.ModeRestrict{}, K.AccessRequest{k, g, b}) == False{} : Bool}, false_is_not_true(s))
+        case K.ModeHold{}:
+          {==}
         case K.ModeFreeze{}:
           {==}
         case K.ModeKill{}:
@@ -1038,308 +5052,50 @@ def restrict_secret(inn: Bool, g: Bool, b: Bool) -> {K.allow_with(inn, K.ModeRes
     case False{}:
       {==}
 
-def Laws.fail_closed(cfg, m, d, e, h, r):
-  match e:
-    case K.ClockTick{+now}:
-      closed_settle(cfg, Nat.is_lt(now, d), now, m, d, h)
-    case K.AgentRequest{+now}:
-      closed_settle(cfg, Nat.is_lt(now, d), now, m, d, h)
-    case K.Renew{+now, ttl}:
-      closed_renew(cfg, Nat.is_lt(now, d), now, m, d, ttl, h)
-    case K.Classifier{+now, level}:
-      closed_classifier(cfg, Nat.is_lt(now, d), now, m, d, level, h)
-    case K.HardRule{+now, level}:
-      closed_hard(cfg, Nat.is_lt(now, d), now, m, d, level, h)
-    case K.Reset{+now, signed, ttl}:
-      match signed:
+def restrict_baseline(inn: Bool, g: Bool, +b: Bool) -> {Laws.implies(K.allow_with(inn, K.ModeRestrict{}, K.AccessRequest{K.EgressAccess{}, g, b}), b) == True{} : Bool}:
+  match inn:
+    case True{}:
+      match g:
         case True{}:
-          Empty.absurd({Laws.is_live(Laws.mode_of(K.reset_with(cfg, True{}, now, ttl, m, d))) == False{} : Bool}, true_is_not_false(r))
+          match b:
+            case True{}:
+              {==}
+            case False{}:
+              {==}
         case False{}:
-          closed_settle(cfg, Nat.is_lt(now, d), now, m, d, h)
-
-def Laws.tighten_only(cfg, m, d, e, r):
-  match e:
-    case K.ClockTick{+now}:
-      tight_settle(cfg, Nat.is_lt(now, d), now, m, d)
-    case K.AgentRequest{+now}:
-      tight_settle(cfg, Nat.is_lt(now, d), now, m, d)
-    case K.Renew{+now, ttl}:
-      tight_renew(cfg, Nat.is_lt(now, d), now, m, d, ttl)
-    case K.Classifier{+now, level}:
-      tight_classifier(cfg, Nat.is_lt(now, d), now, m, d, level)
-    case K.HardRule{+now, level}:
-      tight_hard(cfg, Nat.is_lt(now, d), now, m, d, level)
-    case K.Reset{+now, signed, ttl}:
-      match signed:
+          match b:
+            case True{}:
+              {==}
+            case False{}:
+              {==}
+    case False{}:
+      match g:
         case True{}:
-          Empty.absurd({Laws.rank_at_least(Laws.mode_of(K.reset_with(cfg, True{}, now, ttl, m, d)), m) == True{} : Bool}, true_is_not_false(r))
+          match b:
+            case True{}:
+              {==}
+            case False{}:
+              {==}
         case False{}:
-          tight_settle(cfg, Nat.is_lt(now, d), now, m, d)
+          match b:
+            case True{}:
+              {==}
+            case False{}:
+              {==}
 
-def Laws.kill_needs_signed_reset(cfg, d, e, r):
-  match e:
-    case K.ClockTick{+now}:
-      killed_settle(cfg, Nat.is_lt(now, d), now, d)
-    case K.AgentRequest{+now}:
-      killed_settle(cfg, Nat.is_lt(now, d), now, d)
-    case K.Renew{+now, ttl}:
-      killed_renew(cfg, Nat.is_lt(now, d), now, d, ttl)
-    case K.Classifier{+now, level}:
-      killed_classifier(cfg, Nat.is_lt(now, d), now, d, level)
-    case K.HardRule{+now, level}:
-      killed_hard(cfg, Nat.is_lt(now, d), now, d, level)
-    case K.Reset{+now, signed, ttl}:
-      match signed:
-        case True{}:
-          Empty.absurd({Laws.is_kill(Laws.mode_of(K.reset_with(cfg, True{}, now, ttl, K.ModeKill{}, d))) == True{} : Bool}, true_is_not_false(r))
-        case False{}:
-          killed_settle(cfg, Nat.is_lt(now, d), now, d)
+def Laws.access_requires_grant(now, m, d, clock, counter, k, g, b):
+  grant_needed(Nat.is_lt(K.effective_time(now, clock), d), m, k, g, b)
 
-def reset_ordered(m: K.ContainmentMode) -> {Laws.stop_is_ordered(K.reset_actions(m), Laws.secrets_gone(m), Laws.egress_gone(m)) == True{} : Bool}:
-  match m:
-    case K.ModeRun{}:
-      {==}
-    case K.ModeRestrict{}:
-      {==}
-    case K.ModeFreeze{}:
-      {==}
-    case K.ModeKill{}:
-      {==}
+def Laws.expired_lease_denies(now, m, d, clock, counter, r, h):
+  expired_denies(Nat.is_lt(K.effective_time(now, clock), d), m, r, h)
 
-def Laws.authority_removed_first(cfg, m, d, e):
-  match e:
-    case K.ClockTick{+now}:
-      ordered_settle(cfg, Nat.is_lt(now, d), now, m, d)
-    case K.AgentRequest{+now}:
-      ordered_settle(cfg, Nat.is_lt(now, d), now, m, d)
-    case K.Renew{+now, ttl}:
-      ordered_renew(cfg, Nat.is_lt(now, d), now, m, d, ttl)
-    case K.Classifier{+now, level}:
-      ordered_classifier(cfg, Nat.is_lt(now, d), now, m, d, level)
-    case K.HardRule{+now, level}:
-      ordered_hard(cfg, Nat.is_lt(now, d), now, m, d, level)
-    case K.Reset{+now, signed, ttl}:
-      match signed:
-        case True{}:
-          reset_ordered(m)
-        case False{}:
-          ordered_settle(cfg, Nat.is_lt(now, d), now, m, d)
-
-def Laws.classifier_cannot_kill(cfg, m, d, now, level, k, h):
-  classifier_safe(cfg, Nat.is_lt(now, d), now, m, d, level, k, h)
-
-def Laws.renewal_is_bounded(cfg, m, d, now, ttl):
-  renew_bound(cfg, Nat.is_lt(now, d), now, m, d, ttl)
-
-def Laws.reset_is_bounded(cfg, m, d, now, ttl):
-  add_mono(now, Nat.min(ttl, K.max_lease_of(cfg)), K.max_lease_of(cfg), min_le(ttl, K.max_lease_of(cfg)))
-
-def Laws.access_requires_grant(now, m, d, k, g, b):
-  grant_needed(Nat.is_lt(now, d), m, k, g, b)
-
-def Laws.expired_lease_denies(now, m, d, r, h):
-  expired_denies(Nat.is_lt(now, d), m, r, h)
-
-def Laws.stopped_denies(now, m, d, r, s):
+def Laws.stopped_denies(now, m, d, clock, counter, r, s):
   match r:
     case K.AccessRequest{k, g, b}:
-      stopped_lemma(Nat.is_lt(now, d), m, k, g, b, s)
+      stopped_lemma(Nat.is_lt(K.effective_time(now, clock), d), m, k, g, b, s)
 
-def Laws.restrict_denies_secrets(now, d, g, b):
-  restrict_secret(Nat.is_lt(now, d), g, b)
+def Laws.restrict_denies_secrets(now, d, clock, counter, g, b):
+  restrict_secret(Nat.is_lt(K.effective_time(now, clock), d), g, b)
 
-def rank_trans(+a: K.ContainmentMode, +b: K.ContainmentMode, +c: K.ContainmentMode, x: {Laws.rank_at_least(a, b) == True{} : Bool}, y: {Laws.rank_at_least(b, c) == True{} : Bool}) -> {Laws.rank_at_least(a, c) == True{} : Bool}:
-  match a:
-    case K.ModeRun{}:
-      match b:
-        case K.ModeRun{}:
-          match c:
-            case K.ModeRun{}:
-              {==}
-            case K.ModeRestrict{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(y))
-            case K.ModeFreeze{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(y))
-            case K.ModeKill{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
-        case K.ModeRestrict{}:
-          match c:
-            case K.ModeRun{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeRun{}) == True{} : Bool}, false_is_not_true(x))
-            case K.ModeRestrict{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(x))
-            case K.ModeFreeze{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(x))
-            case K.ModeKill{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(x))
-        case K.ModeFreeze{}:
-          match c:
-            case K.ModeRun{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeRun{}) == True{} : Bool}, false_is_not_true(x))
-            case K.ModeRestrict{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(x))
-            case K.ModeFreeze{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(x))
-            case K.ModeKill{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(x))
-        case K.ModeKill{}:
-          match c:
-            case K.ModeRun{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeRun{}) == True{} : Bool}, false_is_not_true(x))
-            case K.ModeRestrict{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(x))
-            case K.ModeFreeze{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(x))
-            case K.ModeKill{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRun{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(x))
-    case K.ModeRestrict{}:
-      match b:
-        case K.ModeRun{}:
-          match c:
-            case K.ModeRun{}:
-              {==}
-            case K.ModeRestrict{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(y))
-            case K.ModeFreeze{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(y))
-            case K.ModeKill{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
-        case K.ModeRestrict{}:
-          match c:
-            case K.ModeRun{}:
-              {==}
-            case K.ModeRestrict{}:
-              {==}
-            case K.ModeFreeze{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(y))
-            case K.ModeKill{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
-        case K.ModeFreeze{}:
-          match c:
-            case K.ModeRun{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeRun{}) == True{} : Bool}, false_is_not_true(x))
-            case K.ModeRestrict{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(x))
-            case K.ModeFreeze{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(x))
-            case K.ModeKill{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(x))
-        case K.ModeKill{}:
-          match c:
-            case K.ModeRun{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeRun{}) == True{} : Bool}, false_is_not_true(x))
-            case K.ModeRestrict{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(x))
-            case K.ModeFreeze{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(x))
-            case K.ModeKill{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeRestrict{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(x))
-    case K.ModeFreeze{}:
-      match b:
-        case K.ModeRun{}:
-          match c:
-            case K.ModeRun{}:
-              {==}
-            case K.ModeRestrict{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(y))
-            case K.ModeFreeze{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(y))
-            case K.ModeKill{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
-        case K.ModeRestrict{}:
-          match c:
-            case K.ModeRun{}:
-              {==}
-            case K.ModeRestrict{}:
-              {==}
-            case K.ModeFreeze{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(y))
-            case K.ModeKill{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
-        case K.ModeFreeze{}:
-          match c:
-            case K.ModeRun{}:
-              {==}
-            case K.ModeRestrict{}:
-              {==}
-            case K.ModeFreeze{}:
-              {==}
-            case K.ModeKill{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
-        case K.ModeKill{}:
-          match c:
-            case K.ModeRun{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeRun{}) == True{} : Bool}, false_is_not_true(x))
-            case K.ModeRestrict{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(x))
-            case K.ModeFreeze{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(x))
-            case K.ModeKill{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeFreeze{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(x))
-    case K.ModeKill{}:
-      match b:
-        case K.ModeRun{}:
-          match c:
-            case K.ModeRun{}:
-              {==}
-            case K.ModeRestrict{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeKill{}, K.ModeRestrict{}) == True{} : Bool}, false_is_not_true(y))
-            case K.ModeFreeze{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeKill{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(y))
-            case K.ModeKill{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeKill{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
-        case K.ModeRestrict{}:
-          match c:
-            case K.ModeRun{}:
-              {==}
-            case K.ModeRestrict{}:
-              {==}
-            case K.ModeFreeze{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeKill{}, K.ModeFreeze{}) == True{} : Bool}, false_is_not_true(y))
-            case K.ModeKill{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeKill{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
-        case K.ModeFreeze{}:
-          match c:
-            case K.ModeRun{}:
-              {==}
-            case K.ModeRestrict{}:
-              {==}
-            case K.ModeFreeze{}:
-              {==}
-            case K.ModeKill{}:
-              Empty.absurd({Laws.rank_at_least(K.ModeKill{}, K.ModeKill{}) == True{} : Bool}, false_is_not_true(y))
-        case K.ModeKill{}:
-          match c:
-            case K.ModeRun{}:
-              {==}
-            case K.ModeRestrict{}:
-              {==}
-            case K.ModeFreeze{}:
-              {==}
-            case K.ModeKill{}:
-              {==}
-
-def rank_refl(+m: K.ContainmentMode) -> {Laws.rank_at_least(m, m) == True{} : Bool}:
-  match m:
-    case K.ModeRun{}:
-      {==}
-    case K.ModeRestrict{}:
-      {==}
-    case K.ModeFreeze{}:
-      {==}
-    case K.ModeKill{}:
-      {==}
-
-def tighten_state(+cfg: K.KernelConfig, +c: K.ControlState, +e: K.ControlEvent, r: {Laws.is_signed_reset(e) == False{} : Bool}) -> {Laws.rank_at_least(Laws.state_mode(Laws.control_of(K.step(cfg, c, e))), Laws.state_mode(c)) == True{} : Bool}:
-  match c:
-    case K.ControlState{+m, +d}:
-      Laws.tighten_only(cfg, m, d, e, r)
-
-def Laws.no_sequence_lowers_containment(es, cfg, c, u):
-  match es:
-    case Nil{}:
-      rank_refl(Laws.state_mode(c))
-    case Con{+e, +t}:
-      (ue, ut) = u
-      +next = Laws.control_of(K.step(cfg, c, e))
-      rank_trans(Laws.state_mode(Laws.replay(t, cfg, next)), Laws.state_mode(next), Laws.state_mode(c), Laws.no_sequence_lowers_containment(t, cfg, next, ut), tighten_state(cfg, c, e, ue))
+def Laws.restrict_egress_needs_baseline(now, d, clock, counter, g, b):
+  restrict_baseline(Nat.is_lt(K.effective_time(now, clock), d), g, b)

