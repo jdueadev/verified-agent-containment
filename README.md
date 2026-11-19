@@ -108,7 +108,7 @@ If `rustup target add wasm32-unknown-unknown` is unavailable but `rust-src` is i
 
 The owned harness (`agent_loop.rs`) runs inside the sandbox and drives any OpenAI-compatible model server: Ollama, llama.cpp (`llama-server --jinja`), LM Studio or vLLM. Everything it does goes through the gateway:
 - `infer` sends the conversation to the model. It counts as baseline egress, so it still works in Restrict, and it draws on a per-lease token budget.
-- `http` is a typed request. The gateway is the HTTP and TLS client. It checks the origin and method against the policy, adds the credential for that origin (https or loopback only), redacts credential values from responses, enforces per-lease budgets, and refuses names that resolve to internal addresses.
+- `http` is a typed request. The gateway is the HTTP and TLS client. It checks the origin and method against the policy, adds the credential for that origin (https or loopback only), redacts credential values from responses, enforces per-lease budgets, and refuses names that resolve to internal addresses (loopback, private, link-local, CGNAT). To use a model server or host on your LAN, put its IP literal in the policy.
 - Files live in `/workspace`, which is a fresh copy for every sandbox generation.
 
 ```bash
