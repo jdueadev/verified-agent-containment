@@ -346,12 +346,12 @@ falsifier = "The agent opens a GPU node"
 
 [[claim]]
 id = "C-ISO-04"
-statement = "System One runs as its own uid in its own cgroup with rlimits and an empty network namespace, under a seccomp filter at least as strict as the agent's plus no sockets, no signals to other processes and no pidfds; it holds only fds 0-4 (stdio to /dev/null, the one-way trace pipe and the verdict socket), cannot read the controller's private files, and dies with the controller."
+statement = "System One runs as its own uid in its own cgroup (pids, memory and CPU limits, which fail closed unless explicitly waived) with rlimits and an empty network namespace, under the agent's seccomp filter plus: no sockets, no fork or non-thread clone, no signals (kill, tkill, tgkill, sigqueue) and no pidfds. Each refusal comes from the filter (EPERM). It holds only fds 0-4 (stdio to /dev/null, the one-way trace pipe and the verdict socket), cannot read the controller's private files, and has SIGKILL as its parent-death signal; it cannot create children that would outlive it."
 layer = "host"
 status = "tested"
 evidence = ["scenario:system_one_isolation", "sabotage:system_one_unconfined", "sabotage:system_one_weak_filter"]
-falsifier = "System One creates a socket (including via x32 or io_uring), creates a user namespace, signals another process, holds another descriptor, sees an interface other than lo, reads a private file, runs as another uid, or lacks SIGKILL as its parent-death signal"
-limits = "It sees the host filesystem as its uid (no pivot_root) and can read other processes' /proc entries that its uid may read. cgroup limits are only in force where the pids, memory and cpu controllers are delegated (rlimits apply everywhere)."
+falsifier = "Any probe succeeds or is refused by something other than the filter: a socket (including via io_uring), a user namespace, fork, a signal to itself, another descriptor, an interface other than lo, a private file, another uid, a missing parent-death signal, or unwaived missing limits"
+limits = "It sees the host filesystem as its uid (no pivot_root) and can read /proc entries its uid may read. The x32 probe also passes on kernels built without x32. The Linux VM run used the limits waiver (no delegated pids/memory/cpu controllers), so its cgroup limits were not in force there; rlimits were."
 platforms = [{ name = "linux-vm-6.18", commit = "cf68611", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs", "crates/containment-host/src/system_one.rs", "crates/containment-host/src/sandbox.rs"]
 
@@ -451,7 +451,7 @@ falsifier = "System One, by any verdict, stall, flood or crash, brings the sandb
 depends_on = ["K-CLS-01", "C-ARCH-01", "C-S1-01", "C-MOD-1"]
 
 # ---------- v3 attachment and damage bounds ----------
-limits = "Lab System One is a scripted adversary; the live rule-based classifier is unit-tested. Agent root in the shared kernel is out of scope (L-ISO-01)."
+limits = "Lab System One is a scripted adversary; the live rule-based classifier is unit-tested. Lag detects a stalled classifier, not a lying one: a hostile System One can report progress without scoring, but only for records written to its own pipe. Without delegated cgroup controllers (waiver), resource exhaustion by System One is bounded only by rlimits. Agent root in the shared kernel is out of scope (L-ISO-01)."
 platforms = [{ name = "linux-vm-6.18", commit = "cf68611", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs", "crates/containment-host/src/system_one.rs"]
 

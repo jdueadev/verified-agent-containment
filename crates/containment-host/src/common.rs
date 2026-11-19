@@ -23,6 +23,8 @@ pub const BLIND_MIN_EVENTS: u64 = 5;
 pub const LAB_DOWN_HOLD_MS: u64 = 1_000;
 /// A restarted System One must stay up this long before an outage ends (live: 5 s).
 pub const LAB_STABLE_MS: u64 = 300;
+/// Set by `--allow-missing-limits`: run even where cgroup limits cannot be applied.
+pub const LIMITS_WAIVER_ENV: &str = "CONTAINMENT_ALLOW_MISSING_LIMITS";
 /// System One runs as uid_base + this offset; generations use lower offsets.
 pub const SYSTEM_ONE_UID_OFFSET: u32 = 15;
 

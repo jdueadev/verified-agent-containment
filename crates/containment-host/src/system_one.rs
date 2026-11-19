@@ -119,26 +119,42 @@ fn rank(level: &str) -> u8 {
 /// Probes for the isolation claims (C-ISO-04), reported in a verdict field.
 /// Each one is an escape attempt that must fail.
 fn probe_isolation(private_file: &str) -> Value {
-    // SAFETY: plain syscalls; a successful clone child exits at once.
-    let (unix, inet, x32, uring, userns, signal) = unsafe {
-        let unix = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0);
-        let inet = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
+    let errno = || std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+    // SAFETY: plain syscalls; any child a successful fork or clone creates exits at once.
+    let (unix, inet, x32, uring, userns, tgkill, kill_self, fork) = unsafe {
+        let unix = (libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0), errno());
+        let inet = (libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0), errno());
         #[cfg(target_arch = "x86_64")]
-        let x32 = libc::syscall(libc::SYS_socket | 0x4000_0000, libc::AF_UNIX, libc::SOCK_STREAM, 0);
+        let x32 = (libc::syscall(libc::SYS_socket | 0x4000_0000, libc::AF_UNIX, libc::SOCK_STREAM, 0) as i32, errno());
         #[cfg(not(target_arch = "x86_64"))]
-        let x32 = -1;
+        let x32 = (-1, libc::ENOSYS);
         let mut params = [0_u8; 120];
-        let uring = libc::syscall(425, 1_u32, params.as_mut_ptr());
+        let uring = (libc::syscall(425, 1_u32, params.as_mut_ptr()) as i32, errno());
         let child = libc::syscall(libc::SYS_clone, (libc::CLONE_NEWUSER | libc::SIGCHLD) as libc::c_ulong, 0, 0, 0, 0);
+        let userns = (child as i32, errno());
         if child == 0 {
             libc::_exit(0);
         }
         if child > 0 {
             libc::waitpid(child as i32, std::ptr::null_mut(), 0);
         }
-        let signal = libc::kill(1, 0);
-        (unix, inet, x32, uring, child, signal)
+        // Signals to itself: only the filter can refuse these.
+        let tgkill = (libc::syscall(libc::SYS_tgkill, libc::getpid(), libc::gettid(), 0) as i32, errno());
+        let kill_self = (libc::kill(libc::getpid(), 0), errno());
+        #[cfg(target_arch = "x86_64")]
+        let forked = libc::syscall(libc::SYS_fork);
+        #[cfg(not(target_arch = "x86_64"))]
+        let forked = libc::fork() as libc::c_long;
+        if forked == 0 {
+            libc::_exit(0);
+        }
+        let fork = (forked as i32, errno());
+        if forked > 0 {
+            libc::waitpid(forked as i32, std::ptr::null_mut(), 0);
+        }
+        (unix, inet, x32, uring, userns, tgkill, kill_self, fork)
     };
+    let refused = |r: (i32, i32)| if r.0 >= 0 { 0 } else { r.1 };
     // SAFETY: getuid has no preconditions; PR_GET_PDEATHSIG writes one int.
     let uid = unsafe { libc::getuid() };
     let mut death_signal = 0_i32;
@@ -149,8 +165,11 @@ fn probe_isolation(private_file: &str) -> Value {
     fds.sort_unstable();
     fds.pop();
     json!({
-        "unix_socket": unix >= 0, "inet_socket": inet >= 0, "x32_socket": x32 >= 0, "io_uring": uring >= 0,
-        "user_namespace": userns >= 0, "signal_pid1": signal == 0, "death_signal": death_signal,
+        "unix_socket": unix.0 >= 0, "unix_socket_errno": refused(unix), "inet_socket": inet.0 >= 0,
+        "x32_socket": x32.0 >= 0, "io_uring": uring.0 >= 0, "io_uring_errno": refused(uring),
+        "user_namespace": userns.0 >= 0, "user_namespace_errno": refused(userns),
+        "tgkill_errno": refused(tgkill), "kill_self_errno": refused(kill_self), "fork_errno": refused(fork),
+        "death_signal": death_signal,
         "private_readable": std::fs::read(private_file).is_ok(), "uid": uid, "net_interfaces": interfaces, "fds": fds,
     })
 }
@@ -215,7 +234,6 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         if slow {
             thread::sleep(Duration::from_millis(1));
         }
-        consumed.store(seq, std::sync::atomic::Ordering::SeqCst);
         let excerpt = record["untrusted_excerpt"].as_str().unwrap_or("");
         let message = if lab {
             if excerpt.contains("score-this") {
@@ -241,6 +259,8 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
                 return Ok(());
             }
         }
+        // Reported as consumed only after its verdict (if any) has been sent.
+        consumed.store(seq, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
