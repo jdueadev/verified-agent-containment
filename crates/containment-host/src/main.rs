@@ -12,6 +12,7 @@ mod hud;
 mod live;
 mod live_suite;
 mod mock;
+mod redteam;
 mod run_live;
 mod sandbox;
 mod system_one;
@@ -33,6 +34,7 @@ fn main() -> ExitCode {
         Some("live-suite") => live_suite::run(&args[1..]),
         Some("ctl") => run_live::ctl(&args[1..]),
         Some("hud") => hud::run(&args[1..]),
+        Some("redteam") => redteam::run(&args[1..]),
         Some("mock-model") => mock::mock_model(&args[1..]),
         Some("fixture-server") => mock::fixture_server(&args[1..]),
         Some("differential-cases") => differential::run(&args[1..]),

@@ -4,46 +4,14 @@
 //! reached the upstream servers, not what the agent says. Each claim has a
 //! sabotaged controller that must fail its scenario.
 use crate::common::*;
+use crate::mock::Server;
 use crate::run_live;
 use serde_json::{json, Value};
 use std::error::Error;
 use std::fs;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
-
-struct Server {
-    child: Child,
-    port: u16,
-    log: PathBuf,
-}
-
-impl Server {
-    fn start(kind: &str, arg: &Path, log: PathBuf) -> Result<Self, Box<dyn Error>> {
-        let mut child = Command::new(std::env::current_exe()?).arg(kind).arg("0").arg(arg).arg(&log)
-            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn()?;
-        let mut line = String::new();
-        BufReader::new(child.stdout.take().ok_or("server stdout")?).read_line(&mut line)?;
-        Ok(Self { child, port: line.trim().parse()?, log })
-    }
-
-    fn entries(&self) -> Vec<Value> {
-        fs::read_to_string(&self.log).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
-    }
-
-    fn url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
 
 struct Checks(Vec<Value>);
 

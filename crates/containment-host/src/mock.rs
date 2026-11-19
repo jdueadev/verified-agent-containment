@@ -15,6 +15,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::process::{Child, Command, Stdio};
 use std::thread;
 
 pub struct Request {
@@ -145,3 +146,36 @@ pub fn fixture_server(args: &[String]) -> Result<(), Box<dyn Error>> {
         }
     })
 }
+
+/// A test server started as a child process; it prints its port on stdout.
+pub struct Server {
+    child: Child,
+    pub port: u16,
+    pub log: PathBuf,
+}
+
+impl Server {
+    pub fn start(kind: &str, arg: &Path, log: PathBuf) -> Result<Self, Box<dyn Error>> {
+        let mut child = Command::new(std::env::current_exe()?).arg(kind).arg("0").arg(arg).arg(&log)
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn()?;
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().ok_or("server stdout")?).read_line(&mut line)?;
+        Ok(Self { child, port: line.trim().parse()?, log })
+    }
+
+    pub fn entries(&self) -> Vec<Value> {
+        fs::read_to_string(&self.log).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+    }
+
+    pub fn url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
