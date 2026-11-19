@@ -155,9 +155,24 @@ fn jump(code: u16, k: u32, jt: u8, jf: u8) -> libc::sock_filter {
     libc::sock_filter { code, jt, jf, k }
 }
 
-/// Denies kernel surfaces the agent has no reason to use. `AF_VSOCK` matters on
-/// WSL2 because it can reach the Windows host across network namespaces.
-fn install_seccomp() -> io::Result<()> {
+/// Who a seccomp program is for. The agent may open AF_UNIX and AF_INET sockets
+/// (it needs the gateway socket); System One may not create, connect or accept
+/// sockets at all, and may not signal or trace processes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FilterFor {
+    Agent,
+    SystemOne,
+    /// Sabotage: the narrow filter of the first System One version.
+    SystemOneWeak,
+}
+
+/// Builds the seccomp program. Denies kernel surfaces neither process needs:
+/// x32 syscall numbers, mounts, namespaces (unshare, setns, namespace flags on
+/// clone, clone3), io_uring, BPF, kernel keyrings, module loading, and clearing
+/// the parent-death signal. `AF_VSOCK` matters on WSL2 because it can reach the
+/// Windows host across network namespaces. Built before fork so a child only
+/// has to install it.
+pub fn build_filter(target: FilterFor) -> Vec<libc::sock_filter> {
     const LD_ABS_W: u16 = 0x20;
     const JEQ: u16 = 0x15;
     const JGE: u16 = 0x35;
@@ -171,6 +186,14 @@ fn install_seccomp() -> io::Result<()> {
     #[cfg(target_arch = "aarch64")]
     const ARCH: u32 = 0xc000_00b7;
     let errno = |value: i32| ERRNO | value as u32;
+    if target == FilterFor::SystemOneWeak {
+        let mut p = vec![stmt(LD_ABS_W, 4), jump(JEQ, ARCH, 1, 0), stmt(RET, KILL_PROCESS), stmt(LD_ABS_W, 0)];
+        for number in [libc::SYS_socket, libc::SYS_socketpair, libc::SYS_connect, libc::SYS_ptrace] {
+            p.extend([jump(JEQ, number as u32, 0, 1), stmt(RET, errno(libc::EPERM))]);
+        }
+        p.push(stmt(RET, ALLOW));
+        return p;
+    }
     let mut denied: Vec<libc::c_long> = vec![
         libc::SYS_mount, libc::SYS_umount2, libc::SYS_pivot_root, libc::SYS_chroot, libc::SYS_ptrace,
         libc::SYS_process_vm_readv, libc::SYS_process_vm_writev, libc::SYS_bpf, libc::SYS_perf_event_open,
@@ -184,8 +207,19 @@ fn install_seccomp() -> io::Result<()> {
     ];
     #[cfg(target_arch = "x86_64")]
     denied.push(libc::SYS_kexec_file_load);
+    if target == FilterFor::SystemOne {
+        denied.extend([
+            libc::SYS_socket, libc::SYS_socketpair, libc::SYS_connect, libc::SYS_bind, libc::SYS_listen,
+            libc::SYS_accept, libc::SYS_accept4, libc::SYS_kill, libc::SYS_tkill, libc::SYS_memfd_create,
+            libc::SYS_execveat, libc::SYS_pidfd_open, libc::SYS_pidfd_send_signal, libc::SYS_pidfd_getfd,
+            libc::SYS_tgkill, libc::SYS_rt_sigqueueinfo, libc::SYS_rt_tgsigqueueinfo,
+        ]);
+        #[cfg(target_arch = "x86_64")]
+        denied.extend([libc::SYS_fork, libc::SYS_vfork]);
+    }
+    const CLONE_NEWTIME: u32 = 0x80;
     let ns_flags = (libc::CLONE_NEWNS | libc::CLONE_NEWUSER | libc::CLONE_NEWPID | libc::CLONE_NEWNET
-        | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS | libc::CLONE_NEWCGROUP) as u32;
+        | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS | libc::CLONE_NEWCGROUP) as u32 | CLONE_NEWTIME;
     let mut p = vec![stmt(LD_ABS_W, 4), jump(JEQ, ARCH, 1, 0), stmt(RET, KILL_PROCESS), stmt(LD_ABS_W, 0)];
     #[cfg(target_arch = "x86_64")]
     p.extend([jump(JGE, 0x4000_0000, 0, 1), stmt(RET, errno(libc::ENOSYS))]);
@@ -194,7 +228,7 @@ fn install_seccomp() -> io::Result<()> {
     for number in denied {
         p.extend([jump(JEQ, number as u32, 0, 1), stmt(RET, errno(libc::EPERM))]);
     }
-    // The agent may not change its own parent-death signal.
+    // No process may change its own parent-death signal.
     p.extend([
         jump(JEQ, libc::SYS_prctl as u32, 0, 4),
         stmt(LD_ABS_W, 16),
@@ -204,25 +238,55 @@ fn install_seccomp() -> io::Result<()> {
     ]);
     // clone3 hides its flags behind a pointer. ENOSYS makes libc fall back to clone.
     p.extend([jump(JEQ, libc::SYS_clone3 as u32, 0, 1), stmt(RET, errno(libc::ENOSYS))]);
-    p.extend([
-        jump(JEQ, libc::SYS_clone as u32, 0, 4),
-        stmt(LD_ABS_W, 16),
-        jump(JSET, ns_flags, 0, 1),
-        stmt(RET, errno(libc::EPERM)),
-        stmt(RET, ALLOW),
-    ]);
-    p.extend([
-        jump(JEQ, libc::SYS_socket as u32, 0, 5),
-        stmt(LD_ABS_W, 16),
-        jump(JEQ, libc::AF_UNIX as u32, 3, 0),
-        jump(JEQ, libc::AF_INET as u32, 2, 0),
-        jump(JEQ, libc::AF_INET6 as u32, 1, 0),
-        stmt(RET, errno(libc::EAFNOSUPPORT)),
-        stmt(RET, ALLOW),
-    ]);
-    let program = libc::sock_fprog { len: p.len() as u16, filter: p.as_mut_ptr() };
-    // SAFETY: the kernel copies the filter during this call and `program` is valid.
-    check(unsafe { libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &program as *const libc::sock_fprog) })
+    if target == FilterFor::SystemOne {
+        // Threads only: a forked child would lose the parent-death signal.
+        p.extend([
+            jump(JEQ, libc::SYS_clone as u32, 0, 5),
+            stmt(LD_ABS_W, 16),
+            jump(JSET, ns_flags, 2, 0),
+            jump(JSET, libc::CLONE_THREAD as u32, 0, 1),
+            stmt(RET, ALLOW),
+            stmt(RET, errno(libc::EPERM)),
+        ]);
+    } else {
+        p.extend([
+            jump(JEQ, libc::SYS_clone as u32, 0, 4),
+            stmt(LD_ABS_W, 16),
+            jump(JSET, ns_flags, 0, 1),
+            stmt(RET, errno(libc::EPERM)),
+            stmt(RET, ALLOW),
+        ]);
+    }
+    if target == FilterFor::Agent {
+        p.extend([
+            jump(JEQ, libc::SYS_socket as u32, 0, 5),
+            stmt(LD_ABS_W, 16),
+            jump(JEQ, libc::AF_UNIX as u32, 3, 0),
+            jump(JEQ, libc::AF_INET as u32, 2, 0),
+            jump(JEQ, libc::AF_INET6 as u32, 1, 0),
+            stmt(RET, errno(libc::EAFNOSUPPORT)),
+            stmt(RET, ALLOW),
+        ]);
+    }
+    p.push(stmt(RET, ALLOW));
+    p
+}
+
+fn install_seccomp() -> io::Result<()> {
+    let mut program = build_filter(FilterFor::Agent);
+    // SAFETY: called after PR_SET_NO_NEW_PRIVS in drop_authority; `program` is live.
+    check(unsafe { install_filter(&mut program) })
+}
+
+/// Installs a prebuilt filter. Async-signal-safe: no allocation.
+///
+/// # Safety
+/// Call only after PR_SET_NO_NEW_PRIVS, and between fork and exec if the
+/// process has other threads.
+pub unsafe fn install_filter(program: &mut [libc::sock_filter]) -> libc::c_int {
+    let fprog = libc::sock_fprog { len: program.len() as u16, filter: program.as_mut_ptr() };
+    // SAFETY: the caller guarantees the context; `fprog` points into `program`.
+    unsafe { libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &fprog as *const libc::sock_fprog) }
 }
 
 fn drop_authority(uid: u32, seccomp: bool) -> Result<(), Box<dyn Error>> {
