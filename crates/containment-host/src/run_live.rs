@@ -156,7 +156,9 @@ pub fn describe(event: &Value) -> Option<String> {
 pub fn summarise(report: &Value) -> String {
     let transitions: Vec<String> = report["transitions"].as_array().into_iter().flatten()
         .filter(|t| t["from"] != t["to"]).map(|t| format!("{} -> {} ({})", t["from"].as_str().unwrap_or("?"), t["to"].as_str().unwrap_or("?"), t["event"].as_str().unwrap_or("?"))).collect();
-    format!("final mode: {}\nmode changes: {}\nclassifier signals: {}\nlive use: {}",
+    let degraded = report["upstream_abort_failures"].as_u64().unwrap_or(0);
+    let warning = if degraded > 0 { format!("\nWARNING: {degraded} upstream connection(s) could only be shut down, not reset; bytes queued before the cut may have been sent") } else { String::new() };
+    format!("final mode: {}\nmode changes: {}\nclassifier signals: {}\nlive use: {}{warning}",
         report["final_mode"].as_str().unwrap_or("?"),
         if transitions.is_empty() { "none".to_owned() } else { transitions.join("; ") },
         report["classifier_signals"].as_array().map_or(0, Vec::len),

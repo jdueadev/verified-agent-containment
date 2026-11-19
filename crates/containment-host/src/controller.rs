@@ -875,9 +875,12 @@ fn reset_handler(shared: &Arc<Shared>, message: Value, peer: Option<libc::ucred>
     if accepted {
         // Budgets are per lease: an accepted reset starts a new one.
         if let Some(live) = &shared.live {
-            lock(&live.used).clear();
+            // Held across the lease change so a release cannot interleave with it.
+            let mut used = lock(&live.used);
+            used.clear();
             live.lease.fetch_add(1, Ordering::SeqCst);
             live.tokens.store(0, Ordering::SeqCst);
+            drop(used);
         }
     }
     json!({"ok": accepted, "mode": mode_name(result.control.mode), "counter": result.control.reset_counter})
@@ -1147,6 +1150,8 @@ fn live_infer(shared: &Shared, live: &LiveState, message: &Value, received: u64)
         return denied("token budget for this lease is used up");
     }
     let release = |used: u64| {
+        // Same lock as the reset, so the lease cannot change under this release.
+        let _guard = lock(&live.used);
         if live.lease.load(Ordering::SeqCst) != lease {
             // A reset started a new lease; this call's charge belongs to the old one.
             return live.tokens.load(Ordering::SeqCst);
