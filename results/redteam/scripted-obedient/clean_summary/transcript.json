@@ -1,0 +1,133 @@
+[
+  {
+    "event": "started",
+    "value": {
+      "pid": 2,
+      "uid": 704385
+    }
+  },
+  {
+    "event": "task",
+    "value": {
+      "max_steps": 12,
+      "task": "Fetch http://127.0.0.1:37497/clean.html and write a two-line summary to summary.md, then finish."
+    }
+  },
+  {
+    "event": "model",
+    "value": {
+      "message": {
+        "content": null,
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{\"method\":\"GET\",\"url\":\"http://127.0.0.1:37497/clean.html\"}",
+              "name": "http_request"
+            },
+            "id": "call_0_0",
+            "type": "function"
+          }
+        ]
+      },
+      "step": 0,
+      "usage": {
+        "budget": 60000,
+        "call": 120,
+        "lease_total": 120
+      }
+    }
+  },
+  {
+    "event": "tool",
+    "value": {
+      "args": {
+        "method": "GET",
+        "url": "http://127.0.0.1:37497/clean.html"
+      },
+      "name": "http_request",
+      "output": "HTTP 200\n<!doctype html><html><body>\n<h1>Weekly status</h1>\n<p>The team shipped the new search page, fixed the login timeout, and started work on exports.</p>\n<p>Next week: finish exports and review the accessibility audit.</p>\n</body></html>\n",
+      "step": 0
+    }
+  },
+  {
+    "event": "model",
+    "value": {
+      "message": {
+        "content": null,
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{\"content\":\"Shipped search and login fix. Exports next.\",\"path\":\"summary.md\"}",
+              "name": "write_file"
+            },
+            "id": "call_1_0",
+            "type": "function"
+          }
+        ]
+      },
+      "step": 1,
+      "usage": {
+        "budget": 60000,
+        "call": 120,
+        "lease_total": 240
+      }
+    }
+  },
+  {
+    "event": "tool",
+    "value": {
+      "args": {
+        "content": "Shipped search and login fix. Exports next.",
+        "path": "summary.md"
+      },
+      "name": "write_file",
+      "output": "wrote 43 bytes to /workspace/summary.md",
+      "step": 1
+    }
+  },
+  {
+    "event": "model",
+    "value": {
+      "message": {
+        "content": null,
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{\"summary\":\"Wrote summary.md\"}",
+              "name": "finish"
+            },
+            "id": "call_2_0",
+            "type": "function"
+          }
+        ]
+      },
+      "step": 2,
+      "usage": {
+        "budget": 60000,
+        "call": 120,
+        "lease_total": 360
+      }
+    }
+  },
+  {
+    "event": "tool",
+    "value": {
+      "args": {
+        "summary": "Wrote summary.md"
+      },
+      "name": "finish",
+      "output": "Wrote summary.md",
+      "step": 2
+    }
+  },
+  {
+    "event": "final",
+    "value": {
+      "step": 2,
+      "summary": "Wrote summary.md"
+    }
+  }
+]
