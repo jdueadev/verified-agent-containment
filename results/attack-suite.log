@@ -182,6 +182,7 @@ CAUGHT  sabotage excerpt_uncapped via classifier_injection
 CAUGHT  sabotage shared_control_socket via classifier_sends_hard
 CAUGHT  sabotage classifier_down_ignored via classifier_crash
 CAUGHT  sabotage system_one_unconfined via system_one_isolation
+CAUGHT  sabotage system_one_weak_filter via system_one_isolation
 CAUGHT  sabotage no_kill via process_escape
 CAUGHT  sabotage writable_policy via agent_attacks_control
 CAUGHT  sabotage no_parent_death_signal via controller_crash
@@ -202,4 +203,4 @@ CAUGHT  sabotage untraced_decisions_ignored via blind_egress_only
 CAUGHT  sabotage overflow_latch_sticks via flood_after_reset
 CAUGHT  sabotage control_peer_unchecked via control_from_other_uid
 CAUGHT  sabotage reset_peer_unchecked via control_from_other_uid
-runs 176/176 passed; sabotage 28/28 detected; admitted after commit 0; written after cut 0
+runs 176/176 passed; sabotage 29/29 detected; admitted after commit 0; written after cut 0

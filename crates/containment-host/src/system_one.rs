@@ -117,18 +117,41 @@ fn rank(level: &str) -> u8 {
 }
 
 /// Probes for the isolation claims (C-ISO-04), reported in a verdict field.
+/// Each one is an escape attempt that must fail.
 fn probe_isolation(private_file: &str) -> Value {
-    // SAFETY: plain syscalls with constant arguments.
-    let socket = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
-    let socket_errno = std::io::Error::last_os_error().raw_os_error();
-    let inet = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-    let private_readable = std::fs::read(private_file).is_ok();
-    // SAFETY: getuid has no preconditions.
+    // SAFETY: plain syscalls; a successful clone child exits at once.
+    let (unix, inet, x32, uring, userns, signal) = unsafe {
+        let unix = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0);
+        let inet = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
+        #[cfg(target_arch = "x86_64")]
+        let x32 = libc::syscall(libc::SYS_socket | 0x4000_0000, libc::AF_UNIX, libc::SOCK_STREAM, 0);
+        #[cfg(not(target_arch = "x86_64"))]
+        let x32 = -1;
+        let mut params = [0_u8; 120];
+        let uring = libc::syscall(425, 1_u32, params.as_mut_ptr());
+        let child = libc::syscall(libc::SYS_clone, (libc::CLONE_NEWUSER | libc::SIGCHLD) as libc::c_ulong, 0, 0, 0, 0);
+        if child == 0 {
+            libc::_exit(0);
+        }
+        if child > 0 {
+            libc::waitpid(child as i32, std::ptr::null_mut(), 0);
+        }
+        let signal = libc::kill(1, 0);
+        (unix, inet, x32, uring, child, signal)
+    };
+    // SAFETY: getuid has no preconditions; PR_GET_PDEATHSIG writes one int.
     let uid = unsafe { libc::getuid() };
-    let interfaces = std::fs::read_to_string("/proc/net/dev").map(|t| t.lines().skip(2).count()).unwrap_or(0);
+    let mut death_signal = 0_i32;
+    unsafe { libc::prctl(libc::PR_GET_PDEATHSIG, &mut death_signal as *mut i32) };
+    let interfaces = std::fs::read_to_string("/proc/net/dev").ok().map(|t| t.lines().skip(2).count());
+    // Open descriptors other than the one read_dir itself uses.
+    let mut fds: Vec<u32> = std::fs::read_dir("/proc/self/fd").map(|d| d.filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok()).collect()).unwrap_or_default();
+    fds.sort_unstable();
+    fds.pop();
     json!({
-        "unix_socket": socket >= 0, "unix_socket_errno": socket_errno, "inet_socket": inet >= 0,
-        "private_readable": private_readable, "uid": uid, "net_interfaces": interfaces,
+        "unix_socket": unix >= 0, "inet_socket": inet >= 0, "x32_socket": x32 >= 0, "io_uring": uring >= 0,
+        "user_namespace": userns >= 0, "signal_pid1": signal == 0, "death_signal": death_signal,
+        "private_readable": std::fs::read(private_file).is_ok(), "uid": uid, "net_interfaces": interfaces, "fds": fds,
     })
 }
 
@@ -144,7 +167,10 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let slow = lab && matches!(scenario.as_str(), "gateway_flood" | "flood_after_reset");
     let crash = lab && scenario == "classifier_crash";
     if crash && std::env::var_os("SYSTEM_ONE_RESTARTED").is_some() {
-        // Every restart in this scenario fails immediately.
+        // Every restart sends one heartbeat, then fails: a crash loop that looks
+        // alive for a moment must still count as down.
+        send(verdict(0, "none", 0.0, &[], started));
+        thread::sleep(Duration::from_millis(50));
         std::process::exit(3);
     }
     if lab && scenario == "system_one_isolation" {
@@ -208,9 +234,12 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             let score = rules.observe(&record);
             (score.level != "none").then(|| verdict(seq, score.level, score.score, &score.codes, started))
         };
-        let message = message.unwrap_or_else(|| verdict(seq, "none", 0.0, &[], started));
-        if !send(message) {
-            return Ok(());
+        // Progress is reported by the heartbeat; only real verdicts go out at once,
+        // so a busy agent does not turn every trace record into a message.
+        if let Some(message) = message {
+            if !send(message) {
+                return Ok(());
+            }
         }
     }
 }

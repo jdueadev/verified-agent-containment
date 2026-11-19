@@ -4,7 +4,7 @@ Research prototype for a sandbox controller. It removes an agent's authority whe
 
 The trust anchor is a small, pure decision kernel. A local classifier can add warning signals but can only tighten. At most, a classifier verdict can move the agent to Hold, which has no timer. A verdict cannot renew a lease, grant access, start the Kill timer or cause Kill.
 
-That cap covers classifier verdicts directly. Classifier liveness is handled the same way: a stalled or overflowing classifier reaches the kernel as a classifier signal (Restrict on lag over 500 ms, Hold after a blind window), never by blocking lease renewal (claim H-S1-01). System One now runs as a separate confined process (own uid, empty network namespace, no `socket()`), reached only through an inherited trace pipe and verdict socket; every verdict becomes a classifier signal whatever it says, and verdicts that rest only on agent text stop at Restrict. Containment of System One as a whole is claim C-SYS-1, now tested; see [`docs/design-spec.md`](docs/design-spec.md) section 5.
+That cap covers classifier verdicts directly. Classifier liveness is handled the same way: a stalled or overflowing classifier reaches the kernel as a classifier signal (Restrict on lag over 500 ms, Hold after a blind window), never by blocking lease renewal (claim H-S1-01). System One now runs as a separate confined process (own uid and cgroup, rlimits, empty network namespace, the agent's seccomp filter plus no sockets or signals), reached only through an inherited trace pipe and verdict socket; every verdict becomes a classifier signal whatever it says, and verdicts that rest only on agent text stop at Restrict. Containment of System One as a whole is claim C-SYS-1, now tested; see [`docs/design-spec.md`](docs/design-spec.md) section 5.
 
 The v3 design is in [`docs/design-spec.md`](docs/design-spec.md). Every guarantee, its evidence and its falsifier is a row in [`claims.toml`](claims.toml), rendered as [`docs/claims.md`](docs/claims.md) and checked by `tools/claims_check.py`. [`docs/design-explainer.html`](docs/design-explainer.html) is a plain-English companion to the spec, with key terms, small interactive demos and reading links for each section; open it in a browser.
 
@@ -20,16 +20,16 @@ The v3 design is in [`docs/design-spec.md`](docs/design-spec.md). Every guarante
 | Rust vs Bend, Rust vs WebAssembly | 77,364 transitions each, 0 mismatches | Generated-test agreement, including stale timestamps and resets. Not a proof |
 | Linux attack runs | 176/176 passed | 31 scenarios; 5 timed scenarios repeated 30 times |
 | Under CPU load | 68/68 passed | Same suite at `--repeat 10`, with two busy loops on a 2-core VM |
-| Weakened controllers | 28/28 caught | Each removes one protection; the suite must fail |
+| Weakened controllers | 29/29 caught | Each removes one protection; the suite must fail |
 | Bytes admitted after a stop committed | 0 | Across 155 measured stops |
 | Bytes written upstream after the cut | 0 | Same runs. Gateway stamps are HMAC-authenticated at the sink |
 | Browser page | 10/10 sabotaged kernels caught | Checked with native WebAssembly and with the JavaScript fallback |
 | TLA+ host model | `ClassifierCannotForceStop` holds | 2,863,520 states (one sandbox, 12 ticks, renewal as its own action, no resets). Required counterexamples are found for the classifier in the health gate, an uncapped lag signal, and a dead monitor. `tools/tla_check.sh` |
 
 Timing on Linux 6.18 in a 2-core VM, p50 / p95 / max:
-- Stop committed to egress cut: 0.10 / 1.44 / 5.81 ms.
-- Committed to cgroup frozen: 0.41 / 2.45 / 6.06 ms.
-- Committed to cgroup empty: 1.03 / 2.36 / 2.69 ms.
+- Stop committed to egress cut: 0.11 / 1.17 / 13.9 ms.
+- Committed to cgroup frozen: 0.41 / 1.76 / 14.1 ms.
+- Committed to cgroup empty: 1.02 / 1.79 / 2.84 ms.
 
 Maxima vary between runs on this shared VM because the enforcer thread can be descheduled; one run of an earlier build of this change had a `gateway_flood` stop at 93 ms. Every measured stop, including that one, recorded 0 bytes admitted after commit and 0 written after the cut.
 

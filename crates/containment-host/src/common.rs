@@ -24,6 +24,9 @@ pub const LIVE_DOWN_HOLD_MS: u64 = 30_000;
 pub const BLIND_MIN_EVENTS: u64 = 5;
 /// System One down longer than this while the agent acts holds (live: 30 s).
 pub const LAB_DOWN_HOLD_MS: u64 = 1_000;
+/// A restarted System One must stay up this long before an outage ends (live: 5 s).
+pub const LAB_STABLE_MS: u64 = 300;
+pub const LIVE_STABLE_MS: u64 = 5_000;
 /// System One runs as uid_base + this offset; generations use lower offsets.
 pub const SYSTEM_ONE_UID_OFFSET: u32 = 15;
 
