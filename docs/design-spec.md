@@ -135,7 +135,7 @@ Run `ClassifierCannotForceStop` against today's wiring first. It must find the `
 | Gap | Where | Spec section | Row |
 |---|---|---|---|
 | ~~A stalled classifier blocks renewal and reaches Freeze, then Kill.~~ Fixed in #1: lag and overflow are classifier signals; `classifier_stall` expects Restrict, `classifier_blind` expects Hold. | `controller.rs` `healthy()`, `check_lag` | 5.3 | H-S1-01 |
-| The control socket ignores peer credentials, and one socket carries several roles. | `controller.rs` `control_handler(_peer)` | 4 | C-ARCH-01 |
+| ~~The control socket ignores peer credentials, and one socket carries several roles.~~ Fixed in #2: operator and reset sockets are separate and check SO_PEERCRED; the classifier op is gone from the operator channel. The classifier's own fd arrives with #4. | `controller.rs` `operator_peer`, `reset_handler` | 4 | H-CTL-02, C-ARCH-01 |
 | A reset-v2 signature binds `run_id` but not the instance or boot, so a restart with the same run id would accept a replay. Hidden in the lab by a fresh key and run id each run. | `common.rs` `reset_message` | 6 | C-RST-04 |
 | The reset counter must only be fresh, not exactly next, and has no bounded window. | `formal/LAWS.bend` | 6 | C-KER-R1 |
 | No supervisor, fan-out, model server, CONNECT proxy, budgets or copy-on-write workspace yet. | — | 3, 7 | planned rows |
