@@ -2,15 +2,15 @@
   "actions": [
     {
       "action": "revoke_secrets",
-      "end_ns": 9712839997436,
+      "end_ns": 10664011136532,
       "ok": true,
-      "start_ns": 9712839996457
+      "start_ns": 10664011134780
     },
     {
       "action": "narrow_egress",
-      "end_ns": 9712840036756,
+      "end_ns": 10664011140376,
       "ok": true,
-      "start_ns": 9712840036113
+      "start_ns": 10664011139444
     }
   ],
   "actuator_retries": 0,
@@ -19,6 +19,7 @@
   "classifier_signals": [],
   "control_rejected": 0,
   "dropped_logs": 0,
+  "exit_cause": "agent_finished",
   "final_mode": "restrict",
   "frozen": false,
   "gateway_streams": 0,
@@ -43,7 +44,7 @@
   "live": {
     "tokens": 240,
     "used": {
-      "http://127.0.0.1:43025": {
+      "http://127.0.0.1:32985": {
         "bytes": 11,
         "requests": 1
       }
@@ -88,13 +89,13 @@
         "revoke_secrets",
         "narrow_egress"
       ],
-      "commit_ns": 9712839992378,
+      "commit_ns": 10664011097149,
       "event": "canary_to_local_model",
       "from": "run",
-      "received_ns": 9712839971426,
+      "received_ns": 10664011056697,
       "to": "restrict"
     }
   ],
   "upstream_abort_failures": 0,
-  "upstream_cuts": 1
+  "upstream_cuts": 2
 }

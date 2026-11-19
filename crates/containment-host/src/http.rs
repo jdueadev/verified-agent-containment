@@ -39,6 +39,44 @@ fn internal(ip: std::net::IpAddr) -> bool {
     }
 }
 const TIMEOUT: Duration = Duration::from_secs(60);
+/// Whole-request limit (connect, send and the full response), so a peer that
+/// trickles bytes cannot hold a gateway worker and its slot indefinitely.
+const DEADLINE: Duration = Duration::from_secs(120);
+
+/// A TCP stream whose every read and write fails once the request deadline passes.
+struct Deadline {
+    tcp: TcpStream,
+    until: std::time::Instant,
+}
+
+impl Deadline {
+    fn arm(&self) -> io::Result<()> {
+        let left = self.until.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            let _ = self.tcp.shutdown(Shutdown::Both);
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "upstream request took too long"));
+        }
+        self.tcp.set_read_timeout(Some(left.min(TIMEOUT)))?;
+        self.tcp.set_write_timeout(Some(left.min(TIMEOUT)))
+    }
+}
+
+impl Read for Deadline {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.arm()?;
+        self.tcp.read(buf)
+    }
+}
+
+impl Write for Deadline {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.arm()?;
+        self.tcp.write(buf)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.tcp.flush()
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Url {
@@ -109,6 +147,7 @@ pub fn send(
     if !literal && internal(address.ip()) {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "name resolves to an internal address; list the IP literal in the policy if that is intended"));
     }
+    let until = std::time::Instant::now() + DEADLINE;
     let tcp = TcpStream::connect_timeout(&address, Duration::from_secs(10))?;
     tcp.set_read_timeout(Some(TIMEOUT))?;
     tcp.set_write_timeout(Some(TIMEOUT))?;
@@ -131,13 +170,13 @@ pub fn send(
         let name = rustls::pki_types::ServerName::try_from(url.host.clone())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "bad server name"))?;
         let connection = rustls::ClientConnection::new(tls_config(), name).map_err(io::Error::other)?;
-        let mut stream = rustls::StreamOwned::new(connection, tcp);
+        let mut stream = rustls::StreamOwned::new(connection, Deadline { tcp, until });
         stream.write_all(head.as_bytes())?;
         stream.write_all(body)?;
         stream.flush()?;
         read_response(stream)
     } else {
-        let mut stream = tcp;
+        let mut stream = Deadline { tcp, until };
         stream.write_all(head.as_bytes())?;
         stream.write_all(body)?;
         stream.flush()?;
@@ -191,7 +230,11 @@ fn read_response(stream: impl Read) -> io::Result<Response> {
             }
             // Never allocate what the server announces: copy through a bounded reader.
             let keep = size.min(MAX_RESPONSE_BYTES.saturating_sub(body.len()));
+            let before = body.len();
             (&mut reader).take(keep as u64).read_to_end(&mut body)?;
+            if body.len() - before < keep {
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "upstream closed inside a chunk"));
+            }
             if keep < size {
                 truncated = true;
                 break;
@@ -201,6 +244,10 @@ fn read_response(stream: impl Read) -> io::Result<Response> {
     } else {
         let limit = length.unwrap_or(MAX_RESPONSE_BYTES + 1).min(MAX_RESPONSE_BYTES + 1);
         reader.take(limit as u64).read_to_end(&mut body)?;
+        // A declared length the upstream did not deliver is an error, not a short body.
+        if length.is_some_and(|n| n <= MAX_RESPONSE_BYTES && body.len() < n) {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "upstream closed before the declared length"));
+        }
         if body.len() > MAX_RESPONSE_BYTES {
             body.truncate(MAX_RESPONSE_BYTES);
             truncated = true;
@@ -237,8 +284,8 @@ mod tests {
     #[test]
     fn oversized_chunks_are_not_allocated() {
         let response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nffffffffffff\r\nabc";
-        let r = read_response(&response[..]).unwrap();
-        assert!(r.truncated && r.body == b"abc");
+        // A huge announced chunk is never allocated; ending early is an error, not a body.
+        assert_eq!(read_response(&response[..]).err().map(|e| e.kind()), Some(io::ErrorKind::UnexpectedEof));
         let long = format!("HTTP/1.1 200 OK\r\nX: {}\r\n\r\n", "a".repeat(10_000));
         assert!(read_response(long.as_bytes()).is_err());
     }
@@ -247,5 +294,15 @@ mod tests {
     fn origin_normalises_case_and_port() {
         assert_eq!(Url::parse("HTTP://Example.COM/x").map(|u| u.origin()), None);
         assert_eq!(Url::parse("http://Example.COM/x").unwrap().origin(), "http://example.com:80");
+    }
+
+    #[test]
+    fn short_bodies_are_errors() {
+        let short = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nonly twenty bytes...".as_slice();
+        assert_eq!(read_response(short).err().map(|e| e.kind()), Some(io::ErrorKind::UnexpectedEof));
+        let chunk = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\na\r\nabc".as_slice();
+        assert_eq!(read_response(chunk).err().map(|e| e.kind()), Some(io::ErrorKind::UnexpectedEof));
+        let whole = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc".as_slice();
+        assert_eq!(read_response(whole).map(|r| r.body).ok(), Some(b"abc".to_vec()));
     }
 }

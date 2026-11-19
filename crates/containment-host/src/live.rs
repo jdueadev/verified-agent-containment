@@ -228,7 +228,7 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn chown_tree(path: &Path, uid: u32) -> std::io::Result<()> {
+pub(crate) fn chown_tree(path: &Path, uid: u32) -> std::io::Result<()> {
     std::os::unix::fs::lchown(path, Some(uid), Some(uid))?;
     if fs::symlink_metadata(path)?.is_dir() {
         for entry in fs::read_dir(path)? {

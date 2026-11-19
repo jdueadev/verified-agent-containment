@@ -1,5 +1,7 @@
 # Live run policy. Everything not listed here is denied.
-# Run: sudo containment-lab live --policy examples/live/policy.toml --task "..."
+# Run: sudo FIXTURE_TOKEN=... containment-lab live --policy examples/live/policy.toml --task "..."
+# (sudo drops your environment, so credentials named by value_env go on the sudo line,
+#  or use: FIXTURE_TOKEN=... sudo --preserve-env=FIXTURE_TOKEN containment-lab live ...)
 
 [model]
 # Any OpenAI-compatible server: Ollama, llama.cpp (llama-server --jinja), LM Studio, vLLM.

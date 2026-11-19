@@ -78,20 +78,33 @@ pub fn start(policy: &Path, task: &str, env: &[(String, String)], weakness: &str
     for (k, v) in env {
         command.env(k, v);
     }
-    let mut child = command.spawn()?;
+    let child = command.spawn()?;
+    // Until startup succeeds, any error stops and reaps the controller, so a
+    // failed start never leaves a controller running (or a sandbox starting later).
+    struct Startup(Option<Child>);
+    impl Drop for Startup {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+    let mut guard = Startup(Some(child));
     let private_dir = root.join("private");
     let status_path = private_dir.join("status.json");
     let began = Instant::now();
     while !status_path.exists() {
-        if let Some(code) = child.try_wait()? {
+        if let Some(code) = guard.0.as_mut().ok_or("controller handle lost")?.try_wait()? {
             return Err(format!("controller exited during start ({code})").into());
         }
         if began.elapsed() > Duration::from_secs(10) {
-            return Err("controller did not start".into());
+            return Err("controller did not start within 10 s; stopped it".into());
         }
         sleep(Duration::from_millis(5));
     }
     let status = serde_json::from_slice(&fs::read(status_path)?)?;
+    let child = guard.0.take().ok_or("controller handle lost")?;
     Ok(LiveRun { root, private_dir, child, key, run_id, status })
 }
 

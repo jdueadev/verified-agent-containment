@@ -42,7 +42,7 @@ def load_inventory():
     scenario_block = harness.split("const SCENARIOS")[1].split("];")[0]
     scenarios = re.findall(r'"([a-z_]+)"', scenario_block)
     live_src = (ROOT / "crates/containment-host/src/live_suite.rs").read_text()
-    live_sabotage = re.findall(r'\("([a-z_]+)",\s*"[a-z_]+"\)', live_src.split("const SABOTAGE")[1].split("];")[0])
+    live_sabotage = re.findall(r'\("([a-z_]+)",\s*"[a-z_]+",', live_src.split("const SABOTAGE")[1].split("];")[0])
     live_scenarios = re.findall(r'"([a-z_]+)"', live_src.split("const SCENARIOS")[1].split("];")[0])
     return laws, bend, rust, sabotage, scenarios, live_scenarios, live_sabotage
 
@@ -92,7 +92,11 @@ def tla_passed(spec, prop):
     if not path.exists() or spec != "host":
         return False
     data = json.loads(path.read_text())
-    current = hashlib.sha256((ROOT / data["spec"]).read_bytes()).hexdigest()
+    # The recorded digest covers the spec and every configuration TLC ran.
+    inputs = data.get("inputs") or [data["spec"]]
+    if data["spec"] not in inputs:
+        return False
+    current = hashlib.sha256(b"".join((ROOT / p).read_bytes() for p in inputs)).hexdigest()
     return data["sha256"] == current and prop in data["passed"] and all(r["as_expected"] for r in data["runs"])
 
 
@@ -108,6 +112,7 @@ def changed_since(commit, paths):
 
 
 def main():
+    strict = "--strict" in sys.argv[1:]
     write = "--write" in sys.argv[1:]
     claims = tomllib.loads((ROOT / "claims.toml").read_text())["claim"]
     laws, bend, rust, sabotage, scenarios, live_scenarios, live_sabotage = load_inventory()
@@ -203,8 +208,12 @@ def main():
         for dep in claim.get("depends_on", []):
             if dep not in by_id:
                 errors.append(f"CI-5 {cid}: depends on unknown {dep}")
-            elif RANK[effective[cid]] > RANK[effective[dep]]:
-                errors.append(f"CI-5 {cid}: {effective[cid]} is stronger than dependency {dep} ({effective[dep]})")
+            else:
+                # Without --strict, staleness is a warning (CI-4): compare declared
+                # strength, so a stale dependency alone does not fail the check.
+                mine, theirs = (effective[cid], effective[dep]) if strict else (by_id[cid]["status"], by_id[dep]["status"])
+                if RANK[mine] > RANK[theirs]:
+                    errors.append(f"CI-5 {cid}: {mine} is stronger than dependency {dep} ({theirs})")
 
     for kind, names in [("law", laws), ("mutant", bend), ("rust-mutant", rust), ("sabotage", sabotage), ("live-sabotage", live_sabotage)]:
         for name in names:

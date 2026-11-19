@@ -207,7 +207,12 @@ struct Lag {
     /// The current lag episode. Cleared when lag clears or the agent is back in
     /// Run after a reset, so the next stall is reported again.
     restricted_since: Option<u64>,
+    /// Events dropped (never written) since the episode began. Together with the
+    /// still-pending events written since then, this is what is unscored.
     unscored_since_restrict: u64,
+    /// First sequence number of the episode: pending entries from before it
+    /// are backlog, not events the classifier missed during the window.
+    episode_first_seq: u64,
     held: bool,
     overflow_signalled: bool,
 }
@@ -641,7 +646,8 @@ impl Shared {
             lag.pending.push_back((seq, ns));
             lag.last_written = Some(seq);
         }
-        if lag.restricted_since.is_some() {
+        // Only drops are counted here; written events count while still pending.
+        if lag.restricted_since.is_some() && !written {
             lag.unscored_since_restrict += 1;
         }
         let overflow = !written && !lag.overflow_signalled;
@@ -670,9 +676,12 @@ impl Shared {
         let (Some(root), Some(live)) = (&self.work_root, &self.live) else { return Ok(None) };
         if self.weak.live_workspace_reused && number > 1 {
             // Sabotage: the rebuilt sandbox gets the old workspace back.
+            // Handed over to the new uid so the rebuilt agent really works in it.
             let old = root.join("g1");
-            std::fs::rename(&old, root.join(format!("g{number}")))?;
-            return Ok(Some(root.join(format!("g{number}"))));
+            let reused = root.join(format!("g{number}"));
+            std::fs::rename(&old, &reused)?;
+            crate::live::chown_tree(&reused, uid)?;
+            return Ok(Some(reused));
         }
         let dir = root.join(format!("g{number}"));
         crate::live::prepare_workspace(live.policy.workspace.seed.as_deref(), &dir, &live.canary, uid)?;
@@ -713,9 +722,13 @@ impl Shared {
             if lagging && lag.restricted_since.is_none() {
                 lag.restricted_since = Some(now);
                 lag.unscored_since_restrict = 0;
+                lag.episode_first_seq = lag.next_seq;
                 Some(("classifier_lag", Level::Restrict))
             } else if let Some(since) = lag.restricted_since.filter(|_| !lag.held) {
-                (ms(since) > self.blind_hold_ms && lag.unscored_since_restrict >= BLIND_MIN_EVENTS && lagging).then(|| {
+                // Unscored now: events of this window still pending, plus those dropped.
+                let first = lag.episode_first_seq;
+                let unscored = lag.pending.iter().filter(|&&(seq, _)| seq >= first).count() as u64 + lag.unscored_since_restrict;
+                (ms(since) > self.blind_hold_ms && unscored >= BLIND_MIN_EVENTS && lagging).then(|| {
                     lag.held = true;
                     ("classifier_blind", Level::Hold)
                 })
@@ -1188,11 +1201,16 @@ fn live_infer(shared: &Shared, live: &LiveState, message: &Value, received: u64)
     let response = match send_on_slot(shared, slot, &live.model_url, "POST", &headers, body.as_bytes()) {
         Ok(r) => r,
         Err(e) => {
-            release(reserve);
+            // Refused or cut before any byte was written: nothing was spent. Any other
+            // failure may have reached the model, so the reservation stays charged.
+            let unsent = matches!(e.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+                | std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::InvalidInput);
+            release(if unsent { 0 } else { reserve });
             return denied(&format!("model server: {e}"));
         }
     };
     let Ok(reply) = serde_json::from_slice::<Value>(&response.body) else {
+        // The model did the work; charge the reservation.
         release(reserve);
         return denied(&format!("model server returned HTTP {} without JSON", response.status));
     };
@@ -1722,6 +1740,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     fs::rename(private_dir.join("status.tmp"), private_dir.join("status.json"))?;
 
     let stop_file = private_dir.join("stop");
+    let mut exit_cause = "operator_stop";
     while !stop_file.exists() {
         if shared.recreate_requested.swap(false, Ordering::SeqCst) {
             let number = lock(&shared.generation).number + 1;
@@ -1730,10 +1749,25 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
                 Err(std::io::Error::other("sandbox generation limit reached"))
             } else { Generation::create(&run_cgroup, number) }.and_then(|generation| {
                 let uid = uid_base + number as u32;
-                shared.sandbox_uid.store(u64::from(uid), Ordering::SeqCst);
-                let workspace = shared.workspace_for(number, uid)?;
-                let child = sandbox::spawn(&shared.spec, &generation.path, uid, workspace.as_deref())?;
-                Ok((generation, child))
+                let previous_uid = shared.sandbox_uid.swap(u64::from(uid), Ordering::SeqCst);
+                let spawned = shared.workspace_for(number, uid)
+                    .and_then(|workspace| sandbox::spawn(&shared.spec, &generation.path, uid, workspace.as_deref()));
+                match spawned {
+                    Ok(child) => Ok((generation, child)),
+                    Err(e) => {
+                        // Roll back so a retry can create this generation number again,
+                        // and the installed generation stays the identity in force.
+                        shared.sandbox_uid.store(previous_uid, Ordering::SeqCst);
+                        // A spawn can fail after the fork: kill anything in the cgroup
+                        // first, so removing it succeeds and no process is left behind.
+                        let _ = fs::write(generation.path.join("cgroup.kill"), "1");
+                        let began = Instant::now();
+                        while fs::remove_dir(&generation.path).is_err() && began.elapsed() < Duration::from_secs(2) {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(e)
+                    }
+                }
             });
             let ok = created.is_ok();
             if let Ok((generation, child)) = created {
@@ -1750,16 +1784,35 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             // A live run ends when the agent finished on its own (its sandbox exited
             // in Run or Restrict, with no rebuild pending) or at the run time limit.
             // After Hold, Freeze or Kill it waits for a person: a signed reset or stop.
-            let rebuilding = shared.recreate_requested.load(Ordering::SeqCst) || lock(&shared.queue).iter().any(|a| *a == Action::RecreateSandbox);
+            // The enforcer marks itself busy when it pops an action, under the queue
+            // lock, so a RecreateSandbox in flight is seen here before its flag is set.
+            let rebuilding = {
+                let queue = lock(&shared.queue);
+                shared.recreate_requested.load(Ordering::SeqCst) || shared.enforcer_busy.load(Ordering::SeqCst)
+                    || queue.iter().any(|a| *a == Action::RecreateSandbox)
+            };
             let mode = lock(&shared.control).mode;
             let finished = children.is_empty() && !rebuilding && matches!(mode, Mode::Run | Mode::Restrict);
-            if finished || max_run.is_some_and(|m| began.elapsed() > m) {
+            if finished {
+                exit_cause = "agent_finished";
+                break;
+            }
+            if max_run.is_some_and(|m| began.elapsed() > m) {
+                exit_cause = "run_time_limit";
                 break;
             }
         }
         thread::sleep(Duration::from_millis(1));
     }
     shared.stop.store(true, Ordering::SeqCst);
+    // Teardown revokes gateway authority before anything is reported: no new
+    // admissions (authority stays pending for good), and every upstream and agent
+    // connection is cut, so no gateway work runs while the report is written.
+    let authority_pending_at_exit = shared.authority_pending.fetch_add(1, Ordering::SeqCst);
+    shared.cut_upstream(false);
+    for (_, stream) in std::mem::take(&mut *lock(&shared.gateway_streams)) {
+        let _ = stream.shutdown(Shutdown::Both);
+    }
     let settle = Instant::now();
     while settle.elapsed() < Duration::from_secs(2)
         && (!lock(&shared.queue).is_empty() || shared.enforcer_busy.load(Ordering::SeqCst))
@@ -1774,7 +1827,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
          fs::read_to_string(generation.path.join("cgroup.procs")).unwrap_or_default().lines().count(), generation.number, generation.limits())
     };
     let report = json!({
-        "final_mode": mode_name(final_control.mode), "populated": populated, "frozen": frozen, "survivors": survivors, "generation": generation, "limits": limits, "authority_pending": shared.authority_pending.load(Ordering::SeqCst),
+        "final_mode": mode_name(final_control.mode), "exit_cause": exit_cause, "populated": populated, "frozen": frozen, "survivors": survivors, "generation": generation, "limits": limits, "authority_pending": authority_pending_at_exit,
         "transitions": *lock(&shared.transitions), "actions": *lock(&shared.actions), "classifier_signals": *lock(&shared.classifier_signals),
         "system_one_probe": *lock(&shared.s1_probe), "system_one_limits": *lock(&shared.s1_limits),
         "live": shared.live.as_ref().map(|l| json!({"tokens": l.tokens.load(Ordering::SeqCst), "used": lock(&l.used).iter().map(|(k, v)| (k.clone(), json!({"requests": v.requests, "bytes": v.bytes}))).collect::<serde_json::Map<_, _>>()})), "system_one_restarts": shared.s1_restarts.load(Ordering::Relaxed), "log_overflow": shared.log_overflow.load(Ordering::Relaxed),
