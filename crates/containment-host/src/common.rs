@@ -19,6 +19,10 @@ pub const LAG_RESTRICT_MS: u64 = 500;
 pub const LAB_BLIND_HOLD_MS: u64 = 1_500;
 /// Events that must go unscored while restricted before a blind window holds.
 pub const BLIND_MIN_EVENTS: u64 = 5;
+/// System One down longer than this while the agent acts holds (live: 30 s).
+pub const LAB_DOWN_HOLD_MS: u64 = 1_000;
+/// System One runs as uid_base + this offset; generations use lower offsets.
+pub const SYSTEM_ONE_UID_OFFSET: u32 = 15;
 
 /// Time source for leases. CLOCK_BOOTTIME keeps counting during suspend, so a
 /// suspended host cannot extend a lease.

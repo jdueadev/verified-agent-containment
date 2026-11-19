@@ -140,6 +140,7 @@ Status (#3): `formal/host/HostModel.tla` models one sandbox (N = 1 so far). `too
 | ~~The control socket ignores peer credentials, and one socket carries several roles.~~ Fixed in #2: operator and reset sockets are separate and check SO_PEERCRED; the classifier op is gone from the operator channel. The classifier's own fd arrives with #4. | `controller.rs` `operator_peer`, `reset_handler` | 4 | H-CTL-02, C-ARCH-01 |
 | A reset-v2 signature binds `run_id` but not the instance or boot, so a restart with the same run id would accept a replay. Hidden in the lab by a fresh key and run id each run. | `common.rs` `reset_message` | 6 | C-RST-04 |
 | The reset counter must only be fresh, not exactly next, and has no bounded window. | `formal/LAWS.bend` | 6 | C-KER-R1 |
+| ~~System One runs inside the controller.~~ Fixed in #4: separate process on fd 3 (trace pipe) and fd 4 (verdict seqpacket), own uid, empty netns, no sockets; crash restarts and a long outage holds a busy agent. | `system_one.rs`, `supervise_system_one` | 5 | C-ISO-04, C-S1-02 |
 | No supervisor, fan-out, model server, CONNECT proxy, budgets or copy-on-write workspace yet. | — | 3, 7 | planned rows |
 | A deterministic classifier stands in for System One. No LLM agent has run. | `controller.rs` | 5 | C-S1-03 |
 

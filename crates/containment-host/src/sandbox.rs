@@ -225,6 +225,44 @@ fn install_seccomp() -> io::Result<()> {
     check(unsafe { libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &program as *const libc::sock_fprog) })
 }
 
+/// Seccomp program for System One, built before fork so the child only has to
+/// install it. System One may not create or connect sockets (it already holds
+/// its two descriptors), trace other processes, or change namespaces.
+pub fn system_one_filter() -> Vec<libc::sock_filter> {
+    const LD_ABS_W: u16 = 0x20;
+    const JEQ: u16 = 0x15;
+    const RET: u16 = 0x06;
+    const ALLOW: u32 = 0x7fff_0000;
+    const KILL_PROCESS: u32 = 0x8000_0000;
+    const ERRNO: u32 = 0x0005_0000;
+    #[cfg(target_arch = "x86_64")]
+    const ARCH: u32 = 0xc000_003e;
+    #[cfg(target_arch = "aarch64")]
+    const ARCH: u32 = 0xc000_00b7;
+    let denied: [libc::c_long; 17] = [
+        libc::SYS_socket, libc::SYS_socketpair, libc::SYS_connect, libc::SYS_bind, libc::SYS_listen,
+        libc::SYS_accept, libc::SYS_accept4, libc::SYS_ptrace, libc::SYS_process_vm_readv, libc::SYS_process_vm_writev,
+        libc::SYS_mount, libc::SYS_unshare, libc::SYS_setns, libc::SYS_bpf, libc::SYS_perf_event_open,
+        libc::SYS_memfd_create, libc::SYS_execveat,
+    ];
+    let mut p = vec![stmt(LD_ABS_W, 4), jump(JEQ, ARCH, 1, 0), stmt(RET, KILL_PROCESS), stmt(LD_ABS_W, 0)];
+    for number in denied {
+        p.extend([jump(JEQ, number as u32, 0, 1), stmt(RET, ERRNO | libc::EPERM as u32)]);
+    }
+    p.push(stmt(RET, ALLOW));
+    p
+}
+
+/// Installs a prebuilt filter. Async-signal-safe: no allocation.
+///
+/// # Safety
+/// Call only in a child between fork and exec, after PR_SET_NO_NEW_PRIVS.
+pub unsafe fn install_filter(program: &mut [libc::sock_filter]) -> libc::c_int {
+    let fprog = libc::sock_fprog { len: program.len() as u16, filter: program.as_mut_ptr() };
+    // SAFETY: the caller guarantees the context; `fprog` points into `program`.
+    unsafe { libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &fprog as *const libc::sock_fprog) }
+}
+
 fn drop_authority(uid: u32, seccomp: bool) -> Result<(), Box<dyn Error>> {
     let limit = |resource, value| {
         let limit = libc::rlimit { rlim_cur: value, rlim_max: value };

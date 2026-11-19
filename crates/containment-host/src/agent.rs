@@ -328,6 +328,15 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         // Stops logging but keeps acting: the blind window must still hold.
         "blind_egress_only" => logging_loop(gateway, Some(Duration::from_millis(300)), true),
         "classifier_blind" | "lag_after_reset" => logging_loop(gateway, None, false),
+        "classifier_crash" => logging_loop(gateway, None, false),
+        "classifier_sends_hard" => {
+            let mut client = Gateway::connect(gateway)?;
+            for step in 0..6 {
+                client.send(json!({"op":"log","text":format!("ordinary step {step}")}));
+            }
+            idle()
+        }
+        "system_one_isolation" => idle(),
         "exfil_race" => {
             for _ in 0..7 {
                 let gateway = gateway.clone();

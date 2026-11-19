@@ -7,6 +7,7 @@ mod differential;
 mod harness;
 mod helpers;
 mod sandbox;
+mod system_one;
 
 use std::process::ExitCode;
 
@@ -20,6 +21,7 @@ fn main() -> ExitCode {
         Some("monitor") => helpers::monitor(&args[1..]),
         Some("sink") => helpers::sink(&args[1..]),
         Some("probe-operator") => helpers::probe_operator(&args[1..]),
+        Some("system-one") => system_one::run(&args[1..]),
         Some("differential-cases") => differential::run(&args[1..]),
         _ => Err("usage: containment-lab attack-suite [--repeat N] [--out FILE]".into()),
     };
