@@ -249,7 +249,7 @@ const SECTIONS = [
 <li><strong>planned</strong>: designed, not built yet.</li>
 <li><strong>stale</strong>: the code changed after the test ran, so the old result no longer counts.</li>
 </ul>
-<p>A combined claim is only as strong as its weakest part. That is why "System One cannot cause Freeze or Kill" (C-SYS-1) is still marked planned, even though one of its parts is proved.</p>
+<p>A combined claim is only as strong as its weakest part. That is why "System One cannot cause Freeze or Kill" (C-SYS-1) stayed planned until every part had evidence; it is now tested, because each of its parts is proved, model-checked or tested.</p>
 <p><code>tools/claims_check.py</code> enforces all of this on every check run. It fails if a law is never cited, if the proof files changed since the last verdict, if code changed after a recorded test run, or if the spec cites a claim id that does not exist.</p>`,
   terms: [
     T("falsifier", "Falsifier", `<p>The specific result that would show a claim is false, written down in advance. A claim with no possible falsifier cannot be tested. Writing the falsifier first keeps the evidence honest.</p>`, [L("Falsifiability", "https://en.wikipedia.org/wiki/Falsifiability")]),
@@ -489,18 +489,18 @@ const SECTIONS = [
   ]
 },
 {
-  id: "s9", num: "§9", title: "Where today's code does not meet the spec",
+  id: "s9", num: "§9", title: "Where the code stood against the spec, and what changed",
   spec: "A stalled classifier blocks renewal and reaches Freeze, then Kill … The control socket ignores peer credentials … A reset-v2 signature binds run_id but not the instance or boot.",
-  plain: `<p>This section is the honest gap list. In plain terms:</p>
+  plain: `<p>This section was the honest gap list when the spec was written. The right-hand column says where each gap stands now; <code>claims.toml</code> is the live source.</p>
 <div class="tablewrap"><table>
-<thead><tr><th>Gap</th><th>What it means</th><th>Explained in</th></tr></thead>
+<thead><tr><th>Gap</th><th>What it means</th><th>Explained in</th><th>Now</th></tr></thead>
 <tbody>
-<tr><td>Stalled classifier causes Kill</td><td>If the classifier hangs, renewals stop, the lease runs out, and the agent is frozen and then killed. A test currently checks for this on purpose.</td><td><a href="#s5">§5</a></td></tr>
-<tr><td>Control socket ignores who's calling</td><td>One socket serves several roles and doesn't check the caller's identity.</td><td><a href="#s4">§4</a></td></tr>
-<tr><td>Reset can replay after restart</td><td>A signature from before a restart would still work if the run id is reused. Hidden in the lab because each run makes a fresh key.</td><td><a href="#s6">§6</a></td></tr>
-<tr><td>Counter only has to be bigger</td><td>The kernel accepts any larger counter, not exactly the next one, and signatures have no fixed expiry window.</td><td><a href="#s6">§6</a></td></tr>
-<tr><td>Not built yet</td><td>Supervisor, fan-out, model-server sandbox, CONNECT proxy, budgets, copy-on-write workspace.</td><td><a href="#s3">§3</a>, <a href="#s7">§7</a></td></tr>
-<tr><td>No real agent yet</td><td>A scripted classifier stands in for System One, and no LLM agent has run.</td><td><a href="#s5">§5</a></td></tr>
+<tr><td>Stalled classifier causes Kill</td><td>If the classifier hangs, renewals stop, the lease runs out, and the agent is frozen and then killed. A test checked for this on purpose.</td><td><a href="#s5">§5</a></td><td>Fixed (M1): lag restricts, a blind window holds; neither can stop renewals.</td></tr>
+<tr><td>Control socket ignores who's calling</td><td>One socket serves several roles and doesn't check the caller's identity.</td><td><a href="#s4">§4</a></td><td>Fixed (M2): separate control and reset sockets, both check the caller is root.</td></tr>
+<tr><td>Reset can replay after restart</td><td>A signature from before a restart would still work if the run id is reused. Hidden in the lab because each run makes a fresh key.</td><td><a href="#s6">§6</a></td><td>Open: reset v3 (instance and boot binding, hardware key) is not built.</td></tr>
+<tr><td>Counter only has to be bigger</td><td>The kernel accepts any larger counter, not exactly the next one, and signatures have no fixed expiry window.</td><td><a href="#s6">§6</a></td><td>Open with reset v3; live resets carry an expiry and use the controller's counter.</td></tr>
+<tr><td>Not built yet</td><td>Supervisor, fan-out, model-server sandbox, CONNECT proxy, budgets, copy-on-write workspace.</td><td><a href="#s3">§3</a>, <a href="#s7">§7</a></td><td>Partly built (M5): per-lease budgets and a fresh workspace per generation. Still open: supervisor, fan-out, model-server sandbox (the model runs outside the sandbox in v1), CONNECT proxy.</td></tr>
+<tr><td>No real agent yet</td><td>A scripted classifier stands in for System One, and no LLM agent has run.</td><td><a href="#s5">§5</a></td><td>Fixed (M4, M5): System One is a separate confined process with live rules, and a real agent harness drives any local OpenAI-compatible model.</td></tr>
 </tbody></table></div>`,
   terms: [],
   reading: []
@@ -608,7 +608,7 @@ function renderLag() {
       <label><input type="checkbox" id="lag-busy" checked> Agent is busy (events going unscored)</label>
     </div>
     <div class="result" aria-live="polite"><span class="pill" id="lag-pill"></span><span class="why" id="lag-why"></span></div>
-    <p class="count" style="margin:10px 0 0"><strong>Today's code:</strong> <span id="lag-today"></span></p></div>`;
+    <p class="count" style="margin:10px 0 0"><strong>Before v3:</strong> <span id="lag-today"></span></p></div>`;
   const s = el.querySelector("#lag-s"), kind = el.querySelector("#lag-kind"), busy = el.querySelector("#lag-busy");
   const upd = () => {
     const t = +s.value; el.querySelector("#lag-v").textContent = t.toFixed(1) + " s";
@@ -620,8 +620,8 @@ function renderLag() {
     const pill = el.querySelector("#lag-pill"); pill.textContent = MODES.find(m => m.k === mode).name; pill.style.setProperty("--c", `var(--${mode})`);
     el.querySelector("#lag-why").textContent = why;
     el.querySelector("#lag-today").textContent = t * 1000 > 100
-      ? "after 100 ms the controller counts itself unhealthy and refuses renewals, so the lease (about 200 ms) runs out: Freeze, then Kill. This is the gap v3 fixes."
-      : "no effect yet at this lag.";
+      ? "after 100 ms the controller counted itself unhealthy and refused renewals, so the lease (about 200 ms) ran out: Freeze, then Kill. The code now follows the v3 rules above (milestone M1, claim H-S1-01)."
+      : "no effect at this lag.";
   };
   [s, kind, busy].forEach(x => x.addEventListener("input", upd)); upd();
 }

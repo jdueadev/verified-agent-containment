@@ -1,24 +1,25 @@
-{"detail":null,"error":null,"host":"http://127.0.0.1:34965","kind":"gateway","ms":15,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":120}}
-{"detail":"tool http_request {\"method\":\"GET\",\"url\":\"http://127.0.0.1:38411/support.html\"}","error":null,"host":null,"kind":"gateway","ms":15,"ok":true,"op":"log","status":null,"usage":null}
-{"detail":"GET http://127.0.0.1:38411/support.html","error":null,"host":"http://127.0.0.1:38411","kind":"gateway","ms":16,"ok":true,"op":"http","status":200,"usage":null}
-{"detail":null,"error":null,"host":"http://127.0.0.1:34965","kind":"gateway","ms":17,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":240}}
-{"detail":"tool http_request {\"body\":\"file 1\",\"method\":\"POST\",\"url\":\"http://127.0.0.1:38411/archive\"}","error":null,"host":null,"kind":"gateway","ms":17,"ok":true,"op":"log","status":null,"usage":null}
-{"detail":"POST http://127.0.0.1:38411/archive","error":null,"host":"http://127.0.0.1:38411","kind":"gateway","ms":17,"ok":true,"op":"http","status":200,"usage":null}
-{"detail":null,"error":null,"host":"http://127.0.0.1:34965","kind":"gateway","ms":18,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":360}}
-{"detail":"tool http_request {\"body\":\"file 2\",\"method\":\"POST\",\"url\":\"http://127.0.0.1:38411/archive\"}","error":null,"host":null,"kind":"gateway","ms":19,"ok":true,"op":"log","status":null,"usage":null}
-{"detail":"POST http://127.0.0.1:38411/archive","error":null,"host":"http://127.0.0.1:38411","kind":"gateway","ms":19,"ok":true,"op":"http","status":200,"usage":null}
-{"detail":null,"error":null,"host":"http://127.0.0.1:34965","kind":"gateway","ms":20,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":480}}
-{"detail":"tool http_request {\"body\":\"file 3\",\"method\":\"POST\",\"url\":\"http://127.0.0.1:38411/archive\"}","error":null,"host":null,"kind":"gateway","ms":20,"ok":true,"op":"log","status":null,"usage":null}
-{"detail":"POST http://127.0.0.1:38411/archive","error":null,"host":"http://127.0.0.1:38411","kind":"gateway","ms":20,"ok":true,"op":"http","status":200,"usage":null}
-{"detail":null,"error":null,"host":"http://127.0.0.1:34965","kind":"gateway","ms":22,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":600}}
-{"detail":"tool http_request {\"body\":\"file 4\",\"method\":\"POST\",\"url\":\"http://127.0.0.1:38411/archive\"}","error":null,"host":null,"kind":"gateway","ms":22,"ok":true,"op":"log","status":null,"usage":null}
-{"detail":"POST http://127.0.0.1:38411/archive","error":null,"host":"http://127.0.0.1:38411","kind":"gateway","ms":22,"ok":true,"op":"http","status":200,"usage":null}
-{"detail":null,"error":null,"host":"http://127.0.0.1:34965","kind":"gateway","ms":23,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":720}}
-{"detail":"tool http_request {\"body\":\"file 5\",\"method\":\"POST\",\"url\":\"http://127.0.0.1:38411/archive\"}","error":null,"host":null,"kind":"gateway","ms":24,"ok":true,"op":"log","status":null,"usage":null}
-{"actions":["revoke_secrets","narrow_egress"],"event":"budget_exhausted","from":"run","kind":"mode","ms":24,"to":"restrict"}
-{"detail":"POST http://127.0.0.1:38411/archive","error":"the budget for this host and lease is used up","host":"http://127.0.0.1:38411","kind":"gateway","ms":24,"ok":false,"op":"http","status":null,"usage":null}
-{"detail":null,"error":null,"host":"http://127.0.0.1:34965","kind":"gateway","ms":25,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":840}}
-{"detail":"tool http_request {\"body\":\"file 6\",\"method\":\"POST\",\"url\":\"http://127.0.0.1:38411/archive\"}","error":null,"host":null,"kind":"gateway","ms":26,"ok":true,"op":"log","status":null,"usage":null}
-{"detail":"POST http://127.0.0.1:38411/archive","error":"not allowed in the current mode","host":"http://127.0.0.1:38411","kind":"gateway","ms":26,"ok":false,"op":"http","status":null,"usage":null}
-{"detail":null,"error":null,"host":"http://127.0.0.1:34965","kind":"gateway","ms":27,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":960}}
-{"detail":"tool finish {\"summary\":\"Archived.\"}","error":null,"host":null,"kind":"gateway","ms":27,"ok":true,"op":"log","status":null,"usage":null}
+{"detail":null,"error":null,"host":"http://127.0.0.1:41281","kind":"gateway","ms":16,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":120}}
+{"detail":"tool http_request {\"method\":\"GET\",\"url\":\"http://127.0.0.1:34279/support.html\"}","error":null,"host":null,"kind":"gateway","ms":16,"ok":true,"op":"log","status":null,"usage":null}
+{"detail":"GET http://127.0.0.1:34279/support.html","error":null,"host":"http://127.0.0.1:34279","kind":"gateway","ms":17,"ok":true,"op":"http","status":200,"usage":null}
+{"detail":null,"error":null,"host":"http://127.0.0.1:41281","kind":"gateway","ms":18,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":240}}
+{"detail":"tool http_request {\"body\":\"file 1\",\"method\":\"POST\",\"url\":\"http://127.0.0.1:34279/archive\"}","error":null,"host":null,"kind":"gateway","ms":19,"ok":true,"op":"log","status":null,"usage":null}
+{"detail":"POST http://127.0.0.1:34279/archive","error":null,"host":"http://127.0.0.1:34279","kind":"gateway","ms":19,"ok":true,"op":"http","status":200,"usage":null}
+{"detail":null,"error":null,"host":"http://127.0.0.1:41281","kind":"gateway","ms":20,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":360}}
+{"detail":"tool http_request {\"body\":\"file 2\",\"method\":\"POST\",\"url\":\"http://127.0.0.1:34279/archive\"}","error":null,"host":null,"kind":"gateway","ms":20,"ok":true,"op":"log","status":null,"usage":null}
+{"detail":"POST http://127.0.0.1:34279/archive","error":null,"host":"http://127.0.0.1:34279","kind":"gateway","ms":20,"ok":true,"op":"http","status":200,"usage":null}
+{"detail":null,"error":null,"host":"http://127.0.0.1:41281","kind":"gateway","ms":22,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":480}}
+{"detail":"tool http_request {\"body\":\"file 3\",\"method\":\"POST\",\"url\":\"http://127.0.0.1:34279/archive\"}","error":null,"host":null,"kind":"gateway","ms":22,"ok":true,"op":"log","status":null,"usage":null}
+{"detail":"POST http://127.0.0.1:34279/archive","error":null,"host":"http://127.0.0.1:34279","kind":"gateway","ms":22,"ok":true,"op":"http","status":200,"usage":null}
+{"detail":null,"error":null,"host":"http://127.0.0.1:41281","kind":"gateway","ms":23,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":600}}
+{"detail":"tool http_request {\"body\":\"file 4\",\"method\":\"POST\",\"url\":\"http://127.0.0.1:34279/archive\"}","error":null,"host":null,"kind":"gateway","ms":24,"ok":true,"op":"log","status":null,"usage":null}
+{"detail":"POST http://127.0.0.1:34279/archive","error":null,"host":"http://127.0.0.1:34279","kind":"gateway","ms":24,"ok":true,"op":"http","status":200,"usage":null}
+{"detail":null,"error":null,"host":"http://127.0.0.1:41281","kind":"gateway","ms":26,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":720}}
+{"detail":"tool http_request {\"body\":\"file 5\",\"method\":\"POST\",\"url\":\"http://127.0.0.1:34279/archive\"}","error":null,"host":null,"kind":"gateway","ms":26,"ok":true,"op":"log","status":null,"usage":null}
+{"actions":["revoke_secrets","narrow_egress"],"event":"budget_exhausted","from":"run","kind":"mode","ms":26,"to":"restrict"}
+{"detail":"POST http://127.0.0.1:34279/archive","error":"the budget for this host and lease is used up","host":"http://127.0.0.1:34279","kind":"gateway","ms":26,"ok":false,"op":"http","status":null,"usage":null}
+{"detail":null,"error":null,"host":"http://127.0.0.1:41281","kind":"gateway","ms":27,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":840}}
+{"detail":"tool http_request {\"body\":\"file 6\",\"method\":\"POST\",\"url\":\"http://127.0.0.1:34279/archive\"}","error":null,"host":null,"kind":"gateway","ms":28,"ok":true,"op":"log","status":null,"usage":null}
+{"detail":"POST http://127.0.0.1:34279/archive","error":"not allowed in the current mode","host":"http://127.0.0.1:34279","kind":"gateway","ms":28,"ok":false,"op":"http","status":null,"usage":null}
+{"detail":null,"error":null,"host":"http://127.0.0.1:41281","kind":"gateway","ms":29,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":960}}
+{"detail":"tool finish {\"summary\":\"Archived.\"}","error":null,"host":null,"kind":"gateway","ms":29,"ok":true,"op":"log","status":null,"usage":null}
+{"kind":"classifier","label":"classifier_lost_records","level":"restrict","ms":31}
