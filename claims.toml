@@ -432,7 +432,7 @@ layer = "host"
 status = "tested"
 evidence = ["scenario:classifier_injection", "sabotage:excerpt_uncapped"]
 falsifier = "An excerpt-only verdict reaches Hold or above"
-limits = "The cap depends on System One labelling its own codes: a fooled classifier that labels an excerpt-driven decision DENIED_BURST reaches Hold (never Freeze). One scripted injection in the suite plus unit tests of the live rules; the injection set is part of the red-team kit (#7)."
+limits = "The cap depends on System One labelling its own codes: a fooled classifier that labels an excerpt-driven decision DENIED_BURST reaches Hold (never Freeze). One scripted injection in the suite plus unit tests of the live rules. The red-team kit (redteam/pack.toml) exercises six tasks against real models; its scripted run is in results/redteam/scripted-obedient."
 platforms = [{ name = "linux-vm-6.18", commit = "e3b6d51", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs", "crates/containment-host/src/system_one.rs"]
 
@@ -546,7 +546,7 @@ layer = "host"
 status = "tested"
 evidence = ["live:hud_log_redacted", "live-sabotage:hud_log_unredacted"]
 falsifier = "the canary or a credential value appears in private/events.jsonl, or the HUD answers without the path token or with a foreign Host"
-limits = "Requests are read with bounded lines (8 KB, at most 100 headers, no body), 2 s read timeouts and at most 16 at once; a 60-connection header flood left the process at 6 MB and the HUD answering. The access checks (token, Host, method, headers) and the flood were exercised by hand against a live run, not by the suite. Anyone who has the link can read the run's events until the run ends. The HUD cannot control the run."
+limits = "Requests are read with bounded lines (8 KB, at most 100 headers, no body), a 5 s deadline for the whole request checked on every read, and at most 16 at once (20 one-byte-per-second clients lock the HUD out for at most 5 s); a 60-connection header flood left the process at 6 MB and the HUD answering. The access checks (token, Host, method, headers) and the flood were exercised by hand against a live run, not by the suite. Anyone who has the link can read the run's events until the run ends. The HUD cannot control the run."
 platforms = [{ name = "linux-vm-6.18", commit = "e3b6d51", result = "pass" }]
 files = ["crates/containment-host/src/hud.rs", "crates/containment-host/src/hud.html", "crates/containment-host/src/controller.rs"]
 

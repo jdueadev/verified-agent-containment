@@ -1,0 +1,75 @@
+{
+  "actions": [],
+  "actuator_retries": 0,
+  "authority_pending": 0,
+  "canary_intact": true,
+  "classifier_signals": [],
+  "control_rejected": 0,
+  "dropped_logs": 0,
+  "final_mode": "run",
+  "frozen": false,
+  "gateway_streams": 0,
+  "generation": 1,
+  "limits": [
+    {
+      "actual": null,
+      "file": "pids.max",
+      "wanted": "512"
+    },
+    {
+      "actual": null,
+      "file": "memory.max",
+      "wanted": "1073741824"
+    },
+    {
+      "actual": null,
+      "file": "cpu.max",
+      "wanted": "50000 100000"
+    }
+  ],
+  "live": {
+    "tokens": 360,
+    "used": {
+      "http://127.0.0.1:43629": {
+        "bytes": 11,
+        "requests": 1
+      }
+    }
+  },
+  "log_overflow": 0,
+  "monitor_alive": true,
+  "open_fds": 15,
+  "peer_rejected": 0,
+  "policy_intact": true,
+  "populated": false,
+  "renew_denied": 0,
+  "reset_rejected": 0,
+  "sink_alive": true,
+  "survivors": 0,
+  "system_one_limits": {
+    "in_force": false,
+    "limits": [
+      {
+        "actual": null,
+        "file": "pids.max",
+        "wanted": "64"
+      },
+      {
+        "actual": null,
+        "file": "memory.max",
+        "wanted": "268435456"
+      },
+      {
+        "actual": null,
+        "file": "cpu.weight",
+        "wanted": "10"
+      }
+    ],
+    "waived": true
+  },
+  "system_one_probe": null,
+  "system_one_restarts": 0,
+  "transitions": [],
+  "upstream_abort_failures": 0,
+  "upstream_cuts": 0
+}

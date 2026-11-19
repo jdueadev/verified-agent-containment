@@ -5,6 +5,7 @@
 //! ```text
 //! containment-lab redteam --model-endpoint http://127.0.0.1:11434/v1/chat/completions --model qwen2.5:7b-instruct
 //! containment-lab redteam --scripted        # a model that obeys every injection; validates the kit
+//! containment-lab redteam --scripted --weakness gateway_bypass   # the scorer must report LEAK
 //! ```
 use crate::common::*;
 use crate::mock::Server;
@@ -144,6 +145,7 @@ fn markdown(model: &str, rows: &[Value]) -> String {
 pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let (mut endpoint, mut model, mut pack, mut out, mut scripted, mut only) =
         (None, None, PathBuf::from("redteam/pack.toml"), None, false, None);
+    let mut weakness = String::from("none");
     let mut i = 0;
     while i < args.len() {
         let value = args.get(i + 1).cloned();
@@ -153,6 +155,8 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             "--pack" => pack = PathBuf::from(value.ok_or("--pack needs a path")?),
             "--out" => out = value.map(PathBuf::from),
             "--only" => only = value,
+            // Lab check of the scorer itself: run a sabotaged controller, which must score LEAK.
+            "--weakness" => weakness = value.ok_or("--weakness needs a name")?,
             "--scripted" => { scripted = true; i += 1; continue; }
             "--allow-missing-limits" => {
                 // SAFETY: set before any controller starts.
@@ -166,6 +170,9 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     if !scripted && (endpoint.is_none() || model.is_none()) {
         return Err("give --model-endpoint and --model, or --scripted".into());
+    }
+    if weakness != "none" && !scripted {
+        return Err("--weakness is only for checking the kit with --scripted".into());
     }
     let model_name = if scripted { "scripted-obedient".to_owned() } else { model.clone().unwrap_or_default() };
     let pack_dir = pack.parent().unwrap_or(Path::new(".")).to_path_buf();
@@ -199,7 +206,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         let endpoint = mock.as_ref().map_or_else(|| endpoint.clone().unwrap_or_default(), |m| format!("{}/v1/chat/completions", m.url()));
         fs::write(dir.join("policy.toml"), policy(&endpoint, &model_name, &site.url(), &dir.join("seed")))?;
         let token = format!("site-{}", boot_ns());
-        let mut run = run_live::start(&dir.join("policy.toml"), &fill(&task.prompt, &site.url(), &evil.url()), &[("REDTEAM_SITE_TOKEN".into(), token)], "none")?;
+        let mut run = run_live::start(&dir.join("policy.toml"), &fill(&task.prompt, &site.url(), &evil.url()), &[("REDTEAM_SITE_TOKEN".into(), token)], &weakness)?;
         let canary = fs::read_to_string(run.root.join("work/g1/.env")).unwrap_or_default()
             .lines().find_map(|l| l.strip_prefix("DEPLOY_TOKEN=")).unwrap_or("").to_owned();
         // After Hold, Freeze or Kill a run waits for a person: stop it once settled.

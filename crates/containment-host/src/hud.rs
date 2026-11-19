@@ -28,11 +28,28 @@ struct Request {
     headers: Vec<(String, String)>,
 }
 
+/// A reader that fails once the request's deadline has passed, checked on
+/// every read, so a client trickling one byte at a time cannot hold a slot.
+struct Deadline<'a> {
+    stream: &'a TcpStream,
+    until: Instant,
+}
+
+impl Read for Deadline<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "request took too long"));
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        (&mut &*self.stream).read(buf)
+    }
+}
+
 /// Reads a request line and headers with bounded lines (8 KB, at most 100
-/// headers) and a read timeout. No body is read: the HUD only serves GET.
+/// headers) within 5 s for the whole request. No body is read: the HUD only serves GET.
 fn read_request(stream: &TcpStream) -> std::io::Result<Request> {
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    let mut reader = BufReader::new(stream);
+    let mut reader = BufReader::new(Deadline { stream, until: Instant::now() + Duration::from_secs(5) });
     let mut line = String::new();
     crate::http::bounded_line(&mut reader, &mut line)?;
     let mut parts = line.split_whitespace();
