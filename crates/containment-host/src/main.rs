@@ -8,6 +8,7 @@ mod differential;
 mod harness;
 mod helpers;
 mod http;
+mod hud;
 mod live;
 mod live_suite;
 mod mock;
@@ -31,6 +32,7 @@ fn main() -> ExitCode {
         Some("live") => run_live::live(&args[1..]),
         Some("live-suite") => live_suite::run(&args[1..]),
         Some("ctl") => run_live::ctl(&args[1..]),
+        Some("hud") => hud::run(&args[1..]),
         Some("mock-model") => mock::mock_model(&args[1..]),
         Some("fixture-server") => mock::fixture_server(&args[1..]),
         Some("differential-cases") => differential::run(&args[1..]),

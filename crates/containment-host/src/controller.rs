@@ -159,6 +159,8 @@ impl Generation {
 struct Upstreams {
     next: u64,
     active: BTreeMap<u64, Option<TcpStream>>,
+    /// Admitted as baseline egress. Restrict keeps these; a stop cuts everything.
+    baseline: BTreeSet<u64>,
     cuts: u64,
 }
 
@@ -224,6 +226,8 @@ struct Shared {
     live: Option<Arc<LiveState>>,
     /// Live runs: directory holding one workspace per sandbox generation.
     work_root: Option<PathBuf>,
+    /// Live runs: append-only event log for the HUD (private/events.jsonl).
+    events: Option<Mutex<(File, u64)>>,
     skew_ms: AtomicI64,
     config: Config,
     control: Mutex<Control>,
@@ -284,6 +288,19 @@ fn event_name(event: Event) -> &'static str {
 }
 
 impl Shared {
+    /// Appends one HUD event (live runs only). Capped so an agent cannot fill the disk.
+    fn emit(&self, kind: &str, mut value: Value) {
+        let Some(events) = &self.events else { return };
+        let mut guard = lock(events);
+        if guard.1 >= 100_000 {
+            return;
+        }
+        guard.1 += 1;
+        value["kind"] = json!(kind);
+        value["ms"] = json!(boot_ns().saturating_sub(self.start_ns) / 1_000_000);
+        let _ = writeln!(guard.0, "{value}");
+    }
+
     fn now_ms(&self) -> u64 {
         let elapsed = (boot_ns().saturating_sub(self.start_ns) / 1_000_000) as i64;
         elapsed.saturating_add(self.skew_ms.load(Ordering::Relaxed)).max(0) as u64
@@ -343,14 +360,18 @@ impl Shared {
         };
         for (previous, result, event, commit_ns, label) in records {
             if previous.mode != result.control.mode || !result.actions.is_empty() {
-                self.bounded_push(&self.transitions, json!({
+                let record = json!({
                     "received_ns": received_ns,
                     "commit_ns": commit_ns,
                     "event": label.unwrap_or(event_name(event)),
                     "from": mode_name(previous.mode),
                     "to": mode_name(result.control.mode),
                     "actions": result.actions.iter().map(action_name).collect::<Vec<_>>()
-                }));
+                });
+                if previous.mode != result.control.mode {
+                    self.emit("mode", json!({"event": record["event"], "from": record["from"], "to": record["to"], "actions": record["actions"]}));
+                }
+                self.bounded_push(&self.transitions, record);
             }
         }
         (before, result)
@@ -361,11 +382,15 @@ impl Shared {
         self.authority_pending.load(Ordering::SeqCst) == 0
     }
 
-    fn cut_upstream(&self) {
+    /// Shuts upstream connections. Restrict (`keep_baseline`) keeps baseline
+    /// egress such as inference; a stop cuts everything.
+    fn cut_upstream(&self, keep_baseline: bool) {
         let mut upstreams = lock(&self.upstreams);
         upstreams.cuts += 1;
-        for (_, stream) in std::mem::take(&mut upstreams.active) {
-            if let Some(stream) = stream {
+        let slots: Vec<u64> = upstreams.active.keys().copied().filter(|s| !(keep_baseline && upstreams.baseline.contains(s))).collect();
+        for slot in slots {
+            upstreams.baseline.remove(&slot);
+            if let Some(Some(stream)) = upstreams.active.remove(&slot) {
                 let _ = stream.shutdown(Shutdown::Both);
             }
         }
@@ -447,11 +472,11 @@ impl Shared {
                 true
             }
             Action::NarrowEgress => {
-                self.cut_upstream();
+                self.cut_upstream(true);
                 true
             }
             Action::BlockEgress => {
-                self.cut_upstream();
+                self.cut_upstream(false);
                 for (_, stream) in std::mem::take(&mut *lock(&self.gateway_streams)) {
                     let _ = stream.shutdown(Shutdown::Both);
                 }
@@ -842,6 +867,7 @@ fn reset_handler(shared: &Arc<Shared>, message: Value, peer: Option<libc::ucred>
 
 fn apply_classifier(shared: &Shared, label: Option<&'static str>, received: u64, level: Level) {
     let uncapped = shared.weak.classifier_uncapped;
+    shared.emit("classifier", json!({"label": label.unwrap_or("classifier"), "level": format!("{level:?}").to_lowercase()}));
     shared.bounded_push(&shared.classifier_signals, json!({"ns": received, "label": label.unwrap_or("classifier"), "level": format!("{level:?}").to_lowercase()}));
     shared.apply(label, received, |now_ms| if uncapped { Event::HardRule { now_ms, level } } else { Event::Classifier { now_ms, level } });
 }
@@ -870,13 +896,32 @@ fn forward(shared: &Shared, slot: u64, admit_ns: u64, host: &str, data: &str, cr
         BufReader::new(&stream).read_line(&mut ack).ok()?;
         (ack == "ack\n").then_some(())
     })();
-    lock(&shared.upstreams).active.remove(&slot);
+    {
+        let mut upstreams = lock(&shared.upstreams);
+        upstreams.active.remove(&slot);
+        upstreams.baseline.remove(&slot);
+    }
     result.is_some()
 }
 
 fn gateway_handler(shared: &Arc<Shared>, message: Value) -> Value {
     let received = boot_ns();
     let reply = gateway_decide(shared, &message, received);
+    if shared.events.is_some() && message["op"] != "status" {
+        let host = match message["op"].as_str() {
+            Some("http") => message["url"].as_str().and_then(crate::http::Url::parse).map(|u| u.origin()),
+            Some("infer") => shared.live.as_ref().map(|l| l.model_url.origin()),
+            Some("egress") => message["host"].as_str().map(str::to_owned),
+            _ => None,
+        };
+        let detail = match message["op"].as_str() {
+            Some("log") => json!(message["text"].as_str().unwrap_or("").chars().take(200).collect::<String>()),
+            Some("http") => json!(format!("{} {}", message["method"].as_str().unwrap_or("GET"), message["url"].as_str().unwrap_or("").chars().take(200).collect::<String>())),
+            _ => Value::Null,
+        };
+        shared.emit("gateway", json!({"op": message["op"], "host": host, "ok": reply["ok"], "error": reply["error"], "status": reply["status"],
+            "detail": detail, "usage": reply["usage"]}));
+    }
     // Every real action is traced for System One (spec section 5.1); the
     // sabotage traces only logs, which lets an agent act unseen while blind.
     let decision = if reply["ok"] == true { "allowed" } else { "denied" };
@@ -935,6 +980,9 @@ fn gateway_decide(shared: &Arc<Shared>, message: &Value, received: u64) -> Value
                     upstreams.next += 1;
                     let slot = upstreams.next;
                     upstreams.active.insert(slot, None);
+                    if baseline {
+                        upstreams.baseline.insert(slot);
+                    }
                     (slot, boot_ns(), secret)
                 })
             };
@@ -1026,6 +1074,9 @@ fn admit(shared: &Shared, granted: bool, baseline: bool) -> Option<u64> {
         upstreams.next += 1;
         let slot = upstreams.next;
         upstreams.active.insert(slot, None);
+        if baseline {
+            upstreams.baseline.insert(slot);
+        }
         slot
     })
 }
@@ -1043,7 +1094,11 @@ fn send_on_slot(shared: &Shared, slot: u64, url: &crate::http::Url, method: &str
             None => false,
         }
     });
-    lock(&shared.upstreams).active.remove(&slot);
+    {
+        let mut upstreams = lock(&shared.upstreams);
+        upstreams.active.remove(&slot);
+        upstreams.baseline.remove(&slot);
+    }
     result
 }
 
@@ -1255,6 +1310,7 @@ fn read_verdicts(shared: &Shared, socket: &UnixDatagram, epoch: u64, started: u6
         let codes: Vec<&str> = v["codes"].as_array().into_iter().flatten().filter_map(Value::as_str)
             .filter(|c| crate::system_one::CODES.contains(c)).collect();
         let excerpt_only = !codes.is_empty() && codes.iter().all(|c| crate::system_one::EXCERPT_CODES.contains(c));
+        shared.emit("verdict", json!({"level": v["level"], "score": v["score"], "codes": codes, "model": v["model_id"]}));
         let mut label = "system_one";
         if excerpt_only && level != Level::Restrict && !shared.weak.excerpt_uncapped {
             level = Level::Restrict;
@@ -1465,6 +1521,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let shared = Arc::new(Shared {
         start_ns, skew_ms: AtomicI64::new(0), config, lag: Mutex::default(), blind_hold_ms,
         trace_out: Mutex::new(None), s1_down_since: Mutex::new(None), s1_down_held: AtomicBool::new(false), s1_restarts: AtomicU64::new(0), s1_dropped_at_down: AtomicU64::new(0), s1_probe: Mutex::new(Value::Null), s1_limits: Mutex::new(Value::Null), s1_pid: AtomicU32::new(0), down_hold_ms, stable_ms: if live.is_some() { LIVE_STABLE_MS } else { LAB_STABLE_MS }, classifier_signals: Mutex::default(), live: live.clone(), work_root: work_root.clone(),
+        events: live.as_ref().map(|_| fs::OpenOptions::new().create(true).append(true).open(private_dir.join("events.jsonl")).map(|f| Mutex::new((f, 0)))).transpose()?,
         control: Mutex::new(Control::new(Mode::Run, LEASE_TTL_MS)),
         queue: Mutex::default(), queued: Condvar::new(), enforcer_busy: AtomicBool::new(false),
         enforcer_beat: AtomicU64::new(now), classifier_beat: AtomicU64::new(now),
