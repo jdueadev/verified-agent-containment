@@ -161,7 +161,7 @@ files = ["crates/containment-host/src/controller.rs", "crates/containment-host/s
 
 [[claim]]
 id = "H-CTL-01"
-statement = "The agent cannot write policy, reach the control socket, or forge a renewal."
+statement = "The agent cannot write policy, reach the operator or reset sockets, or forge a renewal."
 layer = "host"
 status = "tested"
 evidence = ["scenario:agent_attacks_control", "scenario:forged_renewal", "sabotage:writable_policy", "sabotage:unauthenticated_monitor"]
@@ -230,16 +230,14 @@ files = ["crates/containment-host/src/controller.rs"]
 
 [[claim]]
 id = "H-CTL-02"
-statement = "The operator control socket and the reset socket accept requests only from root (SO_PEERCRED), even if their file mode is wrong; the control socket cannot produce a classifier signal or a reset, and the reset socket can produce only Event::Reset."
+statement = "The operator control socket and the reset socket accept requests only from uid 0 in the controller's user namespace (SO_PEERCRED at connect time), even if their file mode is wrong: a non-root process is refused status, hard rules and a validly signed reset. The control socket cannot produce a classifier signal or a reset; the reset socket produces only Event::Reset."
 layer = "host"
 status = "tested"
-evidence = ["scenario:control_from_other_uid", "scenario:signed_reset", "sabotage:control_peer_unchecked"]
+evidence = ["scenario:control_from_other_uid", "scenario:signed_reset", "sabotage:control_peer_unchecked", "sabotage:reset_peer_unchecked"]
 falsifier = "A request from a non-root uid changes the mode or is answered with ok"
-limits = "The classifier's own channel is still in-process; its socket-picks-constructor rule is C-ARCH-01 (#4)."
-platforms = [{ name = "linux-vm-6.18", commit = "5273d30", result = "pass" }]
+limits = "Any uid 0 in the controller's namespace is the operator, including a root process that passes the connected fd on (SCM_RIGHTS) or a child that inherits it. The scenario covers a wrong socket mode with a traversable directory. The classifier's own channel is still in-process (C-ARCH-01, #4)."
+platforms = [{ name = "linux-vm-6.18", commit = "m2", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs"]
-
-# ---------- Limitations and assumptions ----------
 
 [[claim]]
 id = "L-ISO-01"

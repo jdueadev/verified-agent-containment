@@ -194,4 +194,5 @@ CAUGHT  sabotage lag_episode_never_resets via lag_after_reset
 CAUGHT  sabotage untraced_decisions_ignored via blind_egress_only
 CAUGHT  sabotage overflow_latch_sticks via flood_after_reset
 CAUGHT  sabotage control_peer_unchecked via control_from_other_uid
-runs 173/173 passed; sabotage 23/23 detected; admitted after commit 0; written after cut 0
+CAUGHT  sabotage reset_peer_unchecked via control_from_other_uid
+runs 173/173 passed; sabotage 24/24 detected; admitted after commit 0; written after cut 0

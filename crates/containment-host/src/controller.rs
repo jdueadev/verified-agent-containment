@@ -57,6 +57,7 @@ struct Weakness {
     untraced_decisions_ignored: bool,
     overflow_latch_sticks: bool,
     control_peer_unchecked: bool,
+    reset_peer_unchecked: bool,
 }
 
 impl Weakness {
@@ -87,6 +88,7 @@ impl Weakness {
             "untraced_decisions_ignored" => out.untraced_decisions_ignored = true,
             "overflow_latch_sticks" => out.overflow_latch_sticks = true,
             "control_peer_unchecked" => out.control_peer_unchecked = true,
+            "reset_peer_unchecked" => out.reset_peer_unchecked = true,
             other => return Err(format!("unknown weakness {other}")),
         }
         Ok(out)
@@ -213,6 +215,8 @@ struct Shared {
     dropped_logs: AtomicU64,
     renew_denied: AtomicU64,
     peer_rejected: AtomicU64,
+    control_rejected: AtomicU64,
+    reset_rejected: AtomicU64,
     public_key: VerifyingKey,
     run_id: String,
     weak: Weakness,
@@ -681,10 +685,12 @@ pub fn hex(value: &str) -> Result<Vec<u8>, ()> {
 
 /// The operator role is root on this host. The socket's file mode already
 /// limits who can connect; the peer check holds even if that mode is wrong.
-fn operator_peer(shared: &Shared, peer: Option<libc::ucred>) -> bool {
-    let ok = shared.weak.control_peer_unchecked || peer.is_some_and(|p| p.uid == 0);
+/// SO_PEERCRED is read once per connection, so it names the process that
+/// connected, as seen in the controller's user namespace.
+fn operator_peer(unchecked: bool, counter: &AtomicU64, peer: Option<libc::ucred>) -> bool {
+    let ok = unchecked || peer.is_some_and(|p| p.uid == 0);
     if !ok {
-        shared.peer_rejected.fetch_add(1, Ordering::Relaxed);
+        counter.fetch_add(1, Ordering::Relaxed);
     }
     ok
 }
@@ -698,7 +704,7 @@ fn status_reply(shared: &Shared) -> Value {
 /// Each socket picks the constructors it can produce; there is no classifier op
 /// here, and resets have their own socket.
 fn control_handler(shared: &Arc<Shared>, message: Value, peer: Option<libc::ucred>) -> Value {
-    if !operator_peer(shared, peer) {
+    if !operator_peer(shared.weak.control_peer_unchecked, &shared.control_rejected, peer) {
         return status_error("control is accepted only from the operator");
     }
     let received = boot_ns();
@@ -719,7 +725,7 @@ fn control_handler(shared: &Arc<Shared>, message: Value, peer: Option<libc::ucre
 
 /// Reset channel. It can only produce Event::Reset, and only from the operator.
 fn reset_handler(shared: &Arc<Shared>, message: Value, peer: Option<libc::ucred>) -> Value {
-    if !operator_peer(shared, peer) {
+    if !operator_peer(shared.weak.reset_peer_unchecked, &shared.reset_rejected, peer) {
         return status_error("resets are accepted only from the operator");
     }
     if message["op"] != "reset" {
@@ -928,8 +934,9 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     fs::set_permissions(&root, fs::Permissions::from_mode(0o755))?;
     fs::set_permissions(&public_dir, fs::Permissions::from_mode(0o755))?;
     fs::set_permissions(&drop_dir, fs::Permissions::from_mode(0o777))?;
-    // control_from_other_uid simulates a misconfigured host: sockets reachable by
-    // any uid, so only the peer check stands between them and the kernel.
+    // control_from_other_uid simulates a misconfigured host: the private directory
+    // is traversable (0711) and the operator sockets are world-writable, so only
+    // the peer check stands between other uids and the kernel.
     let misconfigured = scenario == "control_from_other_uid";
     let private_mode = if weak.writable_policy { 0o777 } else if misconfigured { 0o711 } else { 0o700 };
     fs::set_permissions(&private_dir, fs::Permissions::from_mode(private_mode))?;
@@ -1012,7 +1019,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         authority_pending: AtomicU64::new(0), tick_beat: AtomicU64::new(now), uid_base, sandbox_uid: AtomicU64::new(u64::from(uid_base + 1)),
         allowed: BTreeSet::from(["allowed.test".to_owned()]), baseline: BTreeSet::from(["baseline.test".to_owned()]),
         denied: AtomicU64::new(0), active_connections: AtomicUsize::new(0), dropped_logs: AtomicU64::new(0),
-        renew_denied: AtomicU64::new(0), peer_rejected: AtomicU64::new(0),
+        renew_denied: AtomicU64::new(0), peer_rejected: AtomicU64::new(0), control_rejected: AtomicU64::new(0), reset_rejected: AtomicU64::new(0),
         public_key: VerifyingKey::from_bytes(&key)?, run_id: run_id.clone(),
         weak: weak.clone(), monitor_pid: AtomicU64::new(u64::from(monitor.id())),
         recreate_requested: AtomicBool::new(false), recreate_done: (Mutex::new(false), Condvar::new()),
@@ -1138,6 +1145,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         "dropped_logs": shared.dropped_logs.load(Ordering::Relaxed), "monitor_alive": monitor.try_wait()?.is_none(),
         "sink_alive": sink.try_wait()?.is_none(),
         "renew_denied": shared.renew_denied.load(Ordering::Relaxed), "peer_rejected": shared.peer_rejected.load(Ordering::Relaxed),
+        "control_rejected": shared.control_rejected.load(Ordering::Relaxed), "reset_rejected": shared.reset_rejected.load(Ordering::Relaxed),
         "actuator_retries": shared.actuator_retries.load(Ordering::Relaxed), "upstream_cuts": lock(&shared.upstreams).cuts,
         "gateway_streams": lock(&shared.gateway_streams).len(),
         "open_fds": fs::read_dir("/proc/self/fd").map_or(0, Iterator::count),

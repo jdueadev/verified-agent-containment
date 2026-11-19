@@ -20,7 +20,7 @@ The v3 design is in [`docs/design-spec.md`](docs/design-spec.md). Every guarante
 | Rust vs Bend, Rust vs WebAssembly | 77,364 transitions each, 0 mismatches | Generated-test agreement, including stale timestamps and resets. Not a proof |
 | Linux attack runs | 173/173 passed | 28 scenarios; 5 timed scenarios repeated 30 times |
 | Under CPU load | 68/68 passed | Same suite at `--repeat 10`, with two busy loops on a 2-core VM |
-| Weakened controllers | 23/23 caught | Each removes one protection; the suite must fail |
+| Weakened controllers | 24/24 caught | Each removes one protection; the suite must fail |
 | Bytes admitted after a stop committed | 0 | Across 155 measured stops |
 | Bytes written upstream after the cut | 0 | Same runs. Gateway stamps are HMAC-authenticated at the sink |
 | Browser page | 10/10 sabotaged kernels caught | Checked with native WebAssembly and with the JavaScript fallback |
