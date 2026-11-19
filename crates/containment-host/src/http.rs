@@ -146,7 +146,7 @@ pub fn send(
 }
 
 /// Reads one line of at most MAX_LINE bytes.
-fn bounded_line(reader: &mut impl BufRead, line: &mut String) -> io::Result<usize> {
+pub(crate) fn bounded_line(reader: &mut impl BufRead, line: &mut String) -> io::Result<usize> {
     line.clear();
     let n = reader.take(MAX_LINE).read_line(line)?;
     if n as u64 == MAX_LINE && !line.ends_with('\n') {
