@@ -82,3 +82,18 @@ pub fn sink(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     Ok(())
 }
+
+/// Run as an unprivileged uid by the harness: tries operator requests,
+/// including a validly signed reset it was handed, and prints the replies.
+pub fn probe_operator(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let [control, reset, signed_reset] = args else { return Err("probe-operator arguments are invalid".into()) };
+    let send = |socket: &str, message: serde_json::Value| {
+        crate::common::request(std::path::Path::new(socket), &message)
+            .unwrap_or_else(|e| serde_json::json!({"ok": false, "error": e.to_string(), "connect_failed": true}))
+    };
+    let status = send(control, serde_json::json!({"op":"status"}));
+    let hard = send(control, serde_json::json!({"op":"hard","level":"kill"}));
+    let reset = send(reset, serde_json::from_str(signed_reset)?);
+    println!("{}", serde_json::json!({"status": status, "hard": hard, "reset": reset}));
+    Ok(())
+}
