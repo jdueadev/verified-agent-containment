@@ -82,3 +82,17 @@ pub fn sink(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     Ok(())
 }
+
+/// Run as an unprivileged uid by the harness: tries operator requests and
+/// prints the replies. A refused connection counts as refused.
+pub fn probe_operator(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let [control, reset] = args else { return Err("probe-operator arguments are invalid".into()) };
+    let send = |socket: &str, message: serde_json::Value| {
+        crate::common::request(std::path::Path::new(socket), &message)
+            .unwrap_or_else(|e| serde_json::json!({"ok": false, "error": e.to_string()}))
+    };
+    let hard = send(control, serde_json::json!({"op":"hard","level":"kill"}));
+    let reset = send(reset, serde_json::json!({"op":"reset","counter":1,"from_mode":"kill","not_after_ms":u64::MAX,"ttl_ms":200,"signature":"00".repeat(64)}));
+    println!("{}", serde_json::json!({"hard": hard, "reset": reset}));
+    Ok(())
+}

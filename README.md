@@ -18,17 +18,17 @@ The v3 design is in [`docs/design-spec.md`](docs/design-spec.md). Every guarante
 | Original kernel under the law audit | 0 violations in 200,000 inputs | The executable law statements agree with the proofs |
 | Unsafe Rust kernels | 19/19 diverge from the Bend model | The differential test detects these faults |
 | Rust vs Bend, Rust vs WebAssembly | 77,364 transitions each, 0 mismatches | Generated-test agreement, including stale timestamps and resets. Not a proof |
-| Linux attack runs | 172/172 passed | 27 scenarios; 5 timed scenarios repeated 30 times |
+| Linux attack runs | 173/173 passed | 28 scenarios; 5 timed scenarios repeated 30 times |
 | Under CPU load | 68/68 passed | Same suite at `--repeat 10`, with two busy loops on a 2-core VM |
-| Weakened controllers | 22/22 caught | Each removes one protection; the suite must fail |
+| Weakened controllers | 23/23 caught | Each removes one protection; the suite must fail |
 | Bytes admitted after a stop committed | 0 | Across 155 measured stops |
 | Bytes written upstream after the cut | 0 | Same runs. Gateway stamps are HMAC-authenticated at the sink |
 | Browser page | 10/10 sabotaged kernels caught | Checked with native WebAssembly and with the JavaScript fallback |
 
 Timing on Linux 6.18 in a 2-core VM, p50 / p95 / max:
-- Stop committed to egress cut: 0.08 / 0.87 / 39.1 ms.
-- Committed to cgroup frozen: 0.38 / 1.67 / 39.3 ms.
-- Committed to cgroup empty: 1.11 / 2.47 / 3.11 ms.
+- Stop committed to egress cut: 0.09 / 0.95 / 6.28 ms.
+- Committed to cgroup frozen: 0.44 / 1.93 / 6.68 ms.
+- Committed to cgroup empty: 1.48 / 2.48 / 3.27 ms.
 
 Maxima vary between runs on this shared VM because the enforcer thread can be descheduled; one run of an earlier build of this change had a `gateway_flood` stop at 93 ms. Every measured stop, including that one, recorded 0 bytes admitted after commit and 0 written after the cut.
 
@@ -116,6 +116,6 @@ Fable 5.2 reviewed the design adversarially in three rounds:
 - **Law audit:** `tools/law_audit.mjs` restates 35 of the 36 laws in JavaScript; the trace law is covered step by step. It is a second opinion, not the proof.
 - **Outside the proofs:** host actuators, Linux, seccomp, the CPU and the hypervisor. The attack suite tests them; nothing proves them.
 - **Agent and classifier:** the attack agent is scripted, and no LLM agent was run. System One was represented by a deterministic adversarial classifier; the local `jeff` service was not called. `classifier_stall` and `classifier_blind` check the v3 liveness rules with the in-process lab classifier; the separate System One process is not built yet.
-- **Known v2 gaps:** the control socket ignores the peer credential, and a reset-v2 signature binds the run id but not the controller instance or boot. Both are listed in `docs/design-spec.md` section 9.
+- **Known v2 gap:** a reset-v2 signature binds the run id but not the controller instance or boot (`docs/design-spec.md` section 9).
 - **WSL2:** first run on Jon's machine (`results/wsl2/`, Linux 6.18.58.1-microsoft-standard-WSL2, commit 870142c): 167/168, 17/17 sabotage caught, 0 bytes after a stop, and cgroup pids, memory and CPU limits in force with no waiver. The one failure was real: a Windows image written to a memfd and run with `execveat` started WSL's interop interpreter inside the sandbox, because WSL's binfmt handler is kernel-global and its interpreter is preopened. It exited 1 because the interop socket is not reachable from the sandbox, but code outside the sandbox root ran. Fixed by setting `vm.memfd_noexec=2` in the sandbox's PID namespace, with a host-independent probe (`memfd_exec_elf`), a reachable-executable-PE scan, and a `memfd_exec` sabotage. Freeze on WSL2 was slower: committed to frozen p95 66 ms, max 96 ms, while the egress cut stayed under 0.54 ms. The fixed build (d0c0764) passed on WSL2: 168/168 runs, 18/18 sabotage caught including `memfd_exec`, 0 bytes after a stop, limits in force (`results/wsl2/attack-suite-space-heater-d0c0764.json`). Freeze stayed slower there: committed to frozen p95 70 ms, max 97 ms; egress cut p95 0.49 ms.
 - **Trust boundary:** a compromised kernel, root process or hypervisor can defeat the design. Bend 2 is young, and its compiler and parser are not formally verified.

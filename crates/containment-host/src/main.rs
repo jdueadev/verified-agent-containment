@@ -19,6 +19,7 @@ fn main() -> ExitCode {
         Some("agent") => agent::run(&args[1..]),
         Some("monitor") => helpers::monitor(&args[1..]),
         Some("sink") => helpers::sink(&args[1..]),
+        Some("probe-operator") => helpers::probe_operator(&args[1..]),
         Some("differential-cases") => differential::run(&args[1..]),
         _ => Err("usage: containment-lab attack-suite [--repeat N] [--out FILE]".into()),
     };

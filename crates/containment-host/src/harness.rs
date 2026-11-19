@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 const SCENARIOS: &[&str] = &[
     "benign", "monitor_crash", "controller_crash", "agent_attacks_control", "sandbox_escape", "forged_renewal",
     "direct_egress", "denied_hosts", "canary_secret", "exfil_race", "process_escape", "gateway_flood", "gateway_churn",
-    "classifier_injection", "classifier_stall", "classifier_blind", "blind_egress_only", "lag_after_reset", "flood_after_reset", "clock_rollback", "actuator_retry", "actuator_dead", "enforcer_stall",
+    "classifier_injection", "classifier_stall", "classifier_blind", "blind_egress_only", "lag_after_reset", "flood_after_reset", "control_from_other_uid", "clock_rollback", "actuator_retry", "actuator_dead", "enforcer_stall",
     "signed_reset", "recreate_after_kill", "reset_races_kill", "double_reset",
 ];
 const TIMED: &[&str] = &["monitor_crash", "canary_secret", "exfil_race", "process_escape", "gateway_flood"];
@@ -27,7 +27,7 @@ const SABOTAGE: &[(&str, &str)] = &[
     ("single_flag_authority", "double_reset"),
     ("memfd_exec", "sandbox_escape"), ("classifier_beat_in_health", "classifier_stall"),
     ("lag_episode_never_resets", "lag_after_reset"), ("untraced_decisions_ignored", "blind_egress_only"),
-    ("overflow_latch_sticks", "flood_after_reset"),
+    ("overflow_latch_sticks", "flood_after_reset"), ("control_peer_unchecked", "control_from_other_uid"),
 ];
 
 struct Finished {
@@ -84,7 +84,18 @@ fn start(scenario: &str, weakness: &str, sequence: usize) -> Result<Run, Box<dyn
 }
 
 fn control(run: &Run, message: Value) -> Value {
-    request(Path::new(run.status["control_socket"].as_str().unwrap_or("")), &message).unwrap_or_else(|e| status_error(e.to_string()))
+    let socket = if message["op"] == "reset" { "reset_socket" } else { "control_socket" };
+    request(Path::new(run.status[socket].as_str().unwrap_or("")), &message).unwrap_or_else(|e| status_error(e.to_string()))
+}
+
+/// Sends operator requests from an unprivileged uid and returns the replies.
+fn probe_as_nobody(run: &Run) -> Value {
+    use std::os::unix::process::CommandExt;
+    // The controller's public copy of this binary is executable by any uid.
+    let output = Command::new(run.root.join("public/containment-lab"))
+        .arg("probe-operator").arg(run.status["control_socket"].as_str().unwrap_or("")).arg(run.status["reset_socket"].as_str().unwrap_or(""))
+        .uid(65_534).gid(65_534).env_clear().output();
+    output.ok().and_then(|o| serde_json::from_slice(&o.stdout).ok()).unwrap_or_else(|| json!({"error":"probe did not run"}))
 }
 
 fn wait_for_mode(run: &Run, mode: &str, limit: Duration) -> bool {
@@ -365,6 +376,15 @@ fn execute(scenario: &str, weakness: &str, sequence: usize) -> Result<Value, Box
             // Past the lab blind window: trace output stopped, so no Hold.
             sleep(Duration::from_millis(LAB_BLIND_HOLD_MS + 500));
         }
+        "control_from_other_uid" => {
+            sleep(Duration::from_millis(50));
+            let replies = probe_as_nobody(&run);
+            let refused = replies["hard"]["ok"] == false && replies["reset"]["ok"] == false;
+            checks.add("operator_requests_refused_for_other_uid", refused, replies.clone());
+            let status = control(&run, json!({"op":"status"}));
+            checks.add("mode_unchanged", status["mode"] == "run", status.clone());
+            sleep(Duration::from_millis(100));
+        }
         "flood_after_reset" => {
             let first = wait_for_mode(&run, "restrict", Duration::from_secs(2));
             sleep(Duration::from_millis(100));
@@ -582,6 +602,10 @@ fn execute(scenario: &str, weakness: &str, sequence: usize) -> Result<Value, Box
             let classifier = report["transitions"].as_array().is_some_and(|items| items.iter().any(|t| t["event"] == "classifier" && t["to"] == "hold"));
             checks.add("classifier_can_hold", classifier, report["transitions"].clone());
             checks.add("classifier_cannot_escalate_past_hold", report["final_mode"] == "hold" && report["survivors"].as_u64().unwrap_or(0) > 0, json!({"mode":report["final_mode"],"survivors":report["survivors"]}));
+        }
+        "control_from_other_uid" => {
+            checks.add("peer_rejected_counted", report["peer_rejected"].as_u64().unwrap_or(0) >= 2, report["peer_rejected"].clone());
+            checks.add("ends_running", report["final_mode"] == "run", report["final_mode"].clone());
         }
         "flood_after_reset" => {
             let overflows = report["classifier_signals"].as_array().map_or(0, |items| items.iter().filter(|t| t["label"] == "classifier_overflow").count());

@@ -228,6 +228,17 @@ depends_on = ["K-CLS-01"]
 platforms = [{ name = "linux-vm-6.18", commit = "a20599d", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs"]
 
+[[claim]]
+id = "H-CTL-02"
+statement = "The operator control socket and the reset socket accept requests only from root (SO_PEERCRED), even if their file mode is wrong; the control socket cannot produce a classifier signal or a reset, and the reset socket can produce only Event::Reset."
+layer = "host"
+status = "tested"
+evidence = ["scenario:control_from_other_uid", "scenario:signed_reset", "sabotage:control_peer_unchecked"]
+falsifier = "A request from a non-root uid changes the mode or is answered with ok"
+limits = "The classifier's own channel is still in-process; its socket-picks-constructor rule is C-ARCH-01 (#4)."
+platforms = [{ name = "linux-vm-6.18", commit = "m2", result = "pass" }]
+files = ["crates/containment-host/src/controller.rs"]
+
 # ---------- Limitations and assumptions ----------
 
 [[claim]]
