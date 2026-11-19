@@ -24,6 +24,7 @@ The v3 design is in [`docs/design-spec.md`](docs/design-spec.md). Every guarante
 | Bytes admitted after a stop committed | 0 | Across 155 measured stops |
 | Bytes written upstream after the cut | 0 | Same runs. Gateway stamps are HMAC-authenticated at the sink |
 | Browser page | 10/10 sabotaged kernels caught | Checked with native WebAssembly and with the JavaScript fallback |
+| TLA+ host model | `ClassifierCannotForceStop` holds | 2,863,520 states (one sandbox, 12 ticks, renewal as its own action, no resets). Required counterexamples are found for the classifier in the health gate, an uncapped lag signal, and a dead monitor. `tools/tla_check.sh` |
 
 Timing on Linux 6.18 in a 2-core VM, p50 / p95 / max:
 - Stop committed to egress cut: 0.09 / 0.95 / 6.28 ms.

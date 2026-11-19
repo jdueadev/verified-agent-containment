@@ -3,3 +3,6 @@ results/*.tmp
 *.wasm.tmp
 __pycache__/
 .claude/
+
+# TLC trace dumps
+formal/host/*_TTrace_*
