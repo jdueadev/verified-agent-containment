@@ -309,6 +309,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     // SAFETY: getuid has no preconditions.
     say("started", json!({"uid": unsafe { libc::getuid() }, "pid": std::process::id()}));
     match scenario.as_str() {
+        "live" => crate::agent_loop::run(gateway, &probe),
         "benign" => {
             let mut client = Gateway::connect(gateway)?;
             let ok = client.send(json!({"op":"egress","host":"allowed.test","data":"work","use_secret":"api_token"}));

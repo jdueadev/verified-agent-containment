@@ -36,7 +36,7 @@ fn c(path: &str) -> Result<CString, Box<dyn Error>> {
 
 /// Starts one sandbox inside `cgroup`. This must run on the controller's main
 /// thread because the parent-death signal follows the spawning thread.
-pub fn spawn(spec: &SandboxSpec, cgroup: &Path, uid: u32) -> io::Result<Child> {
+pub fn spawn(spec: &SandboxSpec, cgroup: &Path, uid: u32, workspace: Option<&Path>) -> io::Result<Child> {
     let procs = fs::OpenOptions::new().write(true).open(cgroup.join("cgroup.procs"))?;
     let output = fs::OpenOptions::new().create(true).append(true).open(&spec.output)?;
     let mut flags = libc::CLONE_NEWNS | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS | libc::CLONE_NEWPID | libc::CLONE_NEWCGROUP;
@@ -51,6 +51,7 @@ pub fn spawn(spec: &SandboxSpec, cgroup: &Path, uid: u32) -> io::Result<Child> {
         "exe": spec.exe, "new_root": spec.new_root, "private_dir": spec.private_dir, "gateway": spec.gateway,
         "scenario": spec.scenario, "uid": uid, "probe": spec.probe, "expose_private": spec.expose_private,
         "death_signal": death_signal, "host_root": spec.host_root, "seccomp": spec.seccomp, "memfd_exec": spec.memfd_exec,
+        "workspace": workspace,
     });
     let mut command = Command::new(&spec.exe);
     command
@@ -128,6 +129,11 @@ fn pivot_to_minimal_root(config: &Value) -> Result<(), Box<dyn Error>> {
     bind(exe, &under("/agent"), libc::MS_RDONLY)?;
     fs::write(under("/gateway.sock"), "")?;
     bind(gateway, &under("/gateway.sock"), libc::MS_NOEXEC)?;
+    // The only writable path: this generation's copy-on-rebuild workspace.
+    if let Some(workspace) = config["workspace"].as_str() {
+        fs::create_dir(under("/workspace"))?;
+        bind(workspace, &under("/workspace"), libc::MS_NOEXEC)?;
+    }
     if config["expose_private"] == true {
         fs::create_dir(under("/private"))?;
         bind(config["private_dir"].as_str().ok_or("private")?, &under("/private"), libc::MS_NOEXEC)?;

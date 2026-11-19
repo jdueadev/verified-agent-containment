@@ -1,11 +1,14 @@
 //! Linux containment prototype and adversarial test harness.
 
 mod agent;
+mod agent_loop;
 mod common;
 mod controller;
 mod differential;
 mod harness;
 mod helpers;
+mod http;
+mod live;
 mod sandbox;
 mod system_one;
 
