@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Model-checks formal/host/HostModel.tla (claim C-MOD-1) with TLC.
 # The v3 configuration must pass; the two known-bad configurations must violate
-# ClassifierCannotForceStop, which shows the model can see those bugs.
+# ClassifierCannotForceStop, which shows the model can see those bugs, and the
+# no-monitor configuration must reach Freeze, which shows the lease clock is live.
 # Needs java and tla2tools.jar (TLA2TOOLS, default /opt/tla/tla2tools.jar).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -11,7 +12,7 @@ work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 spec_sha="$(sha256sum formal/host/HostModel.tla | cut -d' ' -f1)"
 results=()
 fail=0
-for cfg in HostModel HostModelPre1 HostModelLagUncapped; do
+for cfg in HostModel HostModelPre1 HostModelLagUncapped HostModelNoMonitor; do
   out="$work/$cfg.out"
   set +e
   java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers auto -deadlock -config "formal/host/$cfg.cfg" \
@@ -26,7 +27,8 @@ for cfg in HostModel HostModelPre1 HostModelLagUncapped; do
   printf '%-22s expected: %-38s exit %s, violated: %s, distinct states: %s\n' "$cfg" "$expected" "$code" "${violated:-none}" "${states:-?}"
   results+=("{\"config\":\"$cfg\",\"expected\":\"$expected\",\"exit\":$code,\"violated\":\"${violated}\",\"distinct_states\":${states:-0},\"as_expected\":$ok}")
 done
-passed_props='["ClassifierCannotForceStop","RenewalNeverDeniedForClassifier","ModesOnlyRise","TypeOK"]'
+# The passed properties are the ones the good configuration actually checks.
+passed_props="$(awk '/^(INVARIANTS|PROPERTIES)/{on=1; next} /^[A-Z]+/{on=0} on && NF {printf "%s\"%s\"", (n++ ? "," : "["), $1} END {print (n ? "]" : "[]")}' formal/host/HostModel.cfg)"
 [ "$fail" = 0 ] || passed_props='[]'
 mkdir -p results
 printf '{"spec":"formal/host/HostModel.tla","sha256":"%s","tlc":"%s","passed":%s,"runs":[%s]}\n' \

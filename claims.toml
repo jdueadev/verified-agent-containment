@@ -343,12 +343,12 @@ falsifier = "A classifier event from any other fd"
 
 [[claim]]
 id = "C-MOD-1"
-statement = "Classifier behaviour (working, slow, stalled, crashed, or emitting any verdict) cannot bring a sandbox to Freeze or Kill and never causes a refused renewal, when the monitor renews every tick, the enforcer is healthy, no other hard rule at Freeze or above fires, and no actuator fails."
+statement = "Classifier behaviour (working, slow, stalled, crashed, or emitting any verdict) cannot bring a sandbox to Freeze or Kill, and the health gate never refuses the monitor because of it, when the monitor attempts a renewal at least every RenewEvery < Ttl ticks, the enforcer and tick heartbeats are fresh, no other hard rule at Freeze or above fires, and no actuator fails. Runs without resets."
 layer = "host"
 status = "checked-bounded"
 evidence = ["tla:host#ClassifierCannotForceStop", "tla:host#RenewalNeverDeniedForClassifier", "tla:host#ModesOnlyRise"]
-falsifier = "TLC finds a behaviour reaching Freeze; the pre-#1 configuration (classifier in the health gate) and an uncapped lag signal must both produce such a behaviour"
-limits = "Bounded: one sandbox, 12 ticks, 3 pending events. Abstracts the kernel to its proved laws and the code to its lag rules; the model does not prove the Rust matches it."
+falsifier = "TLC finds a behaviour reaching Freeze. Required counterexamples: the pre-#1 wiring (classifier in the health gate), an uncapped lag signal, and a dead monitor (shows the lease clock is live)"
+limits = "Bounded: one sandbox, 12 ticks, Ttl 2, renewal every tick, 3 pending events; no resets. The kernel is abstracted to its proved laws. Not modelled, all of which only over-approximate Hold: lag-episode clearing, the overflow signal, partial queue draining, and a slow classifier that still beats. Assumed, not modelled: tick-thread heartbeat stays fresh under classifier-induced lock contention on the control lock. RenewalNeverDeniedForClassifier follows directly from the health gate excluding the classifier. The model does not prove the Rust matches it."
 files = ["formal/host/HostModel.tla", "crates/containment-host/src/controller.rs"]
 
 [[claim]]

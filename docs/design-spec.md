@@ -130,7 +130,7 @@ A bounded model with N = 2 sandboxes, a supervisor, a monitor, System One and th
 
 Run `ClassifierCannotForceStop` against today's wiring first. It must find the `healthy()` counterexample. If it does not, the model cannot see the bug.
 
-Status (#3): `formal/host/HostModel.tla` models one sandbox (N = 1 so far). `tools/tla_check.sh` checks `ClassifierCannotForceStop`, `RenewalNeverDeniedForClassifier` and `ModesOnlyRise` on the v3 wiring, and requires a counterexample for the pre-#1 wiring and for an uncapped lag signal. The multi-sandbox properties wait for the supervisor (§3).
+Status (#3): `formal/host/HostModel.tla` models one sandbox (N = 1 so far). `tools/tla_check.sh` checks `ClassifierCannotForceStop`, `RenewalNeverDeniedForClassifier` and `ModesOnlyRise` on the v3 wiring, and requires counterexamples for the pre-#1 wiring, an uncapped lag signal, and a dead monitor (so the lease clock cannot be vacuous). What is abstracted away is listed in claim C-MOD-1. The multi-sandbox properties wait for the supervisor (§3).
 
 ## 9. Where today's code does not meet the spec
 
