@@ -164,6 +164,16 @@ struct Upstreams {
     cuts: u64,
 }
 
+/// Aborts a TCP connection: connect(AF_UNSPEC) makes Linux reset it and drop
+/// any bytes still queued for sending, so nothing handed to the kernel before
+/// the cut leaves after it. Then shuts both directions for the other holders.
+fn abort_stream(stream: &TcpStream) {
+    let unspec = libc::sockaddr { sa_family: libc::AF_UNSPEC as libc::sa_family_t, sa_data: [0; 14] };
+    // SAFETY: `unspec` is a valid sockaddr for the duration of the call.
+    unsafe { libc::connect(stream.as_raw_fd(), &unspec, std::mem::size_of::<libc::sockaddr>() as libc::socklen_t) };
+    let _ = stream.shutdown(Shutdown::Both);
+}
+
 #[derive(Clone, Copy, Default)]
 struct Enforced {
     frozen: bool,
@@ -382,7 +392,7 @@ impl Shared {
         self.authority_pending.load(Ordering::SeqCst) == 0
     }
 
-    /// Shuts upstream connections. Restrict (`keep_baseline`) keeps baseline
+    /// Aborts upstream connections. Restrict (`keep_baseline`) keeps baseline
     /// egress such as inference; a stop cuts everything.
     fn cut_upstream(&self, keep_baseline: bool) {
         let mut upstreams = lock(&self.upstreams);
@@ -391,7 +401,7 @@ impl Shared {
         for slot in slots {
             upstreams.baseline.remove(&slot);
             if let Some(Some(stream)) = upstreams.active.remove(&slot) {
-                let _ = stream.shutdown(Shutdown::Both);
+                abort_stream(&stream);
             }
         }
     }
@@ -815,7 +825,7 @@ fn operator_peer(unchecked: bool, counter: &AtomicU64, peer: Option<libc::ucred>
 
 fn status_reply(shared: &Shared) -> Value {
     let control = *lock(&shared.control);
-    json!({"ok": true, "mode": mode_name(control.mode), "deadline_ms": control.deadline_ms, "now_ms": shared.now_ms(), "clock_ms": control.clock_ms})
+    json!({"ok": true, "mode": mode_name(control.mode), "deadline_ms": control.deadline_ms, "now_ms": shared.now_ms(), "clock_ms": control.clock_ms, "reset_counter": control.reset_counter})
 }
 
 /// Operator channel: status, and in the lab, simulated hard rules and clock skew.
@@ -1104,32 +1114,62 @@ fn send_on_slot(shared: &Shared, slot: u64, url: &crate::http::Url, method: &str
 
 fn live_infer(shared: &Shared, live: &LiveState, message: &Value, received: u64) -> Value {
     let budget = live.policy.model.token_budget;
-    if live.tokens.load(Ordering::SeqCst) >= budget {
+    let reserve = live.policy.model.max_tokens_per_call;
+    let request = json!({
+        "model": live.policy.model.name, "messages": message["messages"], "tools": message["tools"],
+        "max_tokens": reserve, "stream": false,
+    });
+    let body = request.to_string();
+    // The model endpoint is an upstream too: the canary must not reach it.
+    if !shared.weak.live_canary_unchecked && !live.canary.is_empty() && body.contains(&live.canary) {
+        shared.apply(Some("canary_exfil"), received, |now_ms| Event::HardRule { now_ms, level: Level::Freeze });
+        return denied("denied");
+    }
+    // Reserve the call's maximum first, so concurrent calls cannot overspend.
+    let reserved = live.tokens.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| (used + reserve <= budget).then_some(used + reserve));
+    if reserved.is_err() {
         shared.apply(Some("budget_tokens"), received, |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
         return denied("token budget for this lease is used up");
     }
+    let release = |used: u64| live.tokens.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |t| Some(t.saturating_sub(reserve) + used)).map_or(0, |t| t.saturating_sub(reserve) + used);
     // Inference is baseline egress: allowed in Restrict, refused in Hold and above.
-    let Some(slot) = admit(shared, true, true) else { return denied("inference is not allowed in the current mode") };
-    let request = json!({
-        "model": live.policy.model.name, "messages": message["messages"], "tools": message["tools"],
-        "max_tokens": live.policy.model.max_tokens_per_call, "stream": false,
-    });
+    let Some(slot) = admit(shared, true, true) else {
+        release(0);
+        return denied("inference is not allowed in the current mode");
+    };
     let mut headers = vec![("Content-Type".to_owned(), "application/json".to_owned())];
     headers.extend(live.model_header.clone());
-    let body = request.to_string();
     let response = match send_on_slot(shared, slot, &live.model_url, "POST", &headers, body.as_bytes()) {
         Ok(r) => r,
-        Err(e) => return denied(&format!("model server: {e}")),
+        Err(e) => {
+            release(reserve);
+            return denied(&format!("model server: {e}"));
+        }
     };
     let Ok(reply) = serde_json::from_slice::<Value>(&response.body) else {
+        release(reserve);
         return denied(&format!("model server returned HTTP {} without JSON", response.status));
     };
     let used = reply["usage"]["total_tokens"].as_u64().unwrap_or((body.len() + response.body.len()) as u64 / 4);
-    let total = live.tokens.fetch_add(used, Ordering::SeqCst) + used;
-    if total >= budget {
+    let total = release(used);
+    if total + reserve > budget {
         shared.apply(Some("budget_tokens"), boot_ns(), |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
     }
-    json!({"ok": true, "message": reply["choices"][0]["message"], "usage": {"call": used, "lease_total": total, "budget": budget}})
+    let message = redact(live, reply["choices"][0]["message"].clone());
+    json!({"ok": true, "message": message, "usage": {"call": used, "lease_total": total, "budget": budget}})
+}
+
+/// Removes exact credential values from anything returned to the agent, in
+/// case an upstream echoes request headers or puts a token in an error.
+fn redact(live: &LiveState, value: Value) -> Value {
+    let text = value.to_string();
+    let mut clean = text.clone();
+    for secret in &live.secret_values {
+        if !secret.is_empty() {
+            clean = clean.replace(secret.as_str(), "[redacted]");
+        }
+    }
+    if clean == text { value } else { serde_json::from_str(&clean).unwrap_or(Value::Null) }
 }
 
 fn live_http(shared: &Shared, live: &LiveState, message: &Value, received: u64) -> Value {
@@ -1146,27 +1186,35 @@ fn live_http(shared: &Shared, live: &LiveState, message: &Value, received: u64) 
     }
     let Some(url) = crate::http::Url::parse(url_text) else { return denied("not an http(s) URL the gateway accepts") };
     let writes = !matches!(method.as_str(), "GET" | "HEAD");
+    if !writes && !body.is_empty() {
+        return denied("GET and HEAD requests cannot carry a body");
+    }
     let rule = live.hosts.get(&url.origin());
     let granted = rule.is_some_and(|(r, _)| !writes || r.access == crate::live::Access::Write || shared.weak.live_write_unchecked);
-    if let Some((r, _)) = rule.filter(|_| granted) {
-        let mut used = lock(&live.used);
-        let entry = used.entry(url.origin()).or_default();
-        let over = !shared.weak.live_budget_unchecked
-            && (r.budget_requests.is_some_and(|b| entry.requests + 1 > b) || r.budget_bytes.is_some_and(|b| entry.bytes + body.len() as u64 > b));
-        if over {
-            drop(used);
-            shared.apply(Some("budget_exhausted"), received, |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
-            return denied("the budget for this host and lease is used up");
-        }
-        entry.requests += 1;
-        entry.bytes += body.len() as u64;
-    }
     let Some(slot) = admit(shared, granted, false) else {
         if !granted && shared.denied.fetch_add(1, Ordering::SeqCst) + 1 >= 3 {
             shared.apply(Some("denied_requests"), received, |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
         }
         return denied(if granted { "not allowed in the current mode" } else { "host or method is not in the policy" });
     };
+    // Budgets count admitted requests; path and query bytes count like body bytes.
+    if let Some((r, _)) = rule {
+        let sent = (body.len() + url.path.len()) as u64;
+        let mut used = lock(&live.used);
+        let entry = used.entry(url.origin()).or_default();
+        let over = !shared.weak.live_budget_unchecked
+            && (r.budget_requests.is_some_and(|b| entry.requests + 1 > b) || r.budget_bytes.is_some_and(|b| entry.bytes + sent > b));
+        if over {
+            drop(used);
+            let mut upstreams = lock(&shared.upstreams);
+            upstreams.active.remove(&slot);
+            drop(upstreams);
+            shared.apply(Some("budget_exhausted"), received, |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
+            return denied("the budget for this host and lease is used up");
+        }
+        entry.requests += 1;
+        entry.bytes += sent;
+    }
     let mut headers = Vec::new();
     if let Some((_, Some(credential))) = rule {
         headers.push(credential.clone());
@@ -1180,9 +1228,9 @@ fn live_http(shared: &Shared, live: &LiveState, message: &Value, received: u64) 
         headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
     }
     match send_on_slot(shared, slot, &url, &method, &headers, body.as_bytes()) {
-        Ok(r) => json!({"ok": true, "status": r.status, "truncated": r.truncated,
-            "body": String::from_utf8_lossy(&r.body[..r.body.len().min(64 * 1024)])}),
-        Err(e) => denied(&format!("upstream: {e}")),
+        Ok(r) => redact(live, json!({"ok": true, "status": r.status, "truncated": r.truncated,
+            "body": String::from_utf8_lossy(&r.body[..r.body.len().min(64 * 1024)])})),
+        Err(e) => redact(live, denied(&format!("upstream: {e}"))),
     }
 }
 

@@ -10,6 +10,25 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 pub const MAX_RESPONSE_BYTES: usize = 256 * 1024;
+const MAX_LINE: u64 = 8 * 1024;
+const MAX_HEADERS: usize = 100;
+
+/// True for a host written as a loopback IP literal or `localhost`.
+pub fn is_loopback_literal(host: &str) -> bool {
+    host == "localhost" || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Addresses a name in the policy must not resolve to: loopback, private,
+/// link-local (including 169.254.169.254), unspecified and similar. A policy
+/// that means one of these must list the IP literal itself.
+fn internal(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
+            || v4.is_broadcast() || v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64,
+        std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified() || (v6.segments()[0] & 0xfe00) == 0xfc00
+            || (v6.segments()[0] & 0xffc0) == 0xfe80 || v6.to_ipv4_mapped().is_some_and(|v4| internal(v4.into())),
+    }
+}
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,8 +94,12 @@ fn tls_config() -> Arc<rustls::ClientConfig> {
 pub fn send(
     url: &Url, method: &str, headers: &[(String, String)], body: &[u8], register: impl FnOnce(TcpStream) -> bool,
 ) -> io::Result<Response> {
+    let literal = url.host.parse::<std::net::IpAddr>().is_ok() || url.host == "localhost";
     let address = (url.host.as_str(), url.port).to_socket_addrs()?.next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "host did not resolve"))?;
+    if !literal && internal(address.ip()) {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "name resolves to an internal address; list the IP literal in the policy if that is intended"));
+    }
     let tcp = TcpStream::connect_timeout(&address, Duration::from_secs(10))?;
     tcp.set_read_timeout(Some(TIMEOUT))?;
     tcp.set_write_timeout(Some(TIMEOUT))?;
@@ -113,17 +136,29 @@ pub fn send(
     }
 }
 
+/// Reads one line of at most MAX_LINE bytes.
+fn bounded_line(reader: &mut impl BufRead, line: &mut String) -> io::Result<usize> {
+    line.clear();
+    let n = reader.take(MAX_LINE).read_line(line)?;
+    if n as u64 == MAX_LINE && !line.ends_with('\n') {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "response line too long"));
+    }
+    Ok(n)
+}
+
 fn read_response(stream: impl Read) -> io::Result<Response> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    reader.read_line(&mut line)?;
+    bounded_line(&mut reader, &mut line)?;
     let status = line.split_whitespace().nth(1).and_then(|s| s.parse().ok())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad status line"))?;
     let mut length = None;
     let mut chunked = false;
-    loop {
-        line.clear();
-        if reader.read_line(&mut line)? == 0 || line == "\r\n" || line == "\n" {
+    for count in 0.. {
+        if count > MAX_HEADERS {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "too many response headers"));
+        }
+        if bounded_line(&mut reader, &mut line)? == 0 || line == "\r\n" || line == "\n" {
             break;
         }
         if let Some((name, value)) = line.split_once(':') {
@@ -139,19 +174,20 @@ fn read_response(stream: impl Read) -> io::Result<Response> {
     let mut truncated = false;
     if chunked {
         loop {
-            line.clear();
-            reader.read_line(&mut line)?;
-            let size = usize::from_str_radix(line.trim().split(';').next().unwrap_or("0"), 16).unwrap_or(0);
+            bounded_line(&mut reader, &mut line)?;
+            let size = usize::from_str_radix(line.trim().split(';').next().unwrap_or("0"), 16)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad chunk size"))?;
             if size == 0 {
                 break;
             }
-            let take = size.min(MAX_RESPONSE_BYTES.saturating_sub(body.len()));
-            let mut chunk = vec![0; size];
-            reader.read_exact(&mut chunk)?;
-            body.extend_from_slice(&chunk[..take]);
-            truncated |= take < size;
-            line.clear();
-            reader.read_line(&mut line)?;
+            // Never allocate what the server announces: copy through a bounded reader.
+            let keep = size.min(MAX_RESPONSE_BYTES.saturating_sub(body.len()));
+            (&mut reader).take(keep as u64).read_to_end(&mut body)?;
+            if keep < size {
+                truncated = true;
+                break;
+            }
+            bounded_line(&mut reader, &mut line)?;
         }
     } else {
         let limit = length.unwrap_or(MAX_RESPONSE_BYTES + 1).min(MAX_RESPONSE_BYTES + 1);
@@ -176,6 +212,25 @@ mod tests {
         for bad in ["ftp://x", "http://user@host/", "http://[::1]/", "http://ho st/", "http:///x", "http://a/b c"] {
             assert!(Url::parse(bad).is_none(), "{bad}");
         }
+    }
+
+    #[test]
+    fn internal_addresses_are_recognised() {
+        for ip in ["127.0.0.1", "10.1.2.3", "192.168.0.1", "172.16.5.4", "169.254.169.254", "100.64.0.1", "::1", "fd00::1", "fe80::1", "::ffff:10.0.0.1"] {
+            assert!(internal(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["1.1.1.1", "140.82.112.3", "2606:4700::1111"] {
+            assert!(!internal(ip.parse().unwrap()), "{ip}");
+        }
+    }
+
+    #[test]
+    fn oversized_chunks_are_not_allocated() {
+        let response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nffffffffffff\r\nabc";
+        let r = read_response(&response[..]).unwrap();
+        assert!(r.truncated && r.body == b"abc");
+        let long = format!("HTTP/1.1 200 OK\r\nX: {}\r\n\r\n", "a".repeat(10_000));
+        assert!(read_response(long.as_bytes()).is_err());
     }
 
     #[test]

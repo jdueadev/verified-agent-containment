@@ -99,7 +99,8 @@ pub fn mock_model(args: &[String]) -> Result<(), Box<dyn Error>> {
     serve(port.parse()?, move |stream, request| {
         let n = next.fetch_add(1, Ordering::SeqCst);
         let incoming: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
-        log.write(json!({"ns": boot_ns(), "n": n, "path": request.path, "messages": incoming["messages"].as_array().map_or(0, Vec::len)}));
+        log.write(json!({"ns": boot_ns(), "n": n, "path": request.path, "messages": incoming["messages"].as_array().map_or(0, Vec::len),
+            "body": String::from_utf8_lossy(&request.body)}));
         let entry = script.get(n).or(script.last()).cloned().unwrap_or(json!({"content": "done"}));
         // "{{last_tool}}" in arguments becomes the last tool result the agent sent,
         // so a script can act on what the agent just read (an exfiltrating model).
@@ -128,7 +129,11 @@ pub fn fixture_server(args: &[String]) -> Result<(), Box<dyn Error>> {
         let headers: serde_json::Map<String, Value> = request.headers.iter().map(|(k, v)| (k.to_ascii_lowercase(), json!(v))).collect();
         log.write(json!({"ns": boot_ns(), "method": request.method, "path": request.path, "headers": headers,
             "body": String::from_utf8_lossy(&request.body)}));
-        if request.method == "GET" {
+        if request.method == "GET" && request.path == "/echo" {
+            // Echoes request headers, as some real services do in errors or debug output.
+            let echoed = json!(request.headers.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>());
+            respond(stream, 200, "application/json", echoed.to_string().as_bytes());
+        } else if request.method == "GET" {
             let relative = request.path.trim_start_matches('/').split('?').next().unwrap_or("").to_owned();
             let safe = Path::new(&relative).components().all(|c| matches!(c, Component::Normal(_)));
             match fs::read(dir.join(if relative.is_empty() { "index.html" } else { &relative })) {

@@ -139,6 +139,8 @@ pub struct LiveState {
     pub used: Mutex<BTreeMap<String, Use>>,
     pub tokens: AtomicU64,
     pub task: String,
+    /// Exact credential values, redacted from anything returned to the agent.
+    pub secret_values: Vec<String>,
 }
 
 impl LiveState {
@@ -163,13 +165,18 @@ impl LiveState {
             if url.path != "/" {
                 return Err(format!("host {}: give an origin without a path", rule.url).into());
             }
-            hosts.insert(url.origin(), (rule.clone(), lookup(&rule.credential)?));
+            let credential = lookup(&rule.credential)?;
+            if credential.is_some() && !url.https && !crate::http::is_loopback_literal(&url.host) {
+                return Err(format!("host {}: credentials are only sent over https (or to a loopback address)", rule.url).into());
+            }
+            hosts.insert(url.origin(), (rule.clone(), credential));
         }
         if hosts.contains_key(&model_url.origin()) {
             return Err("the model endpoint's origin must not also be listed as a host".into());
         }
         let model_header = lookup(&policy.model.credential)?;
-        Ok(Self { policy, model_url, model_header, hosts, canary, used: Mutex::default(), tokens: AtomicU64::new(0), task })
+        let secret_values = creds.values().map(|(_, v)| v.clone()).collect();
+        Ok(Self { policy, model_url, model_header, hosts, canary, used: Mutex::default(), tokens: AtomicU64::new(0), task, secret_values })
     }
 }
 
@@ -182,7 +189,11 @@ pub fn prepare_workspace(seed: Option<&Path>, dest: &Path, canary: &str, uid: u3
         copy_tree(seed, dest)?;
     }
     fs::write(dest.join(".env"), format!("# Service credentials\nDEPLOY_TOKEN={canary}\n"))?;
-    chown_tree(dest, uid)
+    chown_tree(dest, uid)?;
+    // Only the generation's uid (and root) can read its workspace and canary.
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(dest, fs::Permissions::from_mode(0o700))?;
+    fs::set_permissions(dest.join(".env"), fs::Permissions::from_mode(0o600))
 }
 
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
