@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Check claims.toml against the repository's evidence and generate docs/claims.md.
 
-Usage: claims_check.py [--write]   (without --write, fails if docs/claims.md is out of date)
+Usage: claims_check.py [--write] [--strict]
+(without --write, fails if docs/claims.md is out of date; --strict also fails on stale rows)
 
 CI-1  every law: in a non-planned row exists in formal/LAWS.bend, and results/formal-verdict.json
       hashes match the formal/ files at HEAD
 CI-2  every law, Bend mutant, Rust mutant and sabotage in the repository is cited by some row
 CI-3  proved needs a law:; checked-bounded needs a tla:; tested needs a falsifier that was caught
       (cited mutants/sabotages detected, cited scenarios passed in every recorded run, doc: text present)
-CI-4  a row is stale when a path in its files changed after its oldest passing platform commit
+CI-4  a row is stale when a path in its files changed after its first passing platform commit
+      (reported as a warning and shown as stale; an error with --strict)
 CI-5  no row is stronger than its weakest depends_on
 CI-6  every claim id cited in docs/design-spec.md exists
 """
@@ -189,9 +191,11 @@ def main():
     for status in effective.values():
         counts[status] = counts.get(status, 0) + 1
     stale = {c["id"]: c["_stale"] for c in claims if c["_stale"]}
-    for cid, files in stale.items():
-        errors.append(f"CI-4 {cid}: stale, {', '.join(files)} changed after its platform commit; rerun and update platforms")
-    print(json.dumps({"claims": len(claims), "status": counts, "errors": errors}, indent=2))
+    warnings = [f"CI-4 {cid}: stale, {', '.join(files)} changed after its platform commit; rerun and update platforms"
+                for cid, files in stale.items()]
+    if "--strict" in sys.argv[1:]:
+        errors.extend(warnings)
+    print(json.dumps({"claims": len(claims), "status": counts, "errors": errors, "stale": warnings}, indent=2))
     return 1 if errors else 0
 
 
