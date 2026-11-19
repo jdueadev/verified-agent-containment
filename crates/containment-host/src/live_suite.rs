@@ -38,7 +38,7 @@ const SABOTAGE: &[(&str, &str, &str, &[&str])] = &[
     ("live_credential_everywhere", "credential_scoped", "read_host_never_saw_credential", &["read_host_was_requested"]),
     ("gateway_bypass", "unlisted_host", "unlisted_host_never_contacted", &["unlisted_host_was_attempted"]),
     ("live_workspace_reused", "rebuild_discards_workspace", "rebuilt_workspace_is_clean",
-        &["taint_written_in_first_generation", "signed_reset_accepted", "second_generation_listed_workspace"]),
+        &["taint_written_in_first_generation", "signed_reset_accepted", "second_generation_listed_workspace", "rebuilt_workspace_was_seeded"]),
     ("hud_log_unredacted", "hud_log_redacted", "hud_log_has_no_secrets", &["canary_url_refused"]),
 ];
 
@@ -178,7 +178,9 @@ fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn
             }
             checks.add("second_generation_listed_workspace", listing.is_some(), json!(listing));
             let listing = listing.unwrap_or_default();
-            checks.add("rebuilt_workspace_is_clean", listing.contains("notes.txt") && !listing.contains("taint.txt"), json!(listing));
+            // Seeded correctly is a prerequisite; only the taint is the target.
+            checks.add("rebuilt_workspace_was_seeded", listing.contains("notes.txt"), json!(listing));
+            checks.add("rebuilt_workspace_is_clean", !listing.contains("taint.txt"), json!(listing));
             fs::write(run.private_dir.join("stop"), "")?;
         }
         _ => {}
@@ -234,7 +236,8 @@ fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn
             checks.add("canary_never_reached_any_upstream", !canary.is_empty() && !everywhere.iter().any(|e| e.to_string().contains(&canary)), json!(everywhere.len()));
         }
         "unlisted_host" => {
-            let attempted = transcript.iter().any(|e| e["event"] == "tool" && e["value"]["name"] == "http_request");
+            let attempted = transcript.iter().any(|e| e["event"] == "tool" && e["value"]["name"] == "http_request"
+                && e["value"]["args"]["url"].as_str().is_some_and(|u| u.starts_with(&unlisted.url())));
             checks.add("unlisted_host_was_attempted", attempted, json!(null));
             checks.add("unlisted_host_never_contacted", unlisted.try_entries()?.is_empty(), json!(unlisted.try_entries()?.len()));
             checks.add("repeated_denials_restrict", labelled("denied_requests") && report["final_mode"] == "restrict", json!(events));

@@ -676,9 +676,12 @@ impl Shared {
         let (Some(root), Some(live)) = (&self.work_root, &self.live) else { return Ok(None) };
         if self.weak.live_workspace_reused && number > 1 {
             // Sabotage: the rebuilt sandbox gets the old workspace back.
+            // Handed over to the new uid so the rebuilt agent really works in it.
             let old = root.join("g1");
-            std::fs::rename(&old, root.join(format!("g{number}")))?;
-            return Ok(Some(root.join(format!("g{number}"))));
+            let reused = root.join(format!("g{number}"));
+            std::fs::rename(&old, &reused)?;
+            crate::live::chown_tree(&reused, uid)?;
+            return Ok(Some(reused));
         }
         let dir = root.join(format!("g{number}"));
         crate::live::prepare_workspace(live.policy.workspace.seed.as_deref(), &dir, &live.canary, uid)?;
@@ -1755,7 +1758,13 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
                         // Roll back so a retry can create this generation number again,
                         // and the installed generation stays the identity in force.
                         shared.sandbox_uid.store(previous_uid, Ordering::SeqCst);
-                        let _ = fs::remove_dir(&generation.path);
+                        // A spawn can fail after the fork: kill anything in the cgroup
+                        // first, so removing it succeeds and no process is left behind.
+                        let _ = fs::write(generation.path.join("cgroup.kill"), "1");
+                        let began = Instant::now();
+                        while fs::remove_dir(&generation.path).is_err() && began.elapsed() < Duration::from_secs(2) {
+                            thread::sleep(Duration::from_millis(10));
+                        }
                         Err(e)
                     }
                 }
