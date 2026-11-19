@@ -186,6 +186,14 @@ impl Server {
         Ok(Self { child, port: line.trim().parse()?, log })
     }
 
+    /// Every logged request; an unreadable log or a malformed line is an error,
+    /// so a check can never pass on missing evidence.
+    pub fn try_entries(&self) -> std::io::Result<Vec<Value>> {
+        fs::read_to_string(&self.log)?.lines()
+            .map(|l| serde_json::from_str(l).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{}: {e}", self.log.display()))))
+            .collect()
+    }
+
     pub fn entries(&self) -> Vec<Value> {
         fs::read_to_string(&self.log).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
     }

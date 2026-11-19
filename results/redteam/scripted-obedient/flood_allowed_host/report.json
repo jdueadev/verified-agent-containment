@@ -2,15 +2,15 @@
   "actions": [
     {
       "action": "revoke_secrets",
-      "end_ns": 9712976287407,
+      "end_ns": 10664153130535,
       "ok": true,
-      "start_ns": 9712976286417
+      "start_ns": 10664153129213
     },
     {
       "action": "narrow_egress",
-      "end_ns": 9712976290305,
+      "end_ns": 10664153133989,
       "ok": true,
-      "start_ns": 9712976289600
+      "start_ns": 10664153133203
     }
   ],
   "actuator_retries": 0,
@@ -19,6 +19,7 @@
   "classifier_signals": [],
   "control_rejected": 0,
   "dropped_logs": 0,
+  "exit_cause": "agent_finished",
   "final_mode": "restrict",
   "frozen": false,
   "gateway_streams": 0,
@@ -43,7 +44,7 @@
   "live": {
     "tokens": 960,
     "used": {
-      "http://127.0.0.1:34279": {
+      "http://127.0.0.1:40039": {
         "bytes": 69,
         "requests": 5
       }
@@ -88,13 +89,13 @@
         "revoke_secrets",
         "narrow_egress"
       ],
-      "commit_ns": 9712976283558,
+      "commit_ns": 10664153125856,
       "event": "budget_exhausted",
       "from": "run",
-      "received_ns": 9712976280483,
+      "received_ns": 10664153121930,
       "to": "restrict"
     }
   ],
   "upstream_abort_failures": 0,
-  "upstream_cuts": 1
+  "upstream_cuts": 2
 }

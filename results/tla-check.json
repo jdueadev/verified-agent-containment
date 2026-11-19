@@ -1,6 +1,14 @@
 {
     "spec": "formal/host/HostModel.tla",
-    "sha256": "6b4740c7cf8fc187ebb7aa699fab323e99838e081e06f3e3ac3199af28741137",
+    "inputs": [
+        "formal/host/HostModel.tla",
+        "formal/host/HostModel.cfg",
+        "formal/host/HostModelSlowRenew.cfg",
+        "formal/host/HostModelPre1.cfg",
+        "formal/host/HostModelLagUncapped.cfg",
+        "formal/host/HostModelNoMonitor.cfg"
+    ],
+    "sha256": "1600cab84b716678e55e15194791a38f2200e7ec173265a576599d813c48bb26",
     "tlc": "tla2tools.jar",
     "passed": [
         "TypeOK",
@@ -30,7 +38,7 @@
             "expected": "violates ClassifierCannotForceStop",
             "exit": 12,
             "violated": "ClassifierCannotForceStop",
-            "distinct_states": 1030,
+            "distinct_states": 1173,
             "as_expected": true
         },
         {
@@ -38,7 +46,7 @@
             "expected": "violates ClassifierCannotForceStop",
             "exit": 12,
             "violated": "ClassifierCannotForceStop",
-            "distinct_states": 28904,
+            "distinct_states": 29403,
             "as_expected": true
         },
         {
@@ -46,7 +54,7 @@
             "expected": "violates ClassifierCannotForceStop",
             "exit": 12,
             "violated": "ClassifierCannotForceStop",
-            "distinct_states": 24,
+            "distinct_states": 27,
             "as_expected": true
         }
     ]

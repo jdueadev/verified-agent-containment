@@ -9,10 +9,14 @@ cd "$(dirname "$0")/.."
 jar="${TLA2TOOLS:-/opt/tla/tla2tools.jar}"
 [ -f "$jar" ] || { echo "tla_check: $jar not found; set TLA2TOOLS" >&2; exit 2; }
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
-spec_sha="$(sha256sum formal/host/HostModel.tla | cut -d' ' -f1)"
+# The digest covers the spec and every configuration run below, in this order,
+# so changing a bound in a .cfg also invalidates the recorded result.
+configs=(HostModel HostModelSlowRenew HostModelPre1 HostModelLagUncapped HostModelNoMonitor)
+inputs=(formal/host/HostModel.tla); for c in "${configs[@]}"; do inputs+=("formal/host/$c.cfg"); done
+spec_sha="$(cat "${inputs[@]}" | sha256sum | cut -d' ' -f1)"
 results=()
 fail=0
-for cfg in HostModel HostModelSlowRenew HostModelPre1 HostModelLagUncapped HostModelNoMonitor; do
+for cfg in "${configs[@]}"; do
   out="$work/$cfg.out"
   set +e
   java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers auto -deadlock -config "formal/host/$cfg.cfg" \
@@ -31,6 +35,7 @@ done
 passed_props="$(awk '/^(INVARIANTS|PROPERTIES)/{on=1; next} /^[A-Z]+/{on=0} on && NF {printf "%s\"%s\"", (n++ ? "," : "["), $1} END {print (n ? "]" : "[]")}' formal/host/HostModel.cfg)"
 [ "$fail" = 0 ] || passed_props='[]'
 mkdir -p results
-printf '{"spec":"formal/host/HostModel.tla","sha256":"%s","tlc":"%s","passed":%s,"runs":[%s]}\n' \
-  "$spec_sha" "$(basename "$jar")" "$passed_props" "$(IFS=,; echo "${results[*]}")" | python3 -m json.tool > results/tla-check.json
+inputs_json="$(printf '"%s",' "${inputs[@]}")"
+printf '{"spec":"formal/host/HostModel.tla","inputs":[%s],"sha256":"%s","tlc":"%s","passed":%s,"runs":[%s]}\n' \
+  "${inputs_json%,}" "$spec_sha" "$(basename "$jar")" "$passed_props" "$(IFS=,; echo "${results[*]}")" | python3 -m json.tool > results/tla-check.json
 exit "$fail"
