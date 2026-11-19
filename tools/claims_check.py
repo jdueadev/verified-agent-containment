@@ -7,7 +7,7 @@ Usage: claims_check.py [--write] [--strict]
 CI-1  every law: in a non-planned row exists in formal/LAWS.bend, and results/formal-verdict.json
       hashes match the formal/ files at HEAD
 CI-2  every law, Bend mutant, Rust mutant and sabotage in the repository is cited by some row
-CI-3  proved needs a law:; checked-bounded needs a tla:; tested needs a falsifier that was caught
+CI-3  proved needs a law:; checked-bounded needs a tla: that passed in results/tla-check.json for the current spec; tested needs a falsifier that was caught
       (cited mutants/sabotages detected, cited scenarios passed in every recorded run, doc: text present)
 CI-4  a row is stale when a path in its files changed after its first passing platform commit
       (reported as a warning and shown as stale; an error with --strict)
@@ -74,6 +74,17 @@ def verdict_matches_head():
     return verdict["result"] == "ALL PROOFS CHECK", verdict["result"]
 
 
+def tla_passed(spec, prop):
+    """A tla:<spec>#<prop> reference holds if results/tla-check.json records the
+    property as passed for the spec file as it is now."""
+    path = ROOT / "results/tla-check.json"
+    if not path.exists() or spec != "host":
+        return False
+    data = json.loads(path.read_text())
+    current = hashlib.sha256((ROOT / data["spec"]).read_bytes()).hexdigest()
+    return data["sha256"] == current and prop in data["passed"] and all(r["as_expected"] for r in data["runs"])
+
+
 def changed_since(commit, paths):
     if not paths:
         return []
@@ -131,6 +142,9 @@ def main():
             return path.exists() and text in path.read_text()
         if kind == "law":
             return name in laws and verdict_ok
+        if kind == "tla":
+            spec, _, prop = name.partition("#")
+            return tla_passed(spec, prop)
         return False
 
     for claim in claims:
@@ -156,6 +170,10 @@ def main():
             for ref in evidence:
                 if ref.partition(":")[0] != "tla" and not caught(cid, ref):
                     errors.append(f"CI-3 {cid}: {ref} was not caught or did not pass in results/")
+        if status == "checked-bounded":
+            for ref in evidence:
+                if ref.partition(":")[0] == "tla" and not caught(cid, ref):
+                    errors.append(f"CI-3 {cid}: {ref} has no passing TLC result for the current spec (run tools/tla_check.sh)")
         stale_files = []
         passing = [p for p in claim.get("platforms", []) if p["result"].startswith("pass")]
         if passing:

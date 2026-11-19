@@ -343,11 +343,13 @@ falsifier = "A classifier event from any other fd"
 
 [[claim]]
 id = "C-MOD-1"
-statement = "Classifier behaviour (emit, slow, stall, crash) cannot bring a sandbox to Freeze or Kill when the monitor renews in time, no other hard rule at Freeze or above fires, and no actuator fails."
+statement = "Classifier behaviour (working, slow, stalled, crashed, or emitting any verdict) cannot bring a sandbox to Freeze or Kill and never causes a refused renewal, when the monitor renews every tick, the enforcer is healthy, no other hard rule at Freeze or above fires, and no actuator fails."
 layer = "host"
-status = "planned"
-evidence = ["tla:host#ClassifierCannotForceStop", "tla:host#ClassifierOnlyTightensTowardHold"]
-falsifier = "Today's healthy() wiring (expected counterexample)"
+status = "checked-bounded"
+evidence = ["tla:host#ClassifierCannotForceStop", "tla:host#RenewalNeverDeniedForClassifier", "tla:host#ModesOnlyRise"]
+falsifier = "TLC finds a behaviour reaching Freeze; the pre-#1 configuration (classifier in the health gate) and an uncapped lag signal must both produce such a behaviour"
+limits = "Bounded: one sandbox, 12 ticks, 3 pending events. Abstracts the kernel to its proved laws and the code to its lag rules; the model does not prove the Rust matches it."
+files = ["formal/host/HostModel.tla", "crates/containment-host/src/controller.rs"]
 
 [[claim]]
 id = "C-MOD-2"
