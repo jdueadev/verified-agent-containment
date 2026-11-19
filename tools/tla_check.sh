@@ -12,7 +12,7 @@ work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 spec_sha="$(sha256sum formal/host/HostModel.tla | cut -d' ' -f1)"
 results=()
 fail=0
-for cfg in HostModel HostModelPre1 HostModelLagUncapped HostModelNoMonitor; do
+for cfg in HostModel HostModelSlowRenew HostModelPre1 HostModelLagUncapped HostModelNoMonitor; do
   out="$work/$cfg.out"
   set +e
   java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers auto -deadlock -config "formal/host/$cfg.cfg" \
@@ -21,7 +21,7 @@ for cfg in HostModel HostModelPre1 HostModelLagUncapped HostModelNoMonitor; do
   set -e
   violated="$(grep -oE 'Invariant [A-Za-z]+ is violated' "$out" | awk '{print $2}' | head -1 || true)"
   states="$(grep -oE '[0-9]+ distinct states found' "$out" | tail -1 | awk '{print $1}' || true)"
-  if [ "$cfg" = HostModel ]; then expected="pass"; ok=$([ "$code" = 0 ] && echo true || echo false)
+  if [ "$cfg" = HostModel ] || [ "$cfg" = HostModelSlowRenew ]; then expected="pass"; ok=$([ "$code" = 0 ] && echo true || echo false)
   else expected="violates ClassifierCannotForceStop"; ok=$([ "$violated" = ClassifierCannotForceStop ] && echo true || echo false); fi
   [ "$ok" = true ] || { fail=1; echo "tla_check: $cfg did not behave as expected ($expected)" >&2; tail -20 "$out" >&2; }
   printf '%-22s expected: %-38s exit %s, violated: %s, distinct states: %s\n' "$cfg" "$expected" "$code" "${violated:-none}" "${states:-?}"

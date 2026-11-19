@@ -357,7 +357,7 @@ layer = "host"
 status = "checked-bounded"
 evidence = ["tla:host#ClassifierCannotForceStop", "tla:host#RenewalNeverDeniedForClassifier", "tla:host#ModesOnlyRise"]
 falsifier = "TLC finds a behaviour reaching Freeze. Required counterexamples: the pre-#1 wiring (classifier in the health gate), an uncapped lag signal, and a dead monitor (shows the lease clock is live)"
-limits = "Bounded: one sandbox, 12 ticks, Ttl 2, renewal every tick, 3 pending events; no resets. The kernel is abstracted to its proved laws. Not modelled, all of which only over-approximate Hold: lag-episode clearing, the overflow signal, partial queue draining, and a slow classifier that still beats. Assumed, not modelled: tick-thread heartbeat stays fresh under classifier-induced lock contention on the control lock. RenewalNeverDeniedForClassifier follows directly from the health gate excluding the classifier. The model does not prove the Rust matches it."
+limits = "Bounded: one sandbox, 12 ticks, 3 pending events, no resets; checked with renewal every tick (Ttl 2) and every 2 ticks (Ttl 3). The kernel is abstracted to its proved laws. Not modelled, all of which only over-approximate Hold: lag-episode clearing, the overflow signal, partial queue draining, and a slow classifier that still beats. Assumed, not modelled: tick-thread heartbeat stays fresh under classifier-induced lock contention on the control lock. RenewalNeverDeniedForClassifier follows directly from the health gate excluding the classifier. The model does not prove the Rust matches it."
 files = ["formal/host/HostModel.tla", "crates/containment-host/src/controller.rs"]
 
 [[claim]]
