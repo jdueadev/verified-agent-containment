@@ -63,7 +63,7 @@ The agent's only network path is `gateway.sock`. The network namespace has `lo` 
 
 1. **Input.** The controller writes a structured trace to an inherited one-way pipe. Each record has a `seq`, a kind, gateway decisions, byte and token counts, and a capped `untrusted_excerpt` of agent text. System One runs as a dedicated uid, has no named socket, and cannot call `socket()` (C-ISO-04).
 2. **Output** on fd 4: `{consumed_through_seq, level: none|restrict|hold, score, codes[closed enum], model_id, model_hash, latency_ms}`. The threshold that maps score to level lives in signed config.
-3. **Liveness.** Every classifier signal, lag included, reaches the kernel as `Event::Classifier`. `healthy()` ignores the classifier entirely, so the proved cap (`classifier_cannot_kill`, `classifier_stop_enters_hold`) covers liveness too (C-S1-01).
+3. **Liveness.** Every classifier signal, lag included, reaches the kernel as `Event::Classifier`. `healthy()` ignores the classifier (only the `classifier_beat_in_health` sabotage puts it back), so the proved cap (`classifier_cannot_kill`, `classifier_stop_enters_hold`) covers liveness too (C-S1-01).
 4. **Lag.** Lag over 500 ms moves the agent to Restrict.
 5. **Hold.** Hold applies only in two cases:
    - System One has been down for more than 30 s without restarting.

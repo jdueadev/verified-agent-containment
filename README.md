@@ -18,19 +18,19 @@ The v3 design is in [`docs/design-spec.md`](docs/design-spec.md). Every guarante
 | Original kernel under the law audit | 0 violations in 200,000 inputs | The executable law statements agree with the proofs |
 | Unsafe Rust kernels | 19/19 diverge from the Bend model | The differential test detects these faults |
 | Rust vs Bend, Rust vs WebAssembly | 77,364 transitions each, 0 mismatches | Generated-test agreement, including stale timestamps and resets. Not a proof |
-| Linux attack runs | 169/169 passed | 24 scenarios; 5 timed scenarios repeated 30 times |
+| Linux attack runs | 171/171 passed | 26 scenarios; 5 timed scenarios repeated 30 times |
 | Under CPU load | 68/68 passed | Same suite at `--repeat 10`, with two busy loops on a 2-core VM |
-| Weakened controllers | 19/19 caught | Each removes one protection; the suite must fail |
+| Weakened controllers | 21/21 caught | Each removes one protection; the suite must fail |
 | Bytes admitted after a stop committed | 0 | Across 155 measured stops |
 | Bytes written upstream after the cut | 0 | Same runs. Gateway stamps are HMAC-authenticated at the sink |
 | Browser page | 10/10 sabotaged kernels caught | Checked with native WebAssembly and with the JavaScript fallback |
 
 Timing on Linux 6.18 in a 2-core VM, p50 / p95 / max:
-- Stop committed to egress cut: 0.07 / 0.93 / 93.2 ms.
-- Committed to cgroup frozen: 0.42 / 1.43 / 93.4 ms.
-- Committed to cgroup empty: 1.13 / 2.12 / 2.34 ms.
+- Stop committed to egress cut: 0.10 / 0.73 / 2.52 ms.
+- Committed to cgroup frozen: 0.49 / 2.02 / 12.0 ms.
+- Committed to cgroup empty: 1.32 / 3.61 / 6.24 ms.
 
-The 93 ms maximum is one `gateway_flood` run in which the enforcer thread was descheduled; 30 reruns of that scenario peaked at 1.6 ms, the same as the previous build. No bytes were admitted or written in that window.
+Maxima vary between runs on this shared VM: an earlier run of the same build had one `gateway_flood` stop at 93 ms when the enforcer thread was descheduled. Every measured stop, including that one, recorded 0 bytes admitted after commit and 0 written after the cut.
 
 Monitor loss to containment stayed under the 200 ms lease, with a maximum of 198.6 ms. Under CPU load, the frozen p95 rose to 9.6 ms and the maximum to 59.8 ms.
 

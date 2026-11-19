@@ -217,12 +217,13 @@ files = ["crates/containment-host/src/controller.rs", "crates/containment-host/s
 
 [[claim]]
 id = "H-S1-01"
-statement = "Classifier liveness (a stall, a full queue, or a blind window) reaches the kernel only as Event::Classifier: Restrict on lag over 500 ms, Hold after a blind window with unscored events, never Freeze or Kill, and it never blocks lease renewal."
+statement = "Classifier liveness (a stall, a full queue, or a blind window) reaches the kernel only as Event::Classifier: Restrict on lag over 500 ms, Hold after a blind window with unscored events, never Freeze or Kill, and it never blocks lease renewal. Lag is tracked by sequence number; the episode re-arms when lag clears or after a reset; every gateway decision counts as unscored while blind."
 layer = "host"
 status = "tested"
-evidence = ["scenario:classifier_stall", "scenario:classifier_blind", "scenario:gateway_flood", "sabotage:classifier_beat_in_health", "sabotage:drop_overflow"]
-falsifier = "A stalled classifier causes a denied renewal, Freeze or Kill"
-limits = "In-process lab classifier; the separate System One process is C-ISO-04. Lab blind window is 1.5 s; live is 60 s."
+evidence = ["scenario:classifier_stall", "scenario:classifier_blind", "scenario:blind_egress_only", "scenario:lag_after_reset", "scenario:gateway_flood",
+  "sabotage:classifier_beat_in_health", "sabotage:lag_episode_never_resets", "sabotage:untraced_decisions_ignored", "sabotage:drop_overflow"]
+falsifier = "A stalled classifier causes a denied renewal, Freeze or Kill; or a second stall after a reset goes unreported; or an agent dodges the blind-window Hold by not logging"
+limits = "In-process lab classifier: a classifier crash aborts the controller (panic = abort), and the 'down for 30 s' rule is not implemented; both wait for the separate System One process (C-ISO-04). Lab blind window is 1.5 s; live is 60 s."
 depends_on = ["K-CLS-01"]
 platforms = [{ name = "linux-vm-6.18", commit = "0a0838f", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs"]

@@ -159,6 +159,8 @@ PASS    gateway_churn
 PASS    classifier_injection
 PASS    classifier_stall
 PASS    classifier_blind
+PASS    blind_egress_only
+PASS    lag_after_reset
 PASS    clock_rollback
 PASS    actuator_retry
 PASS    actuator_dead
@@ -186,4 +188,6 @@ CAUGHT  sabotage no_enforcer_watchdog via enforcer_stall
 CAUGHT  sabotage single_flag_authority via double_reset
 CAUGHT  sabotage memfd_exec via sandbox_escape
 CAUGHT  sabotage classifier_beat_in_health via classifier_stall
-runs 169/169 passed; sabotage 19/19 detected; admitted after commit 0; written after cut 0
+CAUGHT  sabotage lag_episode_never_resets via lag_after_reset
+CAUGHT  sabotage untraced_decisions_ignored via blind_egress_only
+runs 171/171 passed; sabotage 21/21 detected; admitted after commit 0; written after cut 0

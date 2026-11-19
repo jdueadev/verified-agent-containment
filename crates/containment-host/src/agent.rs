@@ -66,23 +66,28 @@ fn egress_loop(gateway: &str, host: &str, secret: bool) -> ! {
     }
 }
 
-/// Egress plus trace output. `log_for` limits how long the agent keeps
-/// producing trace events; after that it only sends egress.
-fn logging_loop(gateway: &str, log_for: Option<Duration>) -> ! {
+/// One trace event and one egress request every 20 ms, slow enough that a
+/// stalled classifier's 16-slot queue does not overflow before lag is measured.
+/// With `log_for`, logging stops after that time; the agent then goes fully
+/// idle, or with `then_egress` keeps sending egress without logging.
+fn logging_loop(gateway: &str, log_for: Option<Duration>, then_egress: bool) -> ! {
     let began = std::time::Instant::now();
     let mut sent = 0_u64;
     loop {
         if let Ok(mut client) = Gateway::connect(gateway) {
             loop {
-                sent += 1;
                 let logging = log_for.is_none_or(|limit| began.elapsed() < limit);
-                if logging && sent.is_multiple_of(4) {
+                if !logging && !then_egress {
+                    idle();
+                }
+                sent += 1;
+                if logging {
                     let _ = client.send(json!({"op":"log","text":format!("step {sent}")}));
                 }
                 if client.send(json!({"op":"egress","host":"allowed.test","data":format!("packet-{sent}")}))["error"] == "closed" {
                     break;
                 }
-                thread::sleep(Duration::from_millis(2));
+                thread::sleep(Duration::from_millis(20));
             }
         }
         thread::sleep(Duration::from_millis(1));
@@ -318,9 +323,11 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         }
         "monitor_crash" | "signed_reset" | "reset_races_kill" | "double_reset" | "enforcer_stall" | "recreate_after_kill" | "actuator_retry" | "actuator_dead"
         | "clock_rollback" => egress_loop(gateway, "allowed.test", false),
-        // Trace output stops at 300 ms, so the agent stops producing unscored events.
-        "classifier_stall" => logging_loop(gateway, Some(Duration::from_millis(300))),
-        "classifier_blind" => logging_loop(gateway, None),
+        // The agent goes idle at 300 ms, so it stops producing unscored events.
+        "classifier_stall" => logging_loop(gateway, Some(Duration::from_millis(300)), false),
+        // Stops logging but keeps acting: the blind window must still hold.
+        "blind_egress_only" => logging_loop(gateway, Some(Duration::from_millis(300)), true),
+        "classifier_blind" | "lag_after_reset" => logging_loop(gateway, None, false),
         "exfil_race" => {
             for _ in 0..7 {
                 let gateway = gateway.clone();
