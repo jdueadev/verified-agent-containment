@@ -7,14 +7,55 @@
 //! 127.0.0.1 or localhost are refused (DNS rebinding), and responses forbid
 //! framing, caching, referrers and loading anything from elsewhere.
 use crate::common::request;
-use crate::mock::read_request;
 use serde_json::{json, Value};
 use std::error::Error;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
+
+/// At most this many requests are handled at once; more are dropped.
+const MAX_CONNECTIONS: usize = 16;
+const MAX_HEADERS: usize = 100;
+
+struct Request {
+    method: String,
+    path: String,
+    headers: Vec<(String, String)>,
+}
+
+/// Reads a request line and headers with bounded lines (8 KB, at most 100
+/// headers) and a read timeout. No body is read: the HUD only serves GET.
+fn read_request(stream: &TcpStream) -> std::io::Result<Request> {
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    crate::http::bounded_line(&mut reader, &mut line)?;
+    let mut parts = line.split_whitespace();
+    let (method, path) = (parts.next().unwrap_or("").to_owned(), parts.next().unwrap_or("/").to_owned());
+    let mut headers = Vec::new();
+    loop {
+        if crate::http::bounded_line(&mut reader, &mut line)? == 0 || line == "\r\n" || line == "\n" {
+            break;
+        }
+        if headers.len() >= MAX_HEADERS {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "too many headers"));
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            headers.push((name.trim().to_owned(), value.trim().to_owned()));
+        }
+    }
+    Ok(Request { method, path, headers })
+}
+
+/// Compares in time independent of where the first difference is.
+fn same(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0_u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
 
 const PAGE: &str = include_str!("hud.html");
 
@@ -53,10 +94,26 @@ pub fn serve(run: PathBuf, port: u16) -> Result<(), Box<dyn Error>> {
     let control = PathBuf::from(status["control_socket"].as_str().unwrap_or(""));
     let events = run.join("private/events.jsonl");
     let name = run.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let active = Arc::new(AtomicUsize::new(0));
+    // Status is cached briefly so polling cannot keep taking the control lock.
+    let cached: Arc<Mutex<Option<(Instant, Value)>>> = Arc::default();
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
-        let (control, events, name, token) = (control.clone(), events.clone(), name.clone(), token.clone());
+        if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+            active.fetch_sub(1, Ordering::SeqCst);
+            continue;
+        }
+        let (control, events, name, token, active, cached) =
+            (control.clone(), events.clone(), name.clone(), token.clone(), Arc::clone(&active), Arc::clone(&cached));
         thread::spawn(move || {
+            struct Release(Arc<AtomicUsize>);
+            impl Drop for Release {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::SeqCst);
+                }
+            }
+            let _release = Release(active);
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
             let Ok(req) = read_request(&stream) else { return };
             if !host_ok(&req.headers, port) {
                 return respond(&stream, 403, "text/plain", b"wrong host");
@@ -65,14 +122,25 @@ pub fn serve(run: PathBuf, port: u16) -> Result<(), Box<dyn Error>> {
                 return respond(&stream, 405, "text/plain", b"read-only");
             }
             let (path, query) = req.path.split_once('?').unwrap_or((&req.path, ""));
-            let Some(path) = path.strip_prefix('/').and_then(|p| p.strip_prefix(token.as_str())) else {
+            let rest = path.strip_prefix('/').unwrap_or("");
+            let (given, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+            if !same(given.as_bytes(), token.as_bytes()) {
                 return respond(&stream, 404, "text/plain", b"not found");
-            };
+            }
             match path {
                 "/" => respond(&stream, 200, "text/html; charset=utf-8", PAGE.as_bytes()),
                 "/info" => respond(&stream, 200, "application/json", json!({"run": name}).to_string().as_bytes()),
                 "/status" => {
-                    let value = request(&control, &json!({"op": "status"})).unwrap_or_else(|_| json!({"mode": "ended"}));
+                    let mut cache = cached.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let value = match &*cache {
+                        Some((at, v)) if at.elapsed() < Duration::from_millis(200) => v.clone(),
+                        _ => {
+                            let v = request(&control, &json!({"op": "status"})).unwrap_or_else(|_| json!({"mode": "ended"}));
+                            *cache = Some((Instant::now(), v.clone()));
+                            v
+                        }
+                    };
+                    drop(cache);
                     respond(&stream, 200, "application/json", value.to_string().as_bytes());
                 }
                 "/events" => {

@@ -541,12 +541,12 @@ files = ["crates/containment-host/src/controller.rs", "crates/containment-host/s
 
 [[claim]]
 id = "L-OPS-05"
-statement = "The live HUD is read-only and local: it binds 127.0.0.1, serves only under a random per-run path printed on the operator's terminal, refuses Host headers other than 127.0.0.1, localhost or [::1], refuses non-GET methods, and sends a CSP that forbids framing and loading anything from elsewhere. Its event log never holds credential values or the workspace canary."
+statement = "The live HUD is read-only and local: it binds 127.0.0.1, serves only under a random per-run path printed on the operator's terminal, refuses Host headers other than 127.0.0.1, localhost or [::1], refuses non-GET methods, and sends a CSP that forbids framing and loading anything from elsewhere. Its event log never holds credential values or the workspace canary; secrets are masked before details are shortened, and mode, classifier and verdict events are never dropped by the log cap."
 layer = "host"
 status = "tested"
 evidence = ["live:hud_log_redacted", "live-sabotage:hud_log_unredacted"]
 falsifier = "the canary or a credential value appears in private/events.jsonl, or the HUD answers without the path token or with a foreign Host"
-limits = "The access checks (token, Host, method, headers) were exercised by hand against a live run, not by the suite. Anyone who has the link can read the run's events until the run ends. The HUD cannot control the run."
+limits = "Requests are read with bounded lines (8 KB, at most 100 headers, no body), 2 s read timeouts and at most 16 at once; a 60-connection header flood left the process at 6 MB and the HUD answering. The access checks (token, Host, method, headers) and the flood were exercised by hand against a live run, not by the suite. Anyone who has the link can read the run's events until the run ends. The HUD cannot control the run."
 platforms = [{ name = "linux-vm-6.18", commit = "41206b1", result = "pass" }]
 files = ["crates/containment-host/src/hud.rs", "crates/containment-host/src/hud.html", "crates/containment-host/src/controller.rs"]
 

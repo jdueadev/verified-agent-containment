@@ -306,24 +306,32 @@ fn event_name(event: Event) -> &'static str {
 
 impl Shared {
     /// Appends one HUD event (live runs only). Capped so an agent cannot fill the disk.
+    /// Only gateway events count against the cap: mode changes, classifier
+    /// signals and verdicts are always written, so a flood cannot hide them.
     fn emit(&self, kind: &str, mut value: Value) {
         let Some(events) = &self.events else { return };
-        let mut guard = lock(events);
-        if guard.1 >= 100_000 {
-            return;
-        }
-        guard.1 += 1;
-        // The HUD log can be read by anyone holding the HUD link, so it never
-        // carries credentials or the workspace canary (an agent may put either in a URL).
+        // Masking happens before the lock. The HUD log can be read by anyone with
+        // the HUD link, so it never carries credentials or the workspace canary.
         if let Some(live) = self.live.as_ref().filter(|_| !self.weak.hud_log_unredacted) {
             value = redact(live, value);
             if !live.canary.is_empty() && value.to_string().contains(&live.canary) {
                 value = serde_json::from_str(&value.to_string().replace(&live.canary, "[canary]")).unwrap_or(Value::Null);
             }
         }
+        if let Some(detail) = value["detail"].as_str().filter(|d| d.chars().count() > 200) {
+            value["detail"] = json!(format!("{}…", detail.chars().take(200).collect::<String>()));
+        }
         value["kind"] = json!(kind);
         value["ms"] = json!(boot_ns().saturating_sub(self.start_ns) / 1_000_000);
-        let _ = writeln!(guard.0, "{value}");
+        let line = value.to_string();
+        let mut guard = lock(events);
+        if kind == "gateway" {
+            if guard.1 >= 100_000 {
+                return;
+            }
+            guard.1 += 1;
+        }
+        let _ = writeln!(guard.0, "{line}");
     }
 
     fn now_ms(&self) -> u64 {
@@ -946,8 +954,10 @@ fn gateway_handler(shared: &Arc<Shared>, message: Value) -> Value {
             _ => None,
         };
         let detail = match message["op"].as_str() {
-            Some("log") => json!(message["text"].as_str().unwrap_or("").chars().take(200).collect::<String>()),
-            Some("http") => json!(format!("{} {}", message["method"].as_str().unwrap_or("GET"), message["url"].as_str().unwrap_or("").chars().take(200).collect::<String>())),
+            // Full text here; emit() masks secrets first and only then shortens it,
+            // so a canary cannot straddle the cut.
+            Some("log") => json!(message["text"].as_str().unwrap_or("").chars().take(64 * 1024).collect::<String>()),
+            Some("http") => json!(format!("{} {}", message["method"].as_str().unwrap_or("GET"), message["url"].as_str().unwrap_or("").chars().take(64 * 1024).collect::<String>())),
             _ => Value::Null,
         };
         shared.emit("gateway", json!({"op": message["op"], "host": host, "ok": reply["ok"], "error": reply["error"], "status": reply["status"],
