@@ -108,7 +108,7 @@ If `rustup target add wasm32-unknown-unknown` is unavailable but `rust-src` is i
 
 The owned harness (`agent_loop.rs`) runs inside the sandbox and drives any OpenAI-compatible model server: Ollama, llama.cpp (`llama-server --jinja`), LM Studio or vLLM. Everything it does goes through the gateway:
 - `infer` sends the conversation to the model. It counts as baseline egress, so it still works in Restrict, and it draws on a per-lease token budget.
-- `http` is a typed request. The gateway is the HTTP and TLS client. It checks the origin and method against the policy, adds the credential for that origin, and enforces per-lease budgets.
+- `http` is a typed request. The gateway is the HTTP and TLS client. It checks the origin and method against the policy, adds the credential for that origin (https or loopback only), redacts credential values from responses, enforces per-lease budgets, and refuses names that resolve to internal addresses.
 - Files live in `/workspace`, which is a fresh copy for every sandbox generation.
 
 ```bash
@@ -129,9 +129,9 @@ sudo target/release/containment-lab ctl --run /run/verified-agent-containment/li
 sudo target/release/containment-lab ctl --run /run/verified-agent-containment/live-... stop
 ```
 
-A run ends on its own when the agent finishes in Run or Restrict. After Hold, Freeze or Kill it waits for a reset or a stop. A reset from Kill rebuilds the sandbox with a fresh workspace.
+A run ends on its own when the agent finishes in Run or Restrict. After Hold, Freeze or Kill it waits for a reset or a stop, up to `run.max_seconds` (default 900 s), and then tears down (failing closed). A reset from Kill rebuilds the sandbox with a fresh workspace.
 
-`containment-lab live-suite` checks all of this end to end with a scripted model and local fixture servers. It tests credential scoping, the canary, unlisted hosts, writes to read hosts, request and token budgets, the cut on stop, and the workspace rebuild. Each check has a sabotaged controller that must fail it: 9/9 runs pass and 6/6 sabotaged controllers are caught (`results/live-suite.json`).
+`containment-lab live-suite` checks all of this end to end with a scripted model and local fixture servers. It tests credential scoping, the canary, unlisted hosts, writes to read hosts, request and token budgets, the cut on stop, and the workspace rebuild. Each check has a sabotaged controller that must fail it: 9/9 runs pass and 6/6 sabotaged controllers are caught (`results/live-suite.json`). The checks look at what reached the upstream servers, including the model server, not at what the agent reports.
 
 Two limits are specific to live runs:
 - A live reset is signed with a per-run key file that only root can read, not a hardware key, because reset v3 is not built yet. It proves that root on this host approved the reset, not that Jon did.

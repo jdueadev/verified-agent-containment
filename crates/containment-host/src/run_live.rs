@@ -36,9 +36,10 @@ impl LiveRun {
     }
 
     /// A reset signed with this run's operator key, valid for ten seconds.
-    pub fn signed_reset(&self, counter: u64, from_mode: &str) -> Value {
-        let now = self.control(&json!({"op": "status"}))["now_ms"].as_u64().unwrap_or(0);
-        sign_reset(&self.key, &self.run_id, counter, from_mode, now + 10_000)
+    pub fn signed_reset(&self, from_mode: &str) -> Value {
+        let status = self.control(&json!({"op": "status"}));
+        let counter = status["reset_counter"].as_u64().unwrap_or(0) + 1;
+        sign_reset(&self.key, &self.run_id, counter, from_mode, status["now_ms"].as_u64().unwrap_or(0) + 10_000)
     }
 
     pub fn mode(&self) -> String {
@@ -218,14 +219,11 @@ pub fn ctl(args: &[String]) -> Result<(), Box<dyn Error>> {
             let seed = crate::controller::hex(fs::read_to_string(root.join("operator/reset.key"))?.trim()).map_err(|()| "bad key file")?;
             let key = SigningKey::from_bytes(&seed.try_into().map_err(|_| "bad key length")?);
             let run_id = fs::read_to_string(root.join("operator/run_id"))?;
-            let counter_path = root.join("operator/counter");
-            let counter = fs::read_to_string(&counter_path).ok().and_then(|c| c.trim().parse::<u64>().ok()).unwrap_or(0) + 1;
-            let now = send(&json!({"op": "status"}))["now_ms"].as_u64().unwrap_or(0);
-            let reply = send(&sign_reset(&key, run_id.trim(), counter, mode, now + 10_000));
-            if reply["ok"] == true {
-                fs::write(counter_path, counter.to_string())?;
-            }
-            println!("{reply}");
+            // The controller's own counter is the source of truth.
+            let status = send(&json!({"op": "status"}));
+            let counter = status["reset_counter"].as_u64().ok_or("status did not report the reset counter")? + 1;
+            let now = status["now_ms"].as_u64().unwrap_or(0);
+            println!("{}", send(&sign_reset(&key, run_id.trim(), counter, mode, now + 10_000)));
         }
         _ => return Err("usage: containment-lab ctl --run DIR status|stop|reset MODE".into()),
     }
