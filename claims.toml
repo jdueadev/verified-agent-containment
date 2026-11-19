@@ -250,7 +250,7 @@ depends_on = ["A-RST-01"]
 
 [[claim]]
 id = "L-ISO-02"
-statement = "On WSL2 the binfmt interop handler is kernel-global; the sandbox relies on vm.memfd_noexec=2 and an executable-PE scan. Freeze is slower (p95 66 ms vs 1.6 ms)."
+statement = "On WSL2 the binfmt interop handler is kernel-global; the sandbox relies on vm.memfd_noexec=2 and an executable-PE scan. Freeze is slower there (committed-to-frozen p95 66-70 ms on WSL2, about 2-3 ms on the Linux VM)."
 layer = "os"
 status = "tested"
 evidence = ["scenario:sandbox_escape", "sabotage:memfd_exec"]

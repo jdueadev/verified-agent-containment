@@ -35,7 +35,7 @@ Timing on Linux 6.18 in a 2-core VM, p50 / p95 / max:
 - Committed to cgroup frozen: 0.43 / 2.45 / 12.05 ms.
 - Committed to cgroup killed: 0.91 / 2.06 / 3.98 ms.
 
-These figures are from `results/attack-suite.json` at the stamped commit.
+These figures are from `results/attack-suite.json`, produced at commit bc14144.
 
 Maxima vary between runs on this shared VM because the enforcer thread can be descheduled; one run of an earlier build of this change had a `gateway_flood` stop at 93 ms. Every measured stop, including that one, recorded 0 bytes admitted after commit and 0 written after the cut.
 

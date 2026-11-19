@@ -34,7 +34,7 @@ sudo target/release/containment-lab live-suite --out results/wsl2/live-suite-$(h
 ```
 
 The expected results:
-- attack suite: every run passes and every sabotaged controller is caught (verified on WSL2 at d0c0764);
+- attack suite: every run passes and every sabotaged controller is caught (verified on WSL2 on an earlier build, d0c0764; this build has not yet been rerun there);
 - live suite: 10/10 runs and 7/7 sabotaged controllers. This has only been verified on a Linux VM. The live suite, the HUD and the red-team kit have **not yet been run on WSL2**, so your run is the first; please keep the JSON either way.
 
 If either suite fails, stop there and keep its JSON and log. A failure on WSL2 is a finding: the first WSL2 run found the memfd interop escape that way.
