@@ -63,6 +63,7 @@ struct Weakness {
     excerpt_uncapped: bool,
     classifier_down_ignored: bool,
     system_one_unconfined: bool,
+    system_one_weak_filter: bool,
 }
 
 impl Weakness {
@@ -98,6 +99,7 @@ impl Weakness {
             "excerpt_uncapped" => out.excerpt_uncapped = true,
             "classifier_down_ignored" => out.classifier_down_ignored = true,
             "system_one_unconfined" => out.system_one_unconfined = true,
+            "system_one_weak_filter" => out.system_one_weak_filter = true,
             other => return Err(format!("unknown weakness {other}")),
         }
         Ok(out)
@@ -166,6 +168,12 @@ struct Lag {
     /// The classifier reports the sequence it consumed through, so a slow
     /// gateway thread cannot make enqueues and consumes drift apart.
     pending: VecDeque<(u64, u64)>,
+    /// Which System One process the pipe belongs to. Records written to a pipe
+    /// whose reader died are counted as lost, never as consumed.
+    epoch: u64,
+    /// Highest sequence written into the current pipe; a reported
+    /// `consumed_through_seq` is clamped to it.
+    last_written: Option<u64>,
     /// The current lag episode. Cleared when lag clears or the agent is back in
     /// Run after a reset, so the next stall is reported again.
     restricted_since: Option<u64>,
@@ -197,6 +205,8 @@ struct Shared {
     s1_probe: Mutex<Value>,
     s1_pid: AtomicU32,
     down_hold_ms: u64,
+    /// A restarted System One must stay up this long before an outage ends.
+    stable_ms: u64,
     classifier_signals: Mutex<Vec<Value>>,
     skew_ms: AtomicI64,
     config: Config,
@@ -535,13 +545,25 @@ impl Shared {
         record["seq"] = json!(seq);
         record["ms"] = json!(ns.saturating_sub(self.start_ns) / 1_000_000);
         let line = format!("{record}\n");
-        let written = lock(&self.trace_out).as_ref().is_some_and(|fd| {
-            // Lines stay under PIPE_BUF, so a write is all or nothing.
+        // A pipe write of at most PIPE_BUF bytes is all or nothing, even when
+        // nonblocking. Longer records are dropped rather than split.
+        let written = line.len() <= libc::PIPE_BUF && lock(&self.trace_out).as_ref().is_some_and(|fd| {
             // SAFETY: `fd` is an open pipe write end and `line` is a live buffer.
-            unsafe { libc::write(fd.as_raw_fd(), line.as_ptr().cast(), line.len()) == line.len() as isize }
+            let n = unsafe { libc::write(fd.as_raw_fd(), line.as_ptr().cast(), line.len()) };
+            if n > 0 && (n as usize) < line.len() {
+                // Cannot happen for writes within PIPE_BUF. If it does, the stream
+                // is desynchronised: restart System One so it starts clean.
+                let pid = self.s1_pid.load(Ordering::SeqCst);
+                if pid != 0 {
+                    // SAFETY: signalling the System One process this controller started.
+                    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                }
+            }
+            n == line.len() as isize
         });
         if written {
             lag.pending.push_back((seq, ns));
+            lag.last_written = Some(seq);
         }
         if lag.restricted_since.is_some() {
             lag.unscored_since_restrict += 1;
@@ -557,7 +579,7 @@ impl Shared {
     /// Traces one gateway decision. Agent text enters only as a capped excerpt.
     fn trace(&self, ns: u64, kind: &str, host: &str, decision: &str, bytes: usize, excerpt: &str) {
         let record = json!({
-            "kind": kind, "host": host, "decision": decision, "bytes": bytes,
+            "kind": kind, "host": clip_field(host, 255), "decision": decision, "bytes": bytes,
             "untrusted_excerpt": excerpt.chars().take(crate::system_one::EXCERPT_CHARS).collect::<String>(),
         });
         if self.trace_event(ns, record) && !self.weak.drop_overflow {
@@ -567,8 +589,14 @@ impl Shared {
         }
     }
 
-    fn trace_consumed(&self, through: u64) {
+    /// Pops records System One reports as consumed. Only records of its own
+    /// pipe count, and never more than were written to it.
+    fn trace_consumed(&self, through: u64, epoch: u64) {
         let mut lag = lock(&self.lag);
+        if lag.epoch != epoch {
+            return;
+        }
+        let Some(through) = lag.last_written.map(|last| through.min(last)) else { return };
         while lag.pending.front().is_some_and(|&(seq, _)| seq <= through) {
             lag.pending.pop_front();
         }
@@ -619,6 +647,11 @@ impl Shared {
             self.s1_down_held.store(false, Ordering::SeqCst);
         }
     }
+}
+
+/// Caps an agent-supplied trace field so a record stays within PIPE_BUF.
+fn clip_field(text: &str, chars: usize) -> String {
+    text.chars().take(chars).collect()
 }
 
 fn authorize_for(weak: &Weakness, now: u64, control: Control, request: AccessRequest) -> bool {
@@ -816,7 +849,7 @@ fn gateway_handler(shared: &Arc<Shared>, message: Value) -> Value {
             shared.trace(received, "egress", message["host"].as_str().unwrap_or(""), decision, data.len(), "");
         }
         Some("secret") if !shared.weak.untraced_decisions_ignored => {
-            shared.trace(received, "secret", message["name"].as_str().unwrap_or(""), decision, 0, "");
+            shared.trace(received, "secret", &clip_field(message["name"].as_str().unwrap_or(""), 64), decision, 0, "");
         }
         Some("log") => {
             let text = message["text"].as_str().unwrap_or("");
@@ -929,12 +962,17 @@ struct SystemOneSpec {
     private_file: PathBuf,
     uid: u32,
     confined: bool,
+    weak_filter: bool,
     pipe_bytes: i32,
+    /// cgroup with pids, memory and CPU limits for System One alone.
+    cgroup: PathBuf,
 }
 
-/// Starts System One with the trace pipe on fd 3 and the verdict socket on fd 4.
-/// Confined: empty network namespace, its own uid, no new privileges, and a
-/// seccomp filter without sockets. It dies with the spawning thread.
+/// Starts System One with the trace pipe on fd 3 and the verdict socket on fd 4,
+/// and no other descriptors. Confined: its own cgroup and rlimits, an empty
+/// network namespace, its own uid, no new privileges, a seccomp filter without
+/// sockets, signals or namespaces, and the parent-death signal armed after the
+/// uid change (a uid change clears it).
 fn spawn_system_one(spec: &SystemOneSpec, restarted: bool) -> std::io::Result<(Child, OwnedFd, UnixDatagram)> {
     let mut pipe = [0; 2];
     let mut pair = [0; 2];
@@ -955,8 +993,12 @@ fn spawn_system_one(spec: &SystemOneSpec, restarted: bool) -> std::io::Result<(C
         libc::fcntl(trace_write.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK);
         libc::fcntl(trace_write.as_raw_fd(), libc::F_SETPIPE_SZ, spec.pipe_bytes);
     }
-    let mut filter = sandbox::system_one_filter();
-    let (read_fd, out_fd, uid, confined) = (trace_read.as_raw_fd(), theirs.as_raw_fd(), spec.uid, spec.confined);
+    let procs = fs::OpenOptions::new().write(true).open(spec.cgroup.join("cgroup.procs"))?;
+    let target = if !spec.confined || spec.weak_filter { sandbox::FilterFor::SystemOneWeak } else { sandbox::FilterFor::SystemOne };
+    let mut filter = sandbox::build_filter(target);
+    let (read_fd, out_fd, procs_fd, uid, confined) = (trace_read.as_raw_fd(), theirs.as_raw_fd(), procs.as_raw_fd(), spec.uid, spec.confined);
+    // SAFETY: getpid has no preconditions.
+    let controller = unsafe { libc::getpid() };
     let mut command = Command::new(&spec.exe);
     command
         .arg("system-one").arg(spec.profile).arg(&spec.scenario).arg(&spec.private_file)
@@ -968,14 +1010,36 @@ fn spawn_system_one(spec: &SystemOneSpec, restarted: bool) -> std::io::Result<(C
     unsafe {
         command.pre_exec(move || {
             let check = |r: libc::c_int| if r == -1 { Err(std::io::Error::last_os_error()) } else { Ok(()) };
-            check(libc::dup2(read_fd, crate::system_one::TRACE_FD))?;
-            check(libc::dup2(out_fd, crate::system_one::VERDICT_FD))?;
-            check(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL))?;
+            let pid = b"0\n";
+            if libc::write(procs_fd, pid.as_ptr().cast(), pid.len()) != pid.len() as isize {
+                return Err(std::io::Error::last_os_error());
+            }
+            // Move both ends above fd 4 first so dup2 cannot clobber one with the other,
+            // then place them and close everything else.
+            let high_read = libc::fcntl(read_fd, libc::F_DUPFD, 10);
+            let high_out = libc::fcntl(out_fd, libc::F_DUPFD, 10);
+            check(high_read)?;
+            check(high_out)?;
+            check(libc::dup2(high_read, crate::system_one::TRACE_FD))?;
+            check(libc::dup2(high_out, crate::system_one::VERDICT_FD))?;
+            check(libc::syscall(libc::SYS_close_range, 5_u32, u32::MAX, 0_u32) as libc::c_int)?;
+            let limit = |resource, value| check(libc::setrlimit(resource, &libc::rlimit { rlim_cur: value, rlim_max: value }));
+            limit(libc::RLIMIT_NPROC, 64)?;
+            limit(libc::RLIMIT_NOFILE, 64)?;
+            limit(libc::RLIMIT_CORE, 0)?;
+            limit(libc::RLIMIT_FSIZE, 0)?;
+            limit(libc::RLIMIT_AS, 4 << 30)?;
             if confined {
                 check(libc::unshare(libc::CLONE_NEWNET))?;
                 check(libc::setgroups(0, std::ptr::null()))?;
                 check(libc::setresgid(uid, uid, uid))?;
                 check(libc::setresuid(uid, uid, uid))?;
+            }
+            check(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL))?;
+            if libc::getppid() != controller {
+                libc::_exit(70);
+            }
+            if confined {
                 check(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0))?;
                 check(sandbox::install_filter(&mut filter))?;
             }
@@ -983,7 +1047,7 @@ fn spawn_system_one(spec: &SystemOneSpec, restarted: bool) -> std::io::Result<(C
         });
     }
     let child = command.spawn()?;
-    drop((trace_read, theirs));
+    drop((trace_read, theirs, procs));
     Ok((child, trace_write, UnixDatagram::from(mine)))
 }
 
@@ -991,7 +1055,7 @@ fn spawn_system_one(spec: &SystemOneSpec, restarted: bool) -> std::io::Result<(C
 /// constructor: every verdict is Event::Classifier, whatever fields it carries
 /// (claim C-ARCH-01). Verdicts resting only on the excerpt are capped at
 /// Restrict (C-S1-02). Unknown reason codes are ignored.
-fn read_verdicts(shared: &Shared, socket: &UnixDatagram) {
+fn read_verdicts(shared: &Shared, socket: &UnixDatagram, epoch: u64, started: u64) {
     let mut buffer = [0_u8; 4096];
     while let Ok(n) = socket.recv(&mut buffer) {
         if n == 0 {
@@ -1000,9 +1064,13 @@ fn read_verdicts(shared: &Shared, socket: &UnixDatagram) {
         let Ok(v) = serde_json::from_slice::<Value>(&buffer[..n]) else { continue };
         let now = boot_ns();
         shared.classifier_beat.store(now, Ordering::Relaxed);
-        *lock(&shared.s1_down_since) = None;
+        // A restarted process must stay up for a while before the outage ends,
+        // so a crash loop that sends one message per cycle still counts as down.
+        if now.saturating_sub(started) / 1_000_000 >= shared.stable_ms {
+            *lock(&shared.s1_down_since) = None;
+        }
         if let Some(through) = v["consumed_through_seq"].as_u64() {
-            shared.trace_consumed(through);
+            shared.trace_consumed(through, epoch);
         }
         if !v["probe"].is_null() {
             *lock(&shared.s1_probe) = v["probe"].clone();
@@ -1032,26 +1100,47 @@ fn supervise_system_one(shared: Arc<Shared>, spec: SystemOneSpec) {
     while !shared.stop.load(Ordering::Relaxed) {
         match spawn_system_one(&spec, restarted) {
             Ok((mut child, trace_write, verdicts)) => {
+                let started = boot_ns();
                 shared.s1_pid.store(child.id(), Ordering::SeqCst);
-                *lock(&shared.trace_out) = Some(trace_write);
+                let epoch = {
+                    let mut lag = lock(&shared.lag);
+                    lag.epoch += 1;
+                    lag.last_written = None;
+                    *lock(&shared.trace_out) = Some(trace_write);
+                    lag.epoch
+                };
                 let reader = {
                     let shared = Arc::clone(&shared);
                     let verdicts = verdicts.try_clone();
-                    thread::spawn(move || if let Ok(v) = verdicts { read_verdicts(&shared, &v) })
+                    thread::spawn(move || if let Ok(v) = verdicts { read_verdicts(&shared, &v, epoch, started) })
                 };
                 let _ = child.wait();
+                shared.s1_pid.store(0, Ordering::SeqCst);
                 let _ = verdicts.shutdown(Shutdown::Both);
                 let _ = reader.join();
             }
             Err(error) => eprintln!("system one did not start: {error}"),
         }
-        *lock(&shared.trace_out) = None;
+        // Records still in the dead process's pipe were never scored: count them
+        // as lost, and restrict if there were any.
+        let lost = {
+            let mut lag = lock(&shared.lag);
+            *lock(&shared.trace_out) = None;
+            let lost = lag.pending.len() as u64;
+            lag.pending.clear();
+            lost
+        };
+        if lost > 0 {
+            shared.dropped_logs.fetch_add(lost, Ordering::Relaxed);
+            apply_classifier(&shared, Some("classifier_lost_records"), boot_ns(), Level::Restrict);
+        }
         {
             let mut down = lock(&shared.s1_down_since);
             if down.is_none() {
                 *down = Some(boot_ns());
-                shared.s1_dropped_at_down.store(shared.dropped_logs.load(Ordering::Relaxed), Ordering::SeqCst);
             }
+            // Only activity after this point makes the agent count as busy.
+            shared.s1_dropped_at_down.store(shared.dropped_logs.load(Ordering::Relaxed), Ordering::SeqCst);
         }
         shared.s1_restarts.fetch_add(1, Ordering::Relaxed);
         restarted = true;
@@ -1133,6 +1222,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     fs::set_permissions(&exe, fs::Permissions::from_mode(0o755))?;
 
     let run_cgroup = cgroup_root()?.join(format!("verified-agent-containment-{run_id}"));
+    let s1_cgroup = cgroup_root()?.join(format!("verified-agent-containment-{run_id}-system-one"));
     fs::create_dir(&run_cgroup)?;
     let delegated = enable_limits(&run_cgroup);
     let first = Generation::create(&run_cgroup, 1)?;
@@ -1185,7 +1275,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let now = boot_ns();
     let shared = Arc::new(Shared {
         start_ns, skew_ms: AtomicI64::new(0), config, lag: Mutex::default(), blind_hold_ms: LAB_BLIND_HOLD_MS,
-        trace_out: Mutex::new(None), s1_down_since: Mutex::new(None), s1_down_held: AtomicBool::new(false), s1_restarts: AtomicU64::new(0), s1_dropped_at_down: AtomicU64::new(0), s1_probe: Mutex::new(Value::Null), s1_pid: AtomicU32::new(0), down_hold_ms: LAB_DOWN_HOLD_MS, classifier_signals: Mutex::default(),
+        trace_out: Mutex::new(None), s1_down_since: Mutex::new(None), s1_down_held: AtomicBool::new(false), s1_restarts: AtomicU64::new(0), s1_dropped_at_down: AtomicU64::new(0), s1_probe: Mutex::new(Value::Null), s1_pid: AtomicU32::new(0), down_hold_ms: LAB_DOWN_HOLD_MS, stable_ms: LAB_STABLE_MS, classifier_signals: Mutex::default(),
         control: Mutex::new(Control::new(Mode::Run, LEASE_TTL_MS)),
         queue: Mutex::default(), queued: Condvar::new(), enforcer_busy: AtomicBool::new(false),
         enforcer_beat: AtomicU64::new(now), classifier_beat: AtomicU64::new(now),
@@ -1225,9 +1315,16 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     {
         let shared = Arc::clone(&shared);
+        // A sibling of the run cgroup, so the run cgroup holds only the agent.
+        let s1_cgroup = s1_cgroup.clone();
+        fs::create_dir(&s1_cgroup)?;
+        for (file, value) in [("pids.max", "64"), ("memory.max", "268435456"), ("cpu.weight", "10")] {
+            let _ = fs::write(s1_cgroup.join(file), value);
+        }
         let spec = SystemOneSpec {
             exe: exe.clone(), profile: "lab", scenario: scenario.clone(), private_file: policy_path.clone(),
-            uid: uid_base + SYSTEM_ONE_UID_OFFSET, confined: !weak.system_one_unconfined, pipe_bytes: 64 * 1024,
+            uid: uid_base + SYSTEM_ONE_UID_OFFSET, confined: !weak.system_one_unconfined, weak_filter: weak.system_one_weak_filter,
+            pipe_bytes: 64 * 1024, cgroup: s1_cgroup,
         };
         thread::spawn(move || supervise_system_one(shared, spec));
     }
@@ -1245,6 +1342,14 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         });
     }
 
+    // The agent starts only once System One is reading its trace.
+    let waiting = Instant::now();
+    while lock(&shared.trace_out).is_none() {
+        if waiting.elapsed() > Duration::from_secs(5) {
+            return Err("System One did not start".into());
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
     let mut children: Vec<Child> = vec![sandbox::spawn(&shared.spec, &lock(&shared.generation).path, uid_base + 1)?];
     let mut status = BTreeMap::new();
     status.insert("controller_pid", json!(std::process::id()));
@@ -1266,7 +1371,10 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     while !stop_file.exists() {
         if shared.recreate_requested.swap(false, Ordering::SeqCst) {
             let number = lock(&shared.generation).number + 1;
-            let created = Generation::create(&run_cgroup, number).and_then(|generation| {
+            // uid_base + 15 belongs to System One. Past 14 rebuilds, fail closed.
+            let created = if number >= u64::from(SYSTEM_ONE_UID_OFFSET) {
+                Err(std::io::Error::other("sandbox generation limit reached"))
+            } else { Generation::create(&run_cgroup, number) }.and_then(|generation| {
                 let uid = uid_base + number as u32;
                 shared.sandbox_uid.store(u64::from(uid), Ordering::SeqCst);
                 let child = sandbox::spawn(&shared.spec, &generation.path, uid)?;
@@ -1329,6 +1437,11 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         let _ = child.wait();
     }
     let _ = fs::remove_dir(&lock(&shared.generation).path);
+    let _ = fs::write(s1_cgroup.join("cgroup.kill"), "1");
+    let settle = Instant::now();
+    while fs::remove_dir(&s1_cgroup).is_err() && settle.elapsed() < Duration::from_secs(1) {
+        thread::sleep(Duration::from_millis(5));
+    }
     let _ = fs::remove_dir(&run_cgroup);
     Ok(())
 }

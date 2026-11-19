@@ -22,7 +22,7 @@ const SABOTAGE: &[(&str, &str)] = &[
     ("ignore_expiry", "monitor_crash"), ("shared_network", "direct_egress"), ("gateway_bypass", "denied_hosts"),
     ("classifier_uncapped", "classifier_sends_hard"), ("excerpt_uncapped", "classifier_injection"),
     ("shared_control_socket", "classifier_sends_hard"), ("classifier_down_ignored", "classifier_crash"),
-    ("system_one_unconfined", "system_one_isolation"), ("no_kill", "process_escape"),
+    ("system_one_unconfined", "system_one_isolation"), ("system_one_weak_filter", "system_one_isolation"), ("no_kill", "process_escape"),
     ("writable_policy", "agent_attacks_control"), ("no_parent_death_signal", "controller_crash"),
     ("host_root", "sandbox_escape"), ("ignore_actuator_failure", "actuator_dead"), ("stale_clock", "clock_rollback"),
     ("leak_streams", "gateway_churn"), ("drop_overflow", "gateway_flood"), ("unauthenticated_monitor", "forged_renewal"),
@@ -644,7 +644,11 @@ fn execute(scenario: &str, weakness: &str, sequence: usize) -> Result<Value, Box
         "system_one_isolation" => {
             let p = &report["system_one_probe"];
             let uid = uid_base.map(|b| b + u64::from(SYSTEM_ONE_UID_OFFSET));
-            checks.add("system_one_has_no_sockets", p["unix_socket"] == false && p["inet_socket"] == false, p.clone());
+            checks.add("system_one_has_no_sockets", p["unix_socket"] == false && p["inet_socket"] == false && p["x32_socket"] == false, p.clone());
+            checks.add("system_one_has_no_io_uring_or_namespaces", p["io_uring"] == false && p["user_namespace"] == false, p.clone());
+            checks.add("system_one_cannot_signal", p["signal_pid1"] == false, p.clone());
+            checks.add("system_one_dies_with_controller", p["death_signal"] == libc::SIGKILL, p["death_signal"].clone());
+            checks.add("system_one_has_only_its_descriptors", p["fds"] == json!([0, 1, 2, 3, 4]), p["fds"].clone());
             checks.add("system_one_has_no_network", p["net_interfaces"].as_u64().is_some_and(|n| n <= 1), p.clone());
             checks.add("system_one_cannot_read_private_files", p["private_readable"] == false, p.clone());
             checks.add("system_one_runs_as_its_own_uid", uid.is_some() && p["uid"].as_u64() == uid, json!({"expected": uid, "probe": p}));
