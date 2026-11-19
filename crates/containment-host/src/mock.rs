@@ -131,7 +131,10 @@ pub fn fixture_server(args: &[String]) -> Result<(), Box<dyn Error>> {
             "body": String::from_utf8_lossy(&request.body)}));
         if request.method == "GET" && request.path == "/echo" {
             // Echoes request headers, as some real services do in errors or debug output.
-            let echoed = json!(request.headers.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>());
+            // Also echoes the bare token after any scheme, as error messages often do.
+            let mut lines: Vec<String> = request.headers.iter().map(|(k, v)| format!("{k}: {v}")).collect();
+            lines.extend(request.headers.iter().filter_map(|(_, v)| v.split_once(' ').map(|(_, token)| format!("invalid token {token}"))));
+            let echoed = json!(lines);
             respond(stream, 200, "application/json", echoed.to_string().as_bytes());
         } else if request.method == "GET" {
             let relative = request.path.trim_start_matches('/').split('?').next().unwrap_or("").to_owned();
