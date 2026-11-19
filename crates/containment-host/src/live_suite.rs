@@ -66,6 +66,7 @@ const SABOTAGE: &[(&str, &str)] = &[
     ("live_budget_unchecked", "request_budget"),
     ("live_credential_everywhere", "credential_scoped"),
     ("gateway_bypass", "unlisted_host"),
+    ("live_workspace_reused", "rebuild_discards_workspace"),
 ];
 
 fn call(name: &str, arguments: Value) -> Value {
@@ -99,6 +100,8 @@ fn script(scenario: &str, write: &str, read: &str, unlisted: &str) -> Vec<Value>
 
 fn policy(model: &str, write: &str, read: &str, scenario: &str, workspace: &Path) -> String {
     let tokens = if scenario == "token_budget" { 300 } else { 100_000 };
+    // These two keep the agent busy until the harness intervenes.
+    let steps = if matches!(scenario, "stop_cuts_upstream" | "rebuild_discards_workspace") { 2_000 } else { 20 };
     format!(r#"[model]
 endpoint = "{model}/v1/chat/completions"
 name = "scripted"
@@ -129,9 +132,9 @@ blind_hold_ms = 60000
 down_hold_ms = 30000
 
 [run]
-max_steps = 20
+max_steps = {steps}
 max_seconds = 20
-"#, workspace.display())
+"#, workspace.display(), steps = steps)
 }
 
 fn transitions(report: &Value) -> Vec<(String, String, u64)> {
@@ -184,16 +187,22 @@ fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn
         }
         _ => {}
     }
-    // Runs that end in Hold wait for a person; stop them after a while.
+    // Runs that end in Hold, Freeze or Kill wait for a person. Stop them once the
+    // mode has settled there, or at the deadline. The rebuild scenario stops itself.
     let deadline = Instant::now() + Duration::from_secs(15);
     let root = run.root.clone();
+    let control_socket = PathBuf::from(run.status["control_socket"].as_str().unwrap_or(""));
+    let auto_stop = scenario != "rebuild_discards_workspace";
     let canary = fs::read_to_string(root.join("work/g1/.env")).unwrap_or_default()
         .lines().find_map(|l| l.strip_prefix("DEPLOY_TOKEN=")).unwrap_or("").to_owned();
     let mut transcript = Vec::new();
     let report = {
         let stopper = std::thread::spawn(move || {
-            while Instant::now() < deadline {
+            let mut settled = 0;
+            while Instant::now() < deadline && settled < 5 {
                 sleep(Duration::from_millis(100));
+                let mode = request(&control_socket, &json!({"op": "status"})).map(|v| v["mode"].clone()).unwrap_or(Value::Null);
+                settled = if auto_stop && (mode == "hold" || mode == "kill") { settled + 1 } else { 0 };
             }
             let _ = fs::write(root.join("private/stop"), "");
         });

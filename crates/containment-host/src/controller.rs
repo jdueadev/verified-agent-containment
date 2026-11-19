@@ -69,6 +69,7 @@ struct Weakness {
     live_budget_unchecked: bool,
     live_write_unchecked: bool,
     live_credential_everywhere: bool,
+    live_workspace_reused: bool,
 }
 
 impl Weakness {
@@ -109,6 +110,7 @@ impl Weakness {
             "live_budget_unchecked" => out.live_budget_unchecked = true,
             "live_write_unchecked" => out.live_write_unchecked = true,
             "live_credential_everywhere" => out.live_credential_everywhere = true,
+            "live_workspace_reused" => out.live_workspace_reused = true,
             other => return Err(format!("unknown weakness {other}")),
         }
         Ok(out)
@@ -606,6 +608,12 @@ impl Shared {
     /// Live runs: a fresh workspace for generation `number`, owned by its uid.
     fn workspace_for(&self, number: u64, uid: u32) -> std::io::Result<Option<PathBuf>> {
         let (Some(root), Some(live)) = (&self.work_root, &self.live) else { return Ok(None) };
+        if self.weak.live_workspace_reused && number > 1 {
+            // Sabotage: the rebuilt sandbox gets the old workspace back.
+            let old = root.join("g1");
+            std::fs::rename(&old, root.join(format!("g{number}")))?;
+            return Ok(Some(root.join(format!("g{number}"))));
+        }
         let dir = root.join(format!("g{number}"));
         crate::live::prepare_workspace(live.policy.workspace.seed.as_deref(), &dir, &live.canary, uid)?;
         Ok(Some(dir))
@@ -1588,10 +1596,13 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         }
         children.retain_mut(|child| !matches!(child.try_wait(), Ok(Some(_))));
         if live.is_some() {
-            // A live run ends when the agent is done (its sandbox has exited and no
-            // rebuild is pending) or at the run time limit. Hold keeps it waiting.
+            // A live run ends when the agent finished on its own (its sandbox exited
+            // in Run or Restrict, with no rebuild pending) or at the run time limit.
+            // After Hold, Freeze or Kill it waits for a person: a signed reset or stop.
             let rebuilding = shared.recreate_requested.load(Ordering::SeqCst) || lock(&shared.queue).iter().any(|a| *a == Action::RecreateSandbox);
-            if (children.is_empty() && !rebuilding) || max_run.is_some_and(|m| began.elapsed() > m) {
+            let mode = lock(&shared.control).mode;
+            let finished = children.is_empty() && !rebuilding && matches!(mode, Mode::Run | Mode::Restrict);
+            if finished || max_run.is_some_and(|m| began.elapsed() > m) {
                 break;
             }
         }
