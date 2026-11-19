@@ -540,6 +540,17 @@ files = ["crates/containment-host/src/controller.rs", "crates/containment-host/s
 # ---------- Documentation ----------
 
 [[claim]]
+id = "L-OPS-05"
+statement = "The live HUD is read-only and local: it binds 127.0.0.1, serves only under a random per-run path printed on the operator's terminal, refuses Host headers other than 127.0.0.1, localhost or [::1], refuses non-GET methods, and sends a CSP that forbids framing and loading anything from elsewhere. Its event log never holds credential values or the workspace canary."
+layer = "host"
+status = "tested"
+evidence = ["live:hud_log_redacted", "live-sabotage:hud_log_unredacted"]
+falsifier = "the canary or a credential value appears in private/events.jsonl, or the HUD answers without the path token or with a foreign Host"
+limits = "The access checks (token, Host, method, headers) were exercised by hand against a live run, not by the suite. Anyone who has the link can read the run's events until the run ends. The HUD cannot control the run."
+platforms = [{ name = "linux-vm-6.18", commit = "b9b1d9b", result = "pass" }]
+files = ["crates/containment-host/src/hud.rs", "crates/containment-host/src/hud.html", "crates/containment-host/src/controller.rs"]
+
+[[claim]]
 id = "C-DOC-1"
 statement = "The README scopes the classifier cap to classifier verdicts and points to C-SYS-1 for System One as a whole."
 layer = "host"

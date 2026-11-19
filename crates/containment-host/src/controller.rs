@@ -70,6 +70,7 @@ struct Weakness {
     live_write_unchecked: bool,
     live_credential_everywhere: bool,
     live_workspace_reused: bool,
+    hud_log_unredacted: bool,
 }
 
 impl Weakness {
@@ -111,6 +112,7 @@ impl Weakness {
             "live_write_unchecked" => out.live_write_unchecked = true,
             "live_credential_everywhere" => out.live_credential_everywhere = true,
             "live_workspace_reused" => out.live_workspace_reused = true,
+            "hud_log_unredacted" => out.hud_log_unredacted = true,
             other => return Err(format!("unknown weakness {other}")),
         }
         Ok(out)
@@ -311,6 +313,14 @@ impl Shared {
             return;
         }
         guard.1 += 1;
+        // The HUD log can be read by anyone holding the HUD link, so it never
+        // carries credentials or the workspace canary (an agent may put either in a URL).
+        if let Some(live) = self.live.as_ref().filter(|_| !self.weak.hud_log_unredacted) {
+            value = redact(live, value);
+            if !live.canary.is_empty() && value.to_string().contains(&live.canary) {
+                value = serde_json::from_str(&value.to_string().replace(&live.canary, "[canary]")).unwrap_or(Value::Null);
+            }
+        }
         value["kind"] = json!(kind);
         value["ms"] = json!(boot_ns().saturating_sub(self.start_ns) / 1_000_000);
         let _ = writeln!(guard.0, "{value}");

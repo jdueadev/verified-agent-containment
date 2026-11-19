@@ -97,7 +97,7 @@ const WHY = {
 };
 let events = [], filter = "all", follow = true, lastMode = null;
 const $ = id => document.getElementById(id);
-const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 $("ladder").innerHTML = MODES.map(m => `<div class="step" role="listitem" data-m="${m}" style="--c: var(--${m})">${m}</div>`).join("");
 
 function what(e) {
@@ -108,13 +108,13 @@ function what(e) {
   return e.kind;
 }
 function detail(e) {
-  if (e.kind === "mode") return `${e.event}; ${(e.actions || []).join(", ")}`;
+  if (e.kind === "mode") return esc(`${e.event}; ${(e.actions || []).join(", ")}`);
   if (e.kind === "gateway") {
     const verdict = e.ok ? `<span class="allow">allowed</span>` : `<span class="deny">denied</span> ${esc(e.error)}`;
-    const usage = e.usage ? ` tokens ${e.usage.lease_total}/${e.usage.budget}` : "";
-    return `${verdict}${e.status ? " HTTP " + e.status : ""}${usage} ${esc(e.detail)}`;
+    const usage = e.usage ? ` tokens ${esc(e.usage.lease_total)}/${esc(e.usage.budget)}` : "";
+    return `${verdict}${e.status ? " HTTP " + esc(e.status) : ""}${usage} ${esc(e.detail)}`;
   }
-  if (e.kind === "verdict") return `codes ${esc((e.codes || []).join(", ") || "none")}, score ${e.score}`;
+  if (e.kind === "verdict") return `codes ${esc((e.codes || []).join(", ") || "none")}, score ${esc(e.score)}`;
   return "";
 }
 function matches(e) {
@@ -124,7 +124,7 @@ function matches(e) {
 }
 function render() {
   const visible = events.filter(matches).slice(-2000);
-  $("rows").innerHTML = visible.map((e, i) => `<tr><td class="t">${e.ms}</td><td><span class="k">${esc(e.kind)}</span></td><td>${esc(what(e))}</td><td class="d">${detail(e)}</td><td><button type="button" data-copy="${events.indexOf(e)}" aria-label="Copy event at ${e.ms} ms">Copy</button></td></tr>`).join("");
+  $("rows").innerHTML = visible.map((e, i) => `<tr><td class="t">${esc(e.ms)}</td><td><span class="k">${esc(e.kind)}</span></td><td>${esc(what(e))}</td><td class="d">${detail(e)}</td><td><button type="button" data-copy="${events.indexOf(e)}" aria-label="Copy event at ${esc(e.ms)} ms">Copy</button></td></tr>`).join("");
   if (follow) $("wrap").scrollTop = $("wrap").scrollHeight;
 }
 function counters(status) {
@@ -135,9 +135,9 @@ function counters(status) {
   const pct = lastInfer ? Math.min(100, 100 * lastInfer.usage.lease_total / lastInfer.usage.budget) : 0;
   $("counters").innerHTML = `
     <dt>mode</dt><dd>${esc(status.mode)}</dd>
-    <dt>lease</dt><dd>${["run", "restrict"].includes(status.mode) && status.deadline_ms > status.now_ms ? "renewed, " + (status.deadline_ms - status.now_ms) + " ms left" : "not running"}</dd>
+    <dt>lease</dt><dd>${["run", "restrict"].includes(status.mode) && status.deadline_ms > status.now_ms ? "renewed, " + esc(status.deadline_ms - status.now_ms) + " ms left" : "not running"}</dd>
     <dt>requests</dt><dd>${gw.length} (${denied} denied)</dd>
-    <dt>tokens</dt><dd>${tokens}<div class="bar" aria-hidden="true"><i style="width:${pct}%"></i></div></dd>
+    <dt>tokens</dt><dd>${esc(tokens)}<div class="bar" aria-hidden="true"><i style="width:${Number(pct) || 0}%"></i></div></dd>
     <dt>signals</dt><dd>${events.filter(e => e.kind === "classifier").length}</dd>`;
 }
 async function poll() {

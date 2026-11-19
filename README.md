@@ -121,6 +121,12 @@ sudo FIXTURE_TOKEN=dummy target/release/containment-lab live \
 
 The command streams each model step and tool call, prints every mode change, and saves `report.json` and `transcript.jsonl` under `results/live/`. Add `--allow-missing-limits` only on hosts without delegated cgroup controllers; the report records it.
 
+### Watch a run (HUD)
+
+Add `--hud 8787` (or `--hud 0` for any free port) to `live`. It prints a link such as `http://127.0.0.1:8787/<random>/`; open it in a browser on the same machine. The page shows the mode ladder (Run, Restrict, Hold, Freeze, Kill) with the cause of the current mode, the lease, request and token counters, and a filterable table of every gateway decision, System One verdict, classifier signal and mode change. Each row and the visible set have Copy buttons that copy JSON. It is keyboard-usable, works at phone width and follows the system light or dark theme.
+
+The HUD only observes. It binds 127.0.0.1, answers only under the random path, refuses other Host headers (DNS rebinding) and non-GET methods, and its event log has credential values and the canary masked. Any local user who learns the link can read the run's events, so keep it private. To watch a run that is already going: `sudo containment-lab hud --run /run/verified-agent-containment/live-... --port 8787`.
+
 While a run is going, in another terminal:
 
 ```bash
@@ -131,7 +137,7 @@ sudo target/release/containment-lab ctl --run /run/verified-agent-containment/li
 
 A run ends on its own when the agent finishes in Run or Restrict. After Hold, Freeze or Kill it waits for a reset or a stop, up to `run.max_seconds` (default 900 s), and then tears down (failing closed). A reset from Kill rebuilds the sandbox with a fresh workspace.
 
-`containment-lab live-suite` checks all of this end to end with a scripted model and local fixture servers. It tests credential scoping, the canary, unlisted hosts, writes to read hosts, request and token budgets, the cut on stop, and the workspace rebuild. Each check has a sabotaged controller that must fail it: 9/9 runs pass and 6/6 sabotaged controllers are caught (`results/live-suite.json`). The checks look at what reached the upstream servers, including the model server, not at what the agent reports.
+`containment-lab live-suite` checks all of this end to end with a scripted model and local fixture servers. It tests credential scoping, the canary, unlisted hosts, writes to read hosts, request and token budgets, the cut on stop, the workspace rebuild, and that the HUD log never holds secrets. Each check has a sabotaged controller that must fail it: 10/10 runs pass and 7/7 sabotaged controllers are caught (`results/live-suite.json`). The checks look at what reached the upstream servers, including the model server, not at what the agent reports.
 
 Two limits are specific to live runs:
 - A live reset is signed with a per-run key file that only root can read, not a hardware key, because reset v3 is not built yet. It proves that root on this host approved the reset, not that Jon did.
