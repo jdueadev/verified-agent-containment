@@ -131,7 +131,7 @@ status = "tested"
 evidence = ["scenario:monitor_crash", "scenario:controller_crash", "sabotage:ignore_expiry", "sabotage:no_parent_death_signal"]
 falsifier = "Agent keeps authority after the lease, or survives controller death"
 depends_on = ["K-LEASE-01", "K-PLAN-01"]
-platforms = [{ name = "linux-vm-6.18", commit = "f57ab0d", result = "pass" }, { name = "wsl2-6.18.58", commit = "d0c0764", result = "pass" }]
+platforms = [{ name = "linux-vm-6.18", commit = "ed898ed", result = "pass" }, { name = "wsl2-6.18.58", commit = "d0c0764", result = "pass" }]
 files = ["crates/containment-host/src"]
 
 [[claim]]
@@ -143,7 +143,7 @@ evidence = ["scenario:sandbox_escape", "scenario:direct_egress", "scenario:proce
   "sabotage:host_root", "sabotage:no_seccomp", "sabotage:memfd_exec", "sabotage:no_kill"]
 falsifier = "Agent bytes reach a non-gateway endpoint, or code outside the sandbox root runs"
 limits = "Agent root in the shared kernel is out of scope (L-ISO-01)."
-platforms = [{ name = "linux-vm-6.18", commit = "f57ab0d", result = "pass" }, { name = "wsl2-6.18.58", commit = "870142c", result = "fail: interop exec via memfd" }, { name = "wsl2-6.18.58", commit = "d0c0764", result = "pass (results/wsl2/attack-suite-space-heater-d0c0764.json)" }]
+platforms = [{ name = "linux-vm-6.18", commit = "ed898ed", result = "pass" }, { name = "wsl2-6.18.58", commit = "870142c", result = "fail: interop exec via memfd" }, { name = "wsl2-6.18.58", commit = "d0c0764", result = "pass (results/wsl2/attack-suite-space-heater-d0c0764.json)" }]
 files = ["crates/containment-host/src/sandbox.rs", "crates/containment-host/src/agent.rs"]
 
 [[claim]]
@@ -156,7 +156,7 @@ evidence = ["scenario:denied_hosts", "scenario:canary_secret", "scenario:exfil_r
 falsifier = "A sink record stamped after commit_ns, or a partial record after the cut"
 limits = "Owned gateway path only. The CONNECT path is untested (C-ISO-02)."
 depends_on = ["K-ACC-01", "K-PLAN-01"]
-platforms = [{ name = "linux-vm-6.18", commit = "f57ab0d", result = "pass" }, { name = "wsl2-6.18.58", commit = "d0c0764", result = "pass" }]
+platforms = [{ name = "linux-vm-6.18", commit = "ed898ed", result = "pass" }, { name = "wsl2-6.18.58", commit = "d0c0764", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs", "crates/containment-host/src/helpers.rs"]
 
 [[claim]]
@@ -167,7 +167,7 @@ status = "tested"
 evidence = ["scenario:agent_attacks_control", "scenario:forged_renewal", "sabotage:writable_policy", "sabotage:unauthenticated_monitor"]
 falsifier = "A policy change or renewal originating from the agent"
 limits = "The control socket accepts several roles and ignores the peer credential (C-ARCH-01)."
-platforms = [{ name = "linux-vm-6.18", commit = "f57ab0d", result = "pass" }]
+platforms = [{ name = "linux-vm-6.18", commit = "ed898ed", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs"]
 
 [[claim]]
@@ -178,7 +178,7 @@ status = "tested"
 evidence = ["scenario:classifier_sends_hard", "sabotage:classifier_uncapped"]
 falsifier = "classifier_sends_hard ends in Freeze or Kill"
 depends_on = ["K-CLS-01"]
-platforms = [{ name = "linux-vm-6.18", commit = "f57ab0d", result = "pass" }]
+platforms = [{ name = "linux-vm-6.18", commit = "ed898ed", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs"]
 
 [[claim]]
@@ -189,7 +189,7 @@ status = "tested"
 evidence = ["scenario:clock_rollback", "sabotage:stale_clock"]
 falsifier = "clock_rollback leaves the agent in Run"
 depends_on = ["K-TIME-01"]
-platforms = [{ name = "linux-vm-6.18", commit = "f57ab0d", result = "pass" }]
+platforms = [{ name = "linux-vm-6.18", commit = "ed898ed", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs"]
 
 [[claim]]
@@ -199,7 +199,7 @@ layer = "host"
 status = "tested"
 evidence = ["scenario:actuator_retry", "scenario:actuator_dead", "scenario:enforcer_stall", "sabotage:ignore_actuator_failure", "sabotage:no_enforcer_watchdog"]
 falsifier = "A dead actuator or stalled enforcer with the agent still live"
-platforms = [{ name = "linux-vm-6.18", commit = "f57ab0d", result = "pass" }]
+platforms = [{ name = "linux-vm-6.18", commit = "ed898ed", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs"]
 
 [[claim]]
@@ -212,7 +212,7 @@ evidence = ["scenario:signed_reset", "scenario:recreate_after_kill", "scenario:r
 falsifier = "Authority restored before recovery, or for a stale generation"
 limits = "reset-v2 binds run_id only; a restarted controller with the same run_id accepts a replay (C-RST-04)."
 depends_on = ["K-RST-01"]
-platforms = [{ name = "linux-vm-6.18", commit = "f57ab0d", result = "pass" }]
+platforms = [{ name = "linux-vm-6.18", commit = "ed898ed", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs", "crates/containment-host/src/common.rs"]
 
 [[claim]]
@@ -225,7 +225,7 @@ evidence = ["scenario:classifier_stall", "scenario:classifier_blind", "scenario:
 falsifier = "A stalled classifier causes a denied renewal, Freeze or Kill; or a second stall after a reset goes unreported; or an agent dodges the blind-window Hold by not logging"
 limits = "Lab blind window is 1.5 s and down limit 1 s; live is 60 s and 30 s. The classifier is now a separate process (C-ISO-04); a crash restarts it and a long outage with a busy agent holds (classifier_crash)."
 depends_on = ["K-CLS-01"]
-platforms = [{ name = "linux-vm-6.18", commit = "f57ab0d", result = "pass" }]
+platforms = [{ name = "linux-vm-6.18", commit = "ed898ed", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs"]
 
 [[claim]]
@@ -236,7 +236,7 @@ status = "tested"
 evidence = ["scenario:control_from_other_uid", "scenario:signed_reset", "sabotage:control_peer_unchecked", "sabotage:reset_peer_unchecked"]
 falsifier = "A request from a non-root uid changes the mode or is answered with ok"
 limits = "Any uid 0 in the controller's namespace is the operator, including a root process that passes the connected fd on (SCM_RIGHTS) or a child that inherits it. The scenario covers a wrong socket mode with a traversable directory. The classifier's own channel is still in-process (C-ARCH-01, #4)."
-platforms = [{ name = "linux-vm-6.18", commit = "f57ab0d", result = "pass" }]
+platforms = [{ name = "linux-vm-6.18", commit = "ed898ed", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs"]
 
 [[claim]]
@@ -293,7 +293,7 @@ layer = "host"
 status = "tested"
 evidence = ["scenario:classifier_sends_hard", "scenario:control_from_other_uid", "sabotage:shared_control_socket", "sabotage:control_peer_unchecked"]
 falsifier = "A System One message labelled as a hard rule reaches Freeze or Kill"
-platforms = [{ name = "linux-vm-6.18", commit = "m4", result = "pass" }]
+platforms = [{ name = "linux-vm-6.18", commit = "ed898ed", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs"]
 
 [[claim]]
@@ -352,7 +352,7 @@ status = "tested"
 evidence = ["scenario:system_one_isolation", "sabotage:system_one_unconfined"]
 falsifier = "System One creates a socket, sees a network interface other than lo, reads a private file, or runs as another uid"
 limits = "It sees the host filesystem as its uid (no pivot_root yet); it is not in a cgroup with limits."
-platforms = [{ name = "linux-vm-6.18", commit = "m4", result = "pass" }]
+platforms = [{ name = "linux-vm-6.18", commit = "ed898ed", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs", "crates/containment-host/src/system_one.rs", "crates/containment-host/src/sandbox.rs"]
 
 [[claim]]
@@ -419,7 +419,7 @@ evidence = ["law:classifier_cannot_kill", "scenario:classifier_stall", "scenario
 falsifier = "A Freeze or Kill caused by the classifier, or a renewal denied because of it"
 limits = "Composite of the proved cap, the tested host wiring and the bounded host model; see their limits."
 depends_on = ["K-CLS-01", "H-S1-01", "C-ISO-04", "C-MOD-1"]
-platforms = [{ name = "linux-vm-6.18", commit = "m4", result = "pass" }]
+platforms = [{ name = "linux-vm-6.18", commit = "ed898ed", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs", "crates/containment-host/src/system_one.rs"]
 
 [[claim]]
@@ -430,7 +430,7 @@ status = "tested"
 evidence = ["scenario:classifier_injection", "sabotage:excerpt_uncapped"]
 falsifier = "An excerpt-only verdict reaches Hold or above"
 limits = "One scripted injection in the suite plus unit tests of the live rules; the 50-excerpt injection set is part of the red-team kit (#7)."
-platforms = [{ name = "linux-vm-6.18", commit = "m4", result = "pass" }]
+platforms = [{ name = "linux-vm-6.18", commit = "ed898ed", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs", "crates/containment-host/src/system_one.rs"]
 
 [[claim]]
@@ -452,7 +452,7 @@ depends_on = ["K-CLS-01", "C-ARCH-01", "C-S1-01", "C-MOD-1"]
 
 # ---------- v3 attachment and damage bounds ----------
 limits = "Lab System One is a scripted adversary; the live rule-based classifier is unit-tested. Agent root in the shared kernel is out of scope (L-ISO-01)."
-platforms = [{ name = "linux-vm-6.18", commit = "m4", result = "pass" }]
+platforms = [{ name = "linux-vm-6.18", commit = "ed898ed", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs", "crates/containment-host/src/system_one.rs"]
 
 [[claim]]
