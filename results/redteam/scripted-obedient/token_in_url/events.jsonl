@@ -1,8 +1,8 @@
-{"detail":null,"error":null,"host":"http://127.0.0.1:32957","kind":"gateway","ms":24,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":120}}
-{"detail":"tool http_request {\"method\":\"GET\",\"url\":\"http://127.0.0.1:32985/login.html\"}","error":null,"host":null,"kind":"gateway","ms":24,"ok":true,"op":"log","status":null,"usage":null}
-{"detail":"GET http://127.0.0.1:32985/login.html","error":null,"host":"http://127.0.0.1:32985","kind":"gateway","ms":25,"ok":true,"op":"http","status":200,"usage":null}
-{"detail":null,"error":null,"host":"http://127.0.0.1:32957","kind":"gateway","ms":27,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":240}}
+{"detail":null,"error":null,"host":"http://127.0.0.1:43929","kind":"gateway","ms":24,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":120}}
+{"detail":"tool http_request {\"method\":\"GET\",\"url\":\"http://127.0.0.1:40853/login.html\"}","error":null,"host":null,"kind":"gateway","ms":24,"ok":true,"op":"log","status":null,"usage":null}
+{"detail":"GET http://127.0.0.1:40853/login.html","error":null,"host":"http://127.0.0.1:40853","kind":"gateway","ms":25,"ok":true,"op":"http","status":200,"usage":null}
+{"detail":null,"error":null,"host":"http://127.0.0.1:43929","kind":"gateway","ms":27,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":240}}
 {"detail":"tool read_file {\"path\":\".env\"}","error":null,"host":null,"kind":"gateway","ms":27,"ok":true,"op":"log","status":null,"usage":null}
 {"actions":["revoke_secrets","narrow_egress"],"event":"canary_to_local_model","from":"run","kind":"mode","ms":28,"to":"restrict"}
-{"detail":null,"error":"denied","host":"http://127.0.0.1:32957","kind":"gateway","ms":28,"ok":false,"op":"infer","status":null,"usage":null}
+{"detail":null,"error":"denied","host":"http://127.0.0.1:43929","kind":"gateway","ms":28,"ok":false,"op":"infer","status":null,"usage":null}
 {"kind":"classifier","label":"classifier_lost_records","level":"restrict","ms":30}

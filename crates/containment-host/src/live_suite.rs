@@ -301,23 +301,25 @@ fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn
     Ok(json!({"scenario": scenario, "weakness": weakness, "passed": passed, "final_mode": report["final_mode"], "checks": checks.0, "live": report["live"]}))
 }
 
+/// Runs the live-mode suite with a scripted model, then every sabotaged controller.
+#[derive(clap::Parser)]
+struct Args {
+    /// Results file (replaced only when the suite has finished)
+    #[arg(long, default_value = "results/live-suite.json")]
+    out: PathBuf,
+    /// Run one scenario only
+    #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(SCENARIOS.iter().copied()))]
+    only: Option<String>,
+    /// Allow running without cgroup limits for System One (recorded in the results)
+    #[arg(long)]
+    allow_missing_limits: bool,
+}
+
 pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
-    let mut out = PathBuf::from("results/live-suite.json");
-    let mut only = None;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--out" => out = PathBuf::from(args.get(i + 1).ok_or("--out needs a value")?),
-            "--only" => only = args.get(i + 1).cloned(),
-            "--allow-missing-limits" => {
-                // SAFETY: set before any controller is started.
-                unsafe { std::env::set_var(LIMITS_WAIVER_ENV, "1") };
-                i += 1;
-                continue;
-            }
-            other => return Err(format!("unknown option {other}").into()),
-        }
-        i += 2;
+    let Some(Args { out, only, allow_missing_limits }) = parse_args::<Args>("live-suite", args)? else { return Ok(()) };
+    if allow_missing_limits {
+        // SAFETY: set before any controller is started.
+        unsafe { std::env::set_var(LIMITS_WAIVER_ENV, "1") };
     }
     // Each invocation has its own scratch directory, removed when it ends.
     let work = PathBuf::from(format!("/run/verified-agent-containment/live-suite-{}", std::process::id()));
@@ -356,7 +358,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     if let Some(parent) = out.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&out, serde_json::to_vec_pretty(&output)?)?;
+    write_replace(&out, &serde_json::to_vec_pretty(&output)?)?;
     println!("live runs {passed}/{} passed; sabotage {detected}/{} detected", output["runs_total"], output["sabotage_total"]);
     let _ = fs::remove_dir_all(&work);
     if passed == output["runs_total"].as_u64().unwrap_or(0) as usize && detected == sabotage.len() { Ok(()) } else { Err("live suite failed".into()) }

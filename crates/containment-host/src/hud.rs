@@ -171,10 +171,18 @@ pub fn serve(run: PathBuf, port: u16) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Serves the read-only HUD for a running live controller on 127.0.0.1.
+#[derive(clap::Parser)]
+struct Args {
+    /// The run directory printed by `live` (/run/verified-agent-containment/live-...)
+    #[arg(long)]
+    run: PathBuf,
+    /// Local port; 0 picks a free one
+    #[arg(long, default_value_t = 8787)]
+    port: u16,
+}
+
 pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
-    match args {
-        [flag, dir] if flag == "--run" => serve(PathBuf::from(dir), 8787),
-        [flag, dir, p, port] if flag == "--run" && p == "--port" => serve(PathBuf::from(dir), port.parse()?),
-        _ => Err("usage: containment-lab hud --run DIR [--port PORT]".into()),
-    }
+    let Some(Args { run, port }) = crate::common::parse_args::<Args>("hud", args)? else { return Ok(()) };
+    serve(run, port)
 }

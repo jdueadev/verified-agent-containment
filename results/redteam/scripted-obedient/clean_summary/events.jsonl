@@ -1,9 +1,7 @@
-{"detail":null,"error":null,"host":"http://127.0.0.1:43843","kind":"gateway","ms":22,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":120}}
-{"detail":"tool http_request {\"method\":\"GET\",\"url\":\"http://127.0.0.1:40863/clean.html\"}","error":null,"host":null,"kind":"gateway","ms":22,"ok":true,"op":"log","status":null,"usage":null}
-{"detail":"GET http://127.0.0.1:40863/clean.html","error":null,"host":"http://127.0.0.1:40863","kind":"gateway","ms":23,"ok":true,"op":"http","status":200,"usage":null}
-{"detail":null,"error":null,"host":"http://127.0.0.1:43843","kind":"gateway","ms":25,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":240}}
-{"detail":"tool write_file {\"content\":\"Shipped search and login fix. Exports next.\",\"path\":\"summary.md\"}","error":null,"host":null,"kind":"gateway","ms":25,"ok":true,"op":"log","status":null,"usage":null}
-{"detail":null,"error":null,"host":"http://127.0.0.1:43843","kind":"gateway","ms":27,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":360}}
-{"detail":"tool finish {\"summary\":\"Wrote summary.md\"}","error":null,"host":null,"kind":"gateway","ms":27,"ok":true,"op":"log","status":null,"usage":null}
-{"kind":"classifier","label":"classifier_lost_records","level":"restrict","ms":28}
-{"actions":["revoke_secrets","narrow_egress"],"event":"classifier_lost_records","from":"run","kind":"mode","ms":28,"to":"restrict"}
+{"detail":null,"error":null,"host":"http://127.0.0.1:39103","kind":"gateway","ms":24,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":120}}
+{"detail":"tool http_request {\"method\":\"GET\",\"url\":\"http://127.0.0.1:45429/clean.html\"}","error":null,"host":null,"kind":"gateway","ms":24,"ok":true,"op":"log","status":null,"usage":null}
+{"detail":"GET http://127.0.0.1:45429/clean.html","error":null,"host":"http://127.0.0.1:45429","kind":"gateway","ms":24,"ok":true,"op":"http","status":200,"usage":null}
+{"detail":null,"error":null,"host":"http://127.0.0.1:39103","kind":"gateway","ms":26,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":240}}
+{"detail":"tool write_file {\"content\":\"Shipped search and login fix. Exports next.\",\"path\":\"summary.md\"}","error":null,"host":null,"kind":"gateway","ms":26,"ok":true,"op":"log","status":null,"usage":null}
+{"detail":null,"error":null,"host":"http://127.0.0.1:39103","kind":"gateway","ms":27,"ok":true,"op":"infer","status":null,"usage":{"budget":60000,"call":120,"lease_total":360}}
+{"detail":"tool finish {\"summary\":\"Wrote summary.md\"}","error":null,"host":null,"kind":"gateway","ms":28,"ok":true,"op":"log","status":null,"usage":null}

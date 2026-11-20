@@ -743,25 +743,30 @@ fn summary(values: &mut [f64]) -> Value {
     json!({"n":values.len(),"p50":pick(0.5),"p95":pick(0.95),"max":values[values.len()-1]})
 }
 
+/// Runs the Linux attack suite, then every sabotaged controller, and writes the results.
+#[derive(clap::Parser)]
+struct Args {
+    /// Runs of each timed scenario
+    #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..))]
+    repeat: u32,
+    /// Results file (replaced only when the suite has finished)
+    #[arg(long, default_value = "results/attack-suite.json")]
+    out: PathBuf,
+    /// Run one scenario only
+    #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(SCENARIOS.iter().copied()))]
+    only: Option<String>,
+    /// Allow running without cgroup limits for System One (recorded in the results)
+    #[arg(long)]
+    allow_missing_limits: bool,
+}
+
 pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
-    let mut repeat = 30;
-    let mut out = PathBuf::from("results/attack-suite.json");
-    let mut only: Option<String> = None;
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--repeat" => { repeat = args.get(index + 1).ok_or("--repeat needs a value")?.parse()?; index += 2; }
-            "--out" => { out = PathBuf::from(args.get(index + 1).ok_or("--out needs a value")?); index += 2; }
-            "--allow-missing-limits" => {
-                ALLOW_MISSING_LIMITS.store(true, std::sync::atomic::Ordering::Relaxed);
-                // The controller refuses to start System One without limits unless waived.
-                // SAFETY: set before any controller thread or child exists.
-                unsafe { std::env::set_var(LIMITS_WAIVER_ENV, "1") };
-                index += 1;
-            }
-            "--only" => { only = Some(args.get(index + 1).ok_or("--only needs a value")?.clone()); index += 2; }
-            other => return Err(format!("unknown option {other}").into()),
-        }
+    let Some(Args { repeat, out, only, allow_missing_limits: waive_limits }) = parse_args::<Args>("attack-suite", args)? else { return Ok(()) };
+    if waive_limits {
+        ALLOW_MISSING_LIMITS.store(true, std::sync::atomic::Ordering::Relaxed);
+        // The controller refuses to start System One without limits unless waived.
+        // SAFETY: set before any controller thread or child exists.
+        unsafe { std::env::set_var(LIMITS_WAIVER_ENV, "1") };
     }
     let mut sequence = 0;
     let mut runs = Vec::new();
@@ -807,7 +812,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         "sabotage_total": sabotage.len(), "sabotage_detected": detected, "metrics": metrics, "sabotage": sabotage, "runs": runs
     });
     if let Some(parent) = out.parent() { fs::create_dir_all(parent)?; }
-    fs::write(&out, serde_json::to_vec_pretty(&output)?)?;
+    write_replace(&out, &serde_json::to_vec_pretty(&output)?)?;
     println!("runs {passed}/{} passed; sabotage {detected}/{} detected; admitted after commit {}; written after cut {}", runs.len(), sabotage.len(), sum("bytes_admitted_after_commit"), sum("bytes_written_after_cut"));
     if passed == runs.len() && detected == sabotage.len() { Ok(()) } else { Err("attack suite failed".into()) }
 }
