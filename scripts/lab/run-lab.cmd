@@ -10,3 +10,4 @@ type "%~dp0launch.log"
 echo.
 echo Finished with exit code %LABEXIT%. Logs and results are in "%~dp0logs" and "%~dp0results".
 pause
+exit /b %LABEXIT%

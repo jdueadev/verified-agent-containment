@@ -32,11 +32,11 @@ The v3 design is in [`docs/design-spec.md`](docs/design-spec.md). Every guarante
 | TLA+ host model | `ClassifierCannotForceStop` holds | 2,863,520 states (one sandbox, 12 ticks, renewal as its own action, no resets). Required counterexamples are found for the classifier in the health gate, an uncapped lag signal, and a dead monitor. `tools/tla_check.sh` |
 
 Timing on Linux 6.18 in a 2-core VM, p50 / p95 / max:
-- Stop committed to egress cut: 0.11 / 1.29 / 9.67 ms.
-- Committed to cgroup frozen: 0.43 / 2.45 / 12.05 ms.
-- Committed to cgroup killed: 0.91 / 2.06 / 3.98 ms.
+- Stop committed to egress cut: 0.13 / 1.57 / 5.17 ms.
+- Committed to cgroup frozen: 0.44 / 2.39 / 7.51 ms.
+- Committed to cgroup killed: 1.25 / 2.64 / 3.30 ms.
 
-These figures are from `results/attack-suite.json`, produced at commit bc14144.
+These figures are from `results/attack-suite.json`, produced at commit d81a32e.
 
 Maxima vary between runs on this shared VM because the enforcer thread can be descheduled; one run of an earlier build of this change had a `gateway_flood` stop at 93 ms. Every measured stop, including that one, recorded 0 bytes admitted after commit and 0 written after the cut.
 

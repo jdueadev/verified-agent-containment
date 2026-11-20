@@ -165,7 +165,10 @@ catch {
 finally {
     if ($imported -and -not $Keep) {
         Say "STEP 6/6 unregister $Name (pass -Keep to keep it)"
-        [void](Invoke-Native "wsl.exe" @("--unregister", $Name))
+        if ((Invoke-Native "wsl.exe" @("--unregister", $Name)) -ne 0) {
+            Say "FAILED to unregister ${Name}; it is still registered (remove it with: wsl --unregister $Name)"
+            if ($exitCode -eq 0) { $exitCode = 1 }
+        }
     } elseif ($imported) {
         Say "  kept distro ${Name}: wsl -d $Name"
     }

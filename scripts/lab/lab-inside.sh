@@ -25,7 +25,8 @@ exec > >(tee -a "$LAB/logs/inside-$STAMP.log") 2>&1
 say() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LAB/logs/status.txt"; }
 fail() { say "FAILED inside: $*"; exit 1; }
 SERVER_PID=""
-cleanup() { [ -z "$SERVER_PID" ] || kill "$SERVER_PID" 2>/dev/null || true; }
+KEY_DIR=""
+cleanup() { [ -z "$SERVER_PID" ] || kill "$SERVER_PID" 2>/dev/null || true; [ -z "$KEY_DIR" ] || rm -rf "$KEY_DIR"; }
 trap cleanup EXIT
 export DEBIAN_FRONTEND=noninteractive PATH="/root/.cargo/bin:/usr/local/cuda/bin:$PATH"
 PINS_OUT=""   # pins.env lines for values that were not pinned yet
@@ -58,7 +59,7 @@ rm -rf /root/vac
 git clone -q "$REPO" /root/vac
 cd /root/vac
 COMMIT="$(git rev-parse --short HEAD)"
-cargo build --release -q -p containment-host
+cargo build --release -q --locked -p containment-host
 LAB_BIN=/root/vac/target/release/containment-lab
 
 {
@@ -77,32 +78,35 @@ say "  built $COMMIT; environment in results/$STAMP/environment.txt"
 
 # ---- 5. suites, no waivers ----------------------------------------------------
 SUITES_OK=1
-if [ "$ONLY" != "redteam" ]; then
-  say "STEP 5/6 attack suite (repeat 30, cgroup limits enforced)"
-  if "$LAB_BIN" attack-suite --repeat 30 --out "$RES/attack-suite.json" > "$RES/attack-suite.log" 2>&1; then
-    say "  $(tail -1 "$RES/attack-suite.log")"
-  else
-    SUITES_OK=0; say "  attack suite FAILED: $(tail -1 "$RES/attack-suite.log")"
-  fi
-  say "  live suite"
-  if "$LAB_BIN" live-suite --out "$RES/live-suite.json" > "$RES/live-suite.log" 2>&1; then
-    say "  $(tail -1 "$RES/live-suite.log")"
-  else
-    SUITES_OK=0; say "  live suite FAILED: $(tail -1 "$RES/live-suite.log")"
-  fi
+say "STEP 5/6 attack suite (repeat 30, cgroup limits enforced)"
+if "$LAB_BIN" attack-suite --repeat 30 --out "$RES/attack-suite.json" > "$RES/attack-suite.log" 2>&1; then
+  say "  $(tail -1 "$RES/attack-suite.log")"
+else
+  SUITES_OK=0; say "  attack suite FAILED: $(tail -1 "$RES/attack-suite.log")"
+fi
+say "  live suite"
+if "$LAB_BIN" live-suite --out "$RES/live-suite.json" > "$RES/live-suite.log" 2>&1; then
+  say "  $(tail -1 "$RES/live-suite.log")"
+else
+  SUITES_OK=0; say "  live suite FAILED: $(tail -1 "$RES/live-suite.log")"
 fi
 if [ "$ONLY" = "suites" ]; then say "DONE inside (suites only)"; exit $((1 - SUITES_OK)); fi
 # Interop must be off for this distro: a process here must not be able to start
 # Windows programs. The WSLInterop binfmt entry is registered once for the whole
 # WSL VM (other distros may use it), so test the effect, not the registration.
+# Fail closed: no probe target, a timeout or a kill is not evidence.
 WIN_EXE=""
 for candidate in /mnt/c/Windows/System32/whoami.exe /mnt/c/WINDOWS/system32/whoami.exe; do
   [ -e "$candidate" ] && WIN_EXE="$candidate" && break
 done
-if [ -n "$WIN_EXE" ] && timeout 20 "$WIN_EXE" >/dev/null 2>&1; then
-  fail "a Windows program ($WIN_EXE) ran from inside the distro; interop is not off, so no model is attached"
-fi
-say "  interop check: Windows programs do not run here${WIN_EXE:+ (tested $WIN_EXE)}"
+[ -n "$WIN_EXE" ] || fail "interop check: no Windows program found under /mnt/c to probe with, so interop could not be tested"
+PROBE=0; PROBE_OUT="$(timeout -s KILL 20 "$WIN_EXE" 2>&1 >/dev/null)" || PROBE=$?
+case "$PROBE" in
+  0) fail "a Windows program ($WIN_EXE) ran from inside the distro; interop is not off, so no model is attached" ;;
+  124|137) fail "interop check: $WIN_EXE neither ran nor was refused within 20 s (exit $PROBE)" ;;
+esac
+echo "interop probe: $WIN_EXE exit $PROBE: ${PROBE_OUT:0:200}" >> "$RES/environment.txt"
+say "  interop check: Windows programs do not run here (tested $WIN_EXE, exit $PROBE)"
 # A model is attached only to a controller that passed its gate (claim C-SYS-1).
 [ "$SUITES_OK" = 1 ] || fail "suites failed, so no model is attached; see results/$STAMP"
 
@@ -111,6 +115,11 @@ say "STEP 6/6 llama.cpp ($GPU)"
 # nvcc jobs use 1-2 GB each; WSL gets half the host's RAM by default.
 MEM_GB=$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1048576 ))
 JOBS=$(( MEM_GB / 2 )); [ "$JOBS" -ge 1 ] || JOBS=1; [ "$JOBS" -le "$(nproc)" ] || JOBS=$(nproc)
+# Reuse a kept build only if it is the pinned commit.
+if [ -x /root/llama.cpp/build/bin/llama-server ] && [ -n "$LLAMA_CPP_COMMIT" ] \
+    && [ "$(git -C /root/llama.cpp rev-parse HEAD 2>/dev/null)" != "$LLAMA_CPP_COMMIT" ]; then
+  rm -rf /root/llama.cpp
+fi
 if [ ! -x /root/llama.cpp/build/bin/llama-server ]; then
   rm -rf /root/llama.cpp
   git clone -q https://github.com/ggml-org/llama.cpp /root/llama.cpp
@@ -121,7 +130,7 @@ if [ ! -x /root/llama.cpp/build/bin/llama-server ]; then
     PINS_OUT+="LLAMA_CPP_COMMIT=\"$(git rev-parse HEAD)\""$'\n'
     say "  llama.cpp not pinned yet: using $(git rev-parse --short HEAD) (recorded in results/$STAMP/pins.env)"
   fi
-  if [ "$GPU" = cuda ] && cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120 -DLLAMA_CURL=OFF >/dev/null \
+  if [ "$GPU" = cuda ] && cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native -DLLAMA_CURL=OFF >/dev/null \
       && cmake --build build --config Release -j "$JOBS" --target llama-server >/dev/null; then
     say "  built llama-server with CUDA ($(git rev-parse --short HEAD))"
   else
@@ -136,14 +145,13 @@ cd /root/vac
 
 HF_REPO="${MODEL%%:*}"; HF_FILE="${MODEL#*:}"
 GGUF="$LAB/models/$HF_FILE"
-EXPECT="$(curl -fsSL "https://huggingface.co/api/models/$HF_REPO/tree/main" | python3 -c '
-import json, sys
-name = sys.argv[1]
-for entry in json.load(sys.stdin):
-    if entry.get("path") == name and entry.get("lfs"):
-        print(entry["lfs"]["oid"])
-' "$HF_FILE")" || true
-PIN_VAR="MODEL_SHA256_$(basename "$HF_FILE" .gguf | tr -c 'A-Za-z0-9\n' '_')"
+# The Hub's SHA-256 of this exact file: the X-Linked-Etag of its resolve URL
+# (an LFS file's etag is its SHA-256; no tree listing, so no pagination).
+EXPECT="$(curl -fsSI "https://huggingface.co/$HF_REPO/resolve/main/$HF_FILE" | tr -d '\r' \
+  | awk -F': ' 'tolower($1)=="x-linked-etag" {gsub(/"/, "", $2); print $2; exit}')" || true
+[[ "$EXPECT" =~ ^[0-9a-f]{64}$ ]] || EXPECT=""
+# Pins are per repository and file, so a same-named file elsewhere is not checked against this one.
+PIN_VAR="MODEL_SHA256_$(printf '%s__%s' "$HF_REPO" "${HF_FILE%.gguf}" | tr -c 'A-Za-z0-9' '_')"
 PINNED="${!PIN_VAR:-}"
 if [ -n "$PINNED" ]; then
   # The pin in the repo is the authority; the Hub's value must agree with it.
@@ -172,8 +180,12 @@ say "  model verified: $HF_FILE (sha256 $EXPECT)"
 # sends it (from REDTEAM_MODEL_KEY) and the sandboxed agent never sees it.
 REDTEAM_MODEL_KEY="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
 export REDTEAM_MODEL_KEY
+# The key goes to llama-server and curl through 0600 files, not argv: /proc/<pid>/cmdline
+# is readable by every uid, including System One's.
+KEY_DIR="$(mktemp -d)"; chmod 700 "$KEY_DIR"
+( umask 077; printf '%s' "$REDTEAM_MODEL_KEY" > "$KEY_DIR/key"; printf 'Authorization: Bearer %s\n' "$REDTEAM_MODEL_KEY" > "$KEY_DIR/header" )
 NGL=0; [ "$GPU" = cuda ] && NGL=99
-/root/llama.cpp/build/bin/llama-server -m "$GGUF" --host 127.0.0.1 --port 8080 -ngl "$NGL" -c 32768 --api-key "$REDTEAM_MODEL_KEY" \
+/root/llama.cpp/build/bin/llama-server -m "$GGUF" --host 127.0.0.1 --port 8080 -ngl "$NGL" -c 32768 --api-key-file "$KEY_DIR/key" \
   --jinja --chat-template-kwargs '{"enable_thinking": false}' > "$RES/llama-server.log" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 1 300); do
@@ -185,7 +197,7 @@ curl -fs http://127.0.0.1:8080/health >/dev/null || fail "llama-server did not b
 say "  llama-server healthy (offloaded layers: $NGL)"
 
 # Diagnostic: does the model return a native tool call through llama-server?
-curl -fs http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/json' -H "Authorization: Bearer $REDTEAM_MODEL_KEY" -d '{
+curl -fs http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/json' -H @"$KEY_DIR/header" -d '{
   "messages": [{"role": "user", "content": "List the files in the workspace."}],
   "tools": [{"type": "function", "function": {"name": "list_dir", "description": "List a directory.",
     "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}}],

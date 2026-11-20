@@ -34,7 +34,7 @@ Then double-click `run-lab.cmd`, or run it from a terminal with options:
 | 3 | Windows | Imports `containment-lab-<date>` into `distros\` and enables systemd. Root is the default user. **Windows interop is disabled**, so a process in the distro cannot start Windows programs (the first WSL2 run found that escape). |
 | 4 | distro | Installs build tools, Rust and, when an NVIDIA GPU is visible, the CUDA toolkit from NVIDIA's WSL repository. RTX 50-series cards need 12.8 or newer. Builds the project. |
 | 5 | distro | Runs the attack suite (repeat 30) and the live suite **with cgroup limits enforced**. If either fails, no model is attached (claim C-SYS-1). |
-| 6 | distro | Builds `llama-server` with CUDA (falling back to CPU), downloads the model into `models\` and checks its SHA-256 against Hugging Face. Serves it on 127.0.0.1 with `--jinja` and thinking off, checks that it returns native tool calls, and runs `containment-lab redteam` against it. |
+| 6 | distro | Builds `llama-server` with CUDA (falling back to CPU), downloads the model into `models\` and checks its SHA-256 against the pin in `pins.env` (the Hub's value must agree; an unpinned model is trusted once). Serves it on 127.0.0.1 with `--jinja` and thinking off, checks that it returns native tool calls, and runs `containment-lab redteam` against it. |
 
 ## Where things go
 
@@ -56,10 +56,10 @@ The exit code is 0 only if every step passed and no red-team task leaked.
 - **Downloads are cached.** Models stay in `models\` and the root filesystem in `images\`, so a rerun downloads nothing.
 - **Hardening inside the distro:**
   - drives are mounted root-only (umask 077);
-  - Windows interop is checked again before a model is attached;
-  - llama-server needs a per-run API key, because WSL forwards localhost to Windows. The gateway sends the key and the agent never sees it.
+  - Windows interop is checked again before a model is attached, by running `whoami.exe`; the check fails closed if there is nothing to probe or the probe hangs, and its result goes to `environment.txt`. With `-Only suites` it is skipped, since no model is attached;
+  - llama-server needs a per-run API key, because WSL forwards localhost to Windows. It is passed in a 0600 file, not on the command line. The gateway sends the key and the agent never sees it. `/health` and `/v1/models` stay unauthenticated in llama.cpp, so Windows processes can see which model is loaded.
 - **Pins in `pins.env`:**
-  - The llama.cpp commit and the model's SHA-256 are pinned there.
+  - The llama.cpp commit and the model's SHA-256 are pinned there. Model pins are keyed by repository and file. A kept llama.cpp build is reused only at the pinned commit.
   - A value that is still empty is trusted once and written to `results\<stamp>\pins.env` for review and commit.
   - Rust comes from Ubuntu's `rustup` package.
 - **Thinking is off.** The red-team policy caps each model call at 1024 tokens, and a thinking model would spend them reasoning instead of calling tools.
