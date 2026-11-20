@@ -4,6 +4,7 @@ description = "Linux host controller and attack harness for agent containment"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "containment-lab"

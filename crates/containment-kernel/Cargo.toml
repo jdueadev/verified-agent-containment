@@ -4,3 +4,4 @@ description = "Pure decision kernel for agent containment"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
