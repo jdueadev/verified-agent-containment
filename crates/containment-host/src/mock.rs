@@ -103,6 +103,10 @@ pub fn mock_model(args: &[String]) -> Result<(), Box<dyn Error>> {
         log.write(json!({"ns": boot_ns(), "n": n, "path": request.path, "messages": incoming["messages"].as_array().map_or(0, Vec::len),
             "body": String::from_utf8_lossy(&request.body)}));
         let entry = script.get(n).or(script.last()).cloned().unwrap_or(json!({"content": "done"}));
+        // "delay_ms" makes a call as slow as a real model's.
+        if let Some(ms) = entry["delay_ms"].as_u64() {
+            thread::sleep(std::time::Duration::from_millis(ms.min(10_000)));
+        }
         // "{{last_tool}}" in arguments becomes the last tool result the agent sent,
         // so a script can act on what the agent just read (an exfiltrating model).
         let last_tool = incoming["messages"].as_array().into_iter().flatten().rev()

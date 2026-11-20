@@ -56,6 +56,7 @@ struct Weakness {
     memfd_exec: bool,
     classifier_beat_in_health: bool,
     lag_episode_never_resets: bool,
+    lag_from_receipt: bool,
     untraced_decisions_ignored: bool,
     overflow_latch_sticks: bool,
     control_peer_unchecked: bool,
@@ -98,6 +99,7 @@ impl Weakness {
             "memfd_exec" => out.memfd_exec = true,
             "classifier_beat_in_health" => out.classifier_beat_in_health = true,
             "lag_episode_never_resets" => out.lag_episode_never_resets = true,
+            "lag_from_receipt" => out.lag_from_receipt = true,
             "untraced_decisions_ignored" => out.untraced_decisions_ignored = true,
             "overflow_latch_sticks" => out.overflow_latch_sticks = true,
             "control_peer_unchecked" => out.control_peer_unchecked = true,
@@ -643,7 +645,11 @@ impl Shared {
             n == line.len() as isize
         });
         if written {
-            lag.pending.push_back((seq, ns));
+            // Lag runs from the moment System One can see the record. A record
+            // is written when its operation completes (an inference call can take
+            // seconds), so timing it from receipt would report a slow model as a
+            // stalled classifier.
+            lag.pending.push_back((seq, if self.weak.lag_from_receipt { ns } else { boot_ns() }));
             lag.last_written = Some(seq);
         }
         // Only drops are counted here; written events count while still pending.
@@ -1474,7 +1480,9 @@ fn supervise_system_one(shared: Arc<Shared>, spec: SystemOneSpec) {
             lag.pending.clear();
             lost
         };
-        if lost > 0 {
+        // During teardown System One is stopped on purpose; what it had not yet
+        // scored is not a classifier failure and must not raise the mode.
+        if lost > 0 && !shared.stop.load(Ordering::SeqCst) {
             shared.dropped_logs.fetch_add(lost, Ordering::Relaxed);
             apply_classifier(&shared, Some("classifier_lost_records"), boot_ns(), Level::Restrict);
         }

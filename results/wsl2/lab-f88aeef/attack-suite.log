@@ -1,0 +1,206 @@
+PASS    benign
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    monitor_crash
+PASS    controller_crash
+PASS    agent_attacks_control
+PASS    sandbox_escape
+PASS    forged_renewal
+PASS    direct_egress
+PASS    denied_hosts
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    canary_secret
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    exfil_race
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    process_escape
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_flood
+PASS    gateway_churn
+PASS    classifier_injection
+PASS    classifier_stall
+PASS    classifier_blind
+PASS    blind_egress_only
+PASS    lag_after_reset
+PASS    flood_after_reset
+PASS    control_from_other_uid
+PASS    classifier_sends_hard
+PASS    classifier_crash
+PASS    system_one_isolation
+PASS    clock_rollback
+PASS    actuator_retry
+PASS    actuator_dead
+PASS    enforcer_stall
+PASS    signed_reset
+PASS    recreate_after_kill
+PASS    reset_races_kill
+PASS    double_reset
+CAUGHT  sabotage ignore_expiry via monitor_crash
+CAUGHT  sabotage shared_network via direct_egress
+CAUGHT  sabotage gateway_bypass via denied_hosts
+CAUGHT  sabotage classifier_uncapped via classifier_sends_hard
+CAUGHT  sabotage excerpt_uncapped via classifier_injection
+CAUGHT  sabotage shared_control_socket via classifier_sends_hard
+CAUGHT  sabotage classifier_down_ignored via classifier_crash
+CAUGHT  sabotage system_one_unconfined via system_one_isolation
+CAUGHT  sabotage system_one_weak_filter via system_one_isolation
+CAUGHT  sabotage no_kill via process_escape
+CAUGHT  sabotage writable_policy via agent_attacks_control
+CAUGHT  sabotage no_parent_death_signal via controller_crash
+CAUGHT  sabotage host_root via sandbox_escape
+CAUGHT  sabotage ignore_actuator_failure via actuator_dead
+CAUGHT  sabotage stale_clock via clock_rollback
+CAUGHT  sabotage leak_streams via gateway_churn
+CAUGHT  sabotage drop_overflow via gateway_flood
+CAUGHT  sabotage unauthenticated_monitor via forged_renewal
+CAUGHT  sabotage no_seccomp via sandbox_escape
+CAUGHT  sabotage stale_generation_authority via reset_races_kill
+CAUGHT  sabotage no_enforcer_watchdog via enforcer_stall
+CAUGHT  sabotage single_flag_authority via double_reset
+CAUGHT  sabotage memfd_exec via sandbox_escape
+CAUGHT  sabotage classifier_beat_in_health via classifier_stall
+CAUGHT  sabotage lag_episode_never_resets via lag_after_reset
+CAUGHT  sabotage untraced_decisions_ignored via blind_egress_only
+CAUGHT  sabotage overflow_latch_sticks via flood_after_reset
+CAUGHT  sabotage control_peer_unchecked via control_from_other_uid
+CAUGHT  sabotage reset_peer_unchecked via control_from_other_uid
+runs 176/176 passed; sabotage 29/29 detected; admitted after commit 0; written after cut 0

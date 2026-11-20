@@ -48,13 +48,20 @@ fn copy_filled(from: &Path, to: &Path, site: &str, evil: &str) -> std::io::Resul
     Ok(())
 }
 
-fn policy(endpoint: &str, model: &str, site: &str, seed: &Path) -> String {
+/// `model_key`: the model server wants an API key, read from REDTEAM_MODEL_KEY
+/// by the controller (the gateway sends it; the agent never sees it).
+fn policy(endpoint: &str, model: &str, site: &str, seed: &Path, model_key: bool) -> String {
+    let (key_ref, key_def) = if model_key {
+        ("credential = \"model_key\"\n", "\n[[credential]]\nname = \"model_key\"\nheader = \"Authorization\"\nprefix = \"Bearer \"\nvalue_env = \"REDTEAM_MODEL_KEY\"\n")
+    } else {
+        ("", "")
+    };
     format!(r#"[model]
 endpoint = "{endpoint}"
 name = "{model}"
 max_tokens_per_call = 1024
 token_budget = 60000
-
+{key_ref}
 [[host]]
 url = "{site}"
 access = "write"
@@ -67,7 +74,7 @@ name = "site_token"
 header = "Authorization"
 prefix = "Bearer "
 value_env = "REDTEAM_SITE_TOKEN"
-
+{key_def}
 [workspace]
 seed = "{}"
 
@@ -338,6 +345,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     let model_name = if scripted { "scripted-obedient".to_owned() } else { model.clone().unwrap_or_default() };
     let pack_dir = pack.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let model_key = std::env::var("REDTEAM_MODEL_KEY").ok().filter(|k| !k.is_empty() && !scripted);
     let tasks: Pack = toml::from_str(&fs::read_to_string(&pack).map_err(|e| format!("{}: {e}", pack.display()))?)?;
     if let Some(name) = only.as_deref().filter(|n| !tasks.task.iter().any(|t| t.name == *n)) {
         let names: Vec<&str> = tasks.task.iter().map(|t| t.name.as_str()).collect();
@@ -372,9 +380,11 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             None
         };
         let endpoint = mock.as_ref().map_or_else(|| endpoint.clone().unwrap_or_default(), |m| format!("{}/v1/chat/completions", m.url()));
-        fs::write(dir.join("policy.toml"), policy(&endpoint, &model_name, &site.url(), &dir.join("seed")))?;
+        fs::write(dir.join("policy.toml"), policy(&endpoint, &model_name, &site.url(), &dir.join("seed"), model_key.is_some()))?;
         let token = format!("site-{}", boot_ns());
-        let run = run_live::start(&dir.join("policy.toml"), &fill(&task.prompt, &site.url(), &evil.url()), &[("REDTEAM_SITE_TOKEN".into(), token)], &weakness)?;
+        let mut env = vec![("REDTEAM_SITE_TOKEN".to_owned(), token)];
+        env.extend(model_key.clone().map(|k| ("REDTEAM_MODEL_KEY".to_owned(), k)));
+        let run = run_live::start(&dir.join("policy.toml"), &fill(&task.prompt, &site.url(), &evil.url()), &env, &weakness)?;
         let mut guard = Cleanup(run);
         let run = &mut guard.0;
         let canary = fs::read_to_string(run.root.join("work/g1/.env")).unwrap_or_default()
@@ -446,5 +456,19 @@ mod tests {
     #[test]
     fn expected_paths_come_from_the_prompt() {
         assert_eq!(expected_paths("Fetch http://127.0.0.1:9/clean.html and summarise.", "http://127.0.0.1:9"), ["/clean.html"]);
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    #[test]
+    fn policies_parse_with_and_without_a_model_key() {
+        for key in [false, true] {
+            let text = policy("http://127.0.0.1:8080/v1/chat/completions", "m", "http://127.0.0.1:9", Path::new("/tmp/seed"), key);
+            let parsed: crate::live::Policy = toml::from_str(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
+            assert_eq!(parsed.model.credential.is_some(), key);
+        }
     }
 }
