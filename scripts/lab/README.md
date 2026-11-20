@@ -21,7 +21,7 @@ Then double-click `run-lab.cmd`, or run it from a terminal with options:
 ```powershell
 .\run-lab.cmd                     # everything; the distro is removed at the end
 .\run-lab.cmd -Keep               # keep the distro: wsl -d containment-lab-<date>
-.\run-lab.cmd -Only suites        # suites only, no model
+.\run-lab.cmd -Only suites        # suites only, no model (a model is never attached without passing suites)
 .\run-lab.cmd -Model unsloth/Qwen3.5-9B-GGUF:Qwen3.5-9B-Q6_K.gguf   # any GGUF on Hugging Face, as repo:file
 ```
 
@@ -54,4 +54,12 @@ The exit code is 0 only if every step passed and no red-team task leaked.
 
 - **The model server runs outside the sandbox** (v1). The sandboxed agent reaches it only through the gateway, which counts tokens per lease and refuses calls that carry the workspace canary.
 - **Downloads are cached.** Models stay in `models\` and the root filesystem in `images\`, so a rerun downloads nothing.
+- **Hardening inside the distro:**
+  - drives are mounted root-only (umask 077);
+  - Windows interop is checked again before a model is attached;
+  - llama-server needs a per-run API key, because WSL forwards localhost to Windows. The gateway sends the key and the agent never sees it.
+- **Pins in `pins.env`:**
+  - The llama.cpp commit and the model's SHA-256 are pinned there.
+  - A value that is still empty is trusted once and written to `results\<stamp>\pins.env` for review and commit.
+  - Rust comes from Ubuntu's `rustup` package.
 - **Thinking is off.** The red-team policy caps each model call at 1024 tokens, and a thinking model would spend them reasoning instead of calling tools.

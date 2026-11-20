@@ -31,7 +31,8 @@ param(
     [string]$Repo = "",
     [string]$Model = "unsloth/Qwen3.5-9B-GGUF:Qwen3.5-9B-Q6_K.gguf",
     [string]$Name = ("containment-lab-" + (Get-Date -Format "yyyyMMdd-HHmm")),
-    [ValidateSet("all", "suites", "redteam")]
+    # A model is only ever attached after both suites pass in the same run.
+    [ValidateSet("all", "suites")]
     [string]$Only = "all",
     [switch]$Keep
 )
@@ -128,8 +129,12 @@ try {
 
     # Root by default, systemd for a normal cgroup v2 tree, and no Windows
     # interop: a sandboxed process must not be able to start Windows programs.
-    $wslConf = '[boot]\nsystemd=true\n[user]\ndefault=root\n[interop]\nenabled=false\nappendWindowsPath=false\n[automount]\nenabled=true\n'
-    & wsl.exe -d $Name -u root -- sh -c "printf '$wslConf' > /etc/wsl.conf"
+    # Drives are mounted root-only (umask 077), so no sandbox or System One uid
+    # can read or write Windows files.
+    $confFile = Join-Path $Root "logs\wsl.conf.$stamp"
+    $conf = "[boot]`nsystemd=true`n[user]`ndefault=root`n[interop]`nenabled=false`nappendWindowsPath=false`n[automount]`nenabled=true`noptions = `"umask=077,fmask=077`"`n"
+    [System.IO.File]::WriteAllText($confFile, $conf, (New-Object System.Text.UTF8Encoding $false))
+    & wsl.exe -d $Name -u root -- cp (ToWsl $confFile) /etc/wsl.conf
     if ($LASTEXITCODE -ne 0) { throw "could not configure $Name" }
     & wsl.exe --terminate $Name | Out-Null
     Start-Sleep -Seconds 3
