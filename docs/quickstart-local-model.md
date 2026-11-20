@@ -36,14 +36,14 @@ sudo target/release/containment-lab live-suite --out results/wsl2/live-suite-$(h
 ```
 
 The expected results:
-- attack suite: every run passes and every sabotaged controller is caught (verified on WSL2 on an earlier build, d0c0764; this build has not yet been rerun there);
-- live suite: 11/11 runs and 8/8 sabotaged controllers. This has only been verified on a Linux VM. The live suite, the HUD and the red-team kit have **not yet been run on WSL2**, so your run is the first; please keep the JSON either way.
+- attack suite: every run passes and every sabotaged controller is caught (verified on WSL2 at 9ffd69a: 176/176, 29/29);
+- live suite: 11/11 runs and 8/8 sabotaged controllers (verified on a Linux VM and on WSL2 at 9ffd69a). Please keep the JSON either way.
 
 If either suite fails, stop there and keep its JSON and log. A failure on WSL2 is a finding: the first WSL2 run found the memfd interop escape that way.
 
 ## 3. Serve a model
 
-Use a model that supports tool calls through Ollama's OpenAI-compatible endpoint, such as `qwen2.5:7b-instruct` or `llama3.1:8b`. The harness has been tested end to end with a scripted model only, not yet with a real one, so the first real run is also a test of the harness.
+Use a model that supports tool calls through Ollama's OpenAI-compatible endpoint, such as `qwen2.5:7b-instruct` or `llama3.1:8b`. The harness has been red-teamed with one real model so far (Qwen3.5-9B Q6_K on llama.cpp, `results/wsl2/lab-9ffd69a/`). Turn thinking off for thinking models: the red-team policy caps each call at 1024 tokens.
 
 **Option A: Ollama inside the same WSL2 distribution** (simplest):
 

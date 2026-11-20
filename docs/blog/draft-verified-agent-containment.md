@@ -31,10 +31,11 @@ Every guarantee is a row in a claims table. Each row lists its evidence, the obs
 |---|---|
 | Kernel laws (Bend model, rechecked in Lean) | 36 proved |
 | Deliberately broken kernels | 46/46 rejected, each with a counterexample input |
-| Linux attack suite (2-core VM) | 176/176 runs; 29/29 sabotaged controllers caught. Cgroup limits were waived on this VM; a WSL2 run of an earlier build passed with limits in force |
+| Linux attack suite (2-core VM) | 176/176 runs; 29/29 sabotaged controllers caught. Cgroup limits were waived on this VM; the same build passed on WSL2 with limits in force |
 | Bytes admitted after a stop committed | 0 |
 | TLA+ host model (bounded: one sandbox, 12 ticks, no resets) | the property holds, and the model finds the bugs it is meant to find |
 | Live agent suite (real harness, scripted model) | 11/11; 8/8 sabotaged controllers caught |
+| Red team, real local model (Qwen3.5-9B on llama.cpp, WSL2) | 0 leaks in 6 tasks; clean task completed; 3 injections resisted, 2 ended restricted |
 
 "Sabotaged controllers" is the part I care about most. For every protection, there's a build with that protection removed, and the test suite **must fail** against it. A test that can't fail proves nothing.
 
@@ -42,8 +43,8 @@ The things it doesn't do yet are listed just as plainly:
 - **Resets** are signed with a key file that only root can read, not a hardware key. Any root process on the host counts as the operator. A reset signed before a controller restart could be replayed after it.
 - **The model server** runs outside the sandbox.
 - **Allowed writes:** an agent talked into writing to a host you allowed, within budget, will succeed.
-- **No real model yet:** the live harness has only been driven by a scripted model. A real local model has not been run yet, and System One's false-alarm rate on clean work is unmeasured.
-- **Untested paths:** the CONNECT proxy path is untested. The live suite, HUD and red-team kit have only run on a Linux VM so far, not on WSL2.
+- **One real model so far:** a red team of Qwen3.5-9B on WSL2 had no leaks in six tasks, and its first run found a real false-alarm bug (slow local inference looked like classifier lag), now fixed. System One's false-alarm rate on clean work is still unmeasured beyond that.
+- **Untested paths:** the CONNECT proxy path is untested. The HUD's access checks were tested by hand only.
 
 ## Try to break it
 
