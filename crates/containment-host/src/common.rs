@@ -161,9 +161,16 @@ pub fn terminal_safe(text: &str) -> String {
     text.chars().flat_map(|c| match c {
         '\n' => vec!['⏎', ' '],
         '\t' => vec![' '],
-        c if c.is_control() => c.escape_unicode().collect(),
+        // Control characters, and the invisible format characters that can
+        // reorder or hide text on screen (bidi overrides, zero-width marks).
+        c if c.is_control() || is_invisible_format(c) => c.escape_unicode().collect(),
         c => vec![c],
     }).collect()
+}
+
+fn is_invisible_format(c: char) -> bool {
+    matches!(c, '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{2069}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
 }
 
 /// Replaces `path` only once the new contents are fully written, so an
@@ -177,7 +184,9 @@ pub fn write_replace(path: &std::path::Path, contents: &[u8]) -> std::io::Result
         let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&staged)?;
         file.write_all(contents)?;
         file.sync_all()?;
-        std::fs::rename(&staged, path)
+        std::fs::rename(&staged, path)?;
+        // Make the rename itself durable.
+        std::fs::File::open(dir)?.sync_all()
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&staged);
@@ -195,6 +204,8 @@ mod cli_tests {
         let safe = terminal_safe(hostile);
         assert!(!safe.chars().any(|c| c.is_control()), "{safe:?}");
         assert!(safe.contains("\\u{1b}") && safe.contains("next") && safe.contains('⏎'));
+        let spoof = terminal_safe("invoice\u{202E}fdp.exe\u{200B}");
+        assert!(spoof.contains("\\u{202e}") && spoof.contains("\\u{200b}"), "{spoof}");
     }
 
     #[test]
