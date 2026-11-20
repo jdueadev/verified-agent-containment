@@ -4,6 +4,8 @@ This runs a real agent, backed by a model you serve on your own machine, inside 
 
 The model server runs **outside** the sandbox (v1). The agent never talks to it directly. Every inference call goes through the gateway, which counts tokens per lease and refuses calls that carry the workspace canary.
 
+**Shortcut on Windows:** [`scripts/lab/`](../scripts/lab/README.md) automates this whole guide with one double-click: a throwaway distro, both suites, llama.cpp and the red team.
+
 ## 1. A disposable WSL2 distribution
 
 In PowerShell on Windows:
