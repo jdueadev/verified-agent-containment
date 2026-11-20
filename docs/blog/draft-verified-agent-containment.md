@@ -43,7 +43,8 @@ Every guarantee is a row in a claims table. Each row lists its evidence, the obs
 | Evidence | Result |
 |---|---|
 | Kernel laws (Bend model, checked by BendTT) | 36 proved |
-| Deliberately broken kernels | 46/46 rejected, each with a counterexample input |
+| Deliberately broken kernels (Bend model) | 46/46 rejected, each with a counterexample input |
+| Deliberately broken Rust kernels | 19/19 caught by the differential test against the Bend model |
 | Attack suite, Linux VM (2 cores) | 176/176 runs; 29/29 sabotaged controllers caught. Cgroup limits had to be waived on this VM |
 | Attack suite, WSL2 on a desktop PC | 176/176 runs; 29/29 caught, with cgroup limits enforced |
 | Bytes admitted after a stop committed | 0, on both platforms |
