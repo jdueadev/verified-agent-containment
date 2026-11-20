@@ -92,11 +92,17 @@ if [ "$ONLY" != "redteam" ]; then
   fi
 fi
 if [ "$ONLY" = "suites" ]; then say "DONE inside (suites only)"; exit $((1 - SUITES_OK)); fi
-# The interop the distro was created without must still be off: a sandboxed
-# process could otherwise start Windows programs (binfmt is shared across WSL).
-if ls /proc/sys/fs/binfmt_misc/WSLInterop* >/dev/null 2>&1; then
-  fail "Windows interop is registered (/proc/sys/fs/binfmt_misc/WSLInterop*); not attaching a model"
+# Interop must be off for this distro: a process here must not be able to start
+# Windows programs. The WSLInterop binfmt entry is registered once for the whole
+# WSL VM (other distros may use it), so test the effect, not the registration.
+WIN_EXE=""
+for candidate in /mnt/c/Windows/System32/whoami.exe /mnt/c/WINDOWS/system32/whoami.exe; do
+  [ -e "$candidate" ] && WIN_EXE="$candidate" && break
+done
+if [ -n "$WIN_EXE" ] && timeout 20 "$WIN_EXE" >/dev/null 2>&1; then
+  fail "a Windows program ($WIN_EXE) ran from inside the distro; interop is not off, so no model is attached"
 fi
+say "  interop check: Windows programs do not run here${WIN_EXE:+ (tested $WIN_EXE)}"
 # A model is attached only to a controller that passed its gate (claim C-SYS-1).
 [ "$SUITES_OK" = 1 ] || fail "suites failed, so no model is attached; see results/$STAMP"
 
