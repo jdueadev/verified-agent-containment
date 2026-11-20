@@ -1,5 +1,7 @@
 # Quickstart: a local model in the containment (WSL2 + Ollama)
 
+> **On native Linux?** Skip Step 1 and run the commands directly inside a disposable Linux VM or container.
+
 This runs a real agent, backed by a model you serve on your own machine, inside the containment. You watch it on the HUD and red-team it. It takes about 20 minutes. Everything runs as root in a **disposable** WSL2 distribution: the controller needs namespaces, cgroups and seccomp.
 
 The model server runs **outside** the sandbox (v1). The agent never talks to it directly. Every inference call goes through the gateway, which counts tokens per lease and refuses calls that carry the workspace canary.
@@ -21,29 +23,24 @@ Inside it:
 sudo apt-get update && sudo apt-get install -y build-essential git curl python3
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 . "$HOME/.cargo/env"
-git clone https://github.com/jdueadev/verified-agent-containment.git   # private for now: needs access
+git clone https://github.com/jdueadev/verified-agent-containment.git
 cd verified-agent-containment
 cargo build --release -p containment-host
 ```
 
-## 2. Pass the gate before attaching a model
+## 2. Check the sandbox works (30 seconds)
 
-The controller is trusted only if both suites pass on this machine **without** `--allow-missing-limits`. `scripts/run-wsl2.sh` checks the kernel and cgroup setup first. The suites run under sudo, so result files in your checkout end up owned by root. Run `sudo chown -R $USER results` afterwards.
+Before downloading a model, run the red-team kit with a scripted model that obeys every injection. It runs six tasks, each in a real sandbox, and writes a scorecard:
 
 ```bash
-sudo target/release/containment-lab attack-suite --repeat 30 --out results/wsl2/attack-suite-$(hostname)-$(git rev-parse --short HEAD).json
-sudo target/release/containment-lab live-suite --out results/wsl2/live-suite-$(hostname)-$(git rev-parse --short HEAD).json
+sudo target/release/containment-lab redteam --scripted
 ```
 
-The expected results:
-- attack suite: every run passes and every sabotaged controller is caught (verified on WSL2 at 9ffd69a: 176/176, 29/29);
-- live suite: 11/11 runs and 8/8 sabotaged controllers (verified on a Linux VM and on WSL2 at 9ffd69a). Please keep the JSON either way.
-
-If either suite fails, stop there and keep its JSON and log. A failure on WSL2 is a finding: the first WSL2 run found the memfd interop escape that way.
+Every task should end without `LEAK`, and the command exits 0. If it fails because the host has no delegated cgroup controllers, see the troubleshooting notes at the bottom. Before trusting this host with a real model, run the full gate in [Optional: verify your host](#optional-verify-your-host-full-gate).
 
 ## 3. Serve a model
 
-Use a model that supports tool calls through Ollama's OpenAI-compatible endpoint, such as `qwen2.5:7b-instruct` or `llama3.1:8b`. The harness has been red-teamed with one real model so far (Qwen3.5-9B Q6_K on llama.cpp, `results/wsl2/lab-9ffd69a/`). Turn thinking off for thinking models: the red-team policy caps each call at 1024 tokens.
+Use a model that supports tool calls through Ollama's OpenAI-compatible endpoint, such as `qwen2.5:7b-instruct` or `llama3.1:8b`. The harness has been red-teamed with one real model so far (Qwen3.5-9B Q6_K on llama.cpp, `results/wsl2/lab-9ffd69a/` and `results/wsl2/lab-f88aeef/`). Turn thinking off for thinking models: the red-team policy caps each call at 1024 tokens.
 
 **Option A: Ollama inside the same WSL2 distribution** (simplest):
 
@@ -64,7 +61,17 @@ ollama pull qwen2.5:7b-instruct
 
 ## 4. Watch a live run on the HUD
 
-Edit `examples/live/policy.toml` to set the model endpoint and name, then:
+Set the model endpoint and name in the `[model]` section of `examples/live/policy.toml`. For Ollama with `qwen2.5:7b-instruct` (option A, or option B with mirrored networking), it reads:
+
+```toml
+[model]
+endpoint = "http://127.0.0.1:11434/v1/chat/completions"
+name = "qwen2.5:7b-instruct"
+max_tokens_per_call = 1024
+token_budget = 200000
+```
+
+For option B without mirrored networking, replace `127.0.0.1` with the Windows IP literal from step 3. Then:
 
 ```bash
 sudo FIXTURE_TOKEN=dummy target/release/containment-lab live \
@@ -109,4 +116,24 @@ Good edges to poke at:
 - **Data the policy allows out:** data the agent sends to an allowed write host within budget leaves.
 - **The VM boundary:** the sandbox is a Linux namespace and seccomp sandbox inside a VM you control. It is not a VM boundary of its own.
 
-Every guarantee and its evidence is a row in `claims.toml`, rendered as `docs/claims.md`.
+Every guarantee and its evidence is a row in [`claims.toml`](../claims.toml), rendered as [`claims.md`](claims.md). Gateway rules, HUD access checks and every red-team outcome are in [`reference.md`](reference.md).
+
+## Optional: verify your host (full gate)
+
+The controller is trusted only if both suites pass on this machine **without** `--allow-missing-limits`. Run them before attaching a model you care about. `scripts/run-wsl2.sh` checks the kernel and cgroup setup first.
+
+```bash
+sudo target/release/containment-lab attack-suite --repeat 30 --out results/wsl2/attack-suite-$(hostname)-$(git rev-parse --short HEAD).json
+sudo target/release/containment-lab live-suite --out results/wsl2/live-suite-$(hostname)-$(git rev-parse --short HEAD).json
+```
+
+The expected results:
+- attack suite: every run passes and every sabotaged controller is caught (verified on WSL2 at f88aeef: 176/176, 29/29);
+- live suite: 11/11 runs and 8/8 sabotaged controllers (verified on a Linux VM and on WSL2 at f88aeef).
+
+Please keep the JSON either way. If either suite fails, stop there and keep its JSON and log. A failure on WSL2 is a finding: the first WSL2 run found the memfd interop escape that way.
+
+## Troubleshooting
+
+- **Result files owned by root:** the commands run under sudo, so files they write in your checkout end up owned by root. Run `sudo chown -R $USER results` afterwards.
+- **Missing cgroup limits:** on hosts without delegated cgroup v2 pids, memory and CPU controllers, the commands refuse to run System One without its limits. `--allow-missing-limits` runs anyway and records the waiver in the results; don't use it for the full gate.

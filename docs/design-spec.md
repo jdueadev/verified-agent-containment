@@ -1,6 +1,6 @@
 # Containment controller design spec, v3 draft
 
-Status: draft for Jon's review. Source: the council meeting on 2026-11-19 (`.claude/council/sessions/containment-controller-design-20261119-1534/meeting-notes.md`). Every claim this design makes is a row in [`claims.toml`](../claims.toml); the generated table is [`claims.md`](claims.md). A plain-English companion with reading links is [`design-explainer.html`](design-explainer.html). Throughout this spec, "must" marks a requirement that a claim row tracks.
+Status: draft. Source: the design review of 2026-11-19. Every claim this design makes is a row in [`claims.toml`](../claims.toml); the generated table is [`claims.md`](claims.md). A plain-English companion with reading links is [`design-explainer.html`](design-explainer.html). Throughout this spec, "must" marks a requirement that a claim row tracks.
 
 Compared with what the prototype does today (commit `d0c0764`), this spec adds or changes four things:
 - System One's liveness and its channel;
@@ -15,7 +15,7 @@ Section 9 lists each place where today's code does not yet meet the spec.
 Goals:
 - Remove an agent's authority when its lease is not renewed, when a hard rule fires, or when enforcement cannot be confirmed.
 - Let a local classifier (System One) tighten, never loosen.
-- Return authority only on a reset that Jon approves physically.
+- Return authority only on a reset that the operator approves physically.
 - State each guarantee once, with its evidence and the way to falsify it.
 
 Non-goals for v3:
@@ -52,7 +52,7 @@ The socket or inherited fd a message arrives on picks its kernel event construct
 | Monitor | `monitor.sock` | `SO_PEERCRED` uid = monitor uid | `Renew` |
 | Hard-rule engine (controller-internal) | in-process | n/a | `HardRule{level}` |
 | System One | inherited seqpacket fd 4 | fd identity | `Classifier{level}` (lag included) |
-| Jon's reset | `reset.sock` (root or Jon only) | `SO_PEERCRED` + v3 signature | `Reset{…}` |
+| Operator reset | `reset.sock` (root or the operator only) | `SO_PEERCRED` + v3 signature | `Reset{…}` |
 | Fan-out from the supervisor | `fanout.sock` | `SO_PEERCRED` uid = supervisor | `HardRule{Restrict}` only |
 | Agent | `gateway.sock` | per-generation uid | `AgentRequest` or trace only (C-OPS-05) |
 | Clock | controller tick | n/a | `ClockTick` |
@@ -81,15 +81,15 @@ The agent's only network path is `gateway.sock`. The network namespace has `lo` 
 **Key.** A touch-gated FIDO `sk-ssh-ed25519` key, signed with Windows `ssh-keygen.exe -Y sign`. Recovering from Kill also requires the PIN (the UV flag). The v2 file key is retired. usbipd was rejected.
 
 **Flow.**
-1. Jon asks the controller for a challenge. Asking needs no touch.
+1. The operator asks the controller for a challenge. Asking needs no touch.
 2. The controller returns a challenge. While one is outstanding, every request returns the same bytes. A challenge is replaced only when it is consumed or after W (about 60 s). Requests are rate-limited and logged, and count toward the reset-rate metric.
 3. The challenge binds these fields: `instance_id`, `boot_id`, `challenge`, `generation`, `policy_hash`, `evidence_head`, `reason_code`, `from_mode`, `counter = current + 1`, `not_after`, `ttl` and `credential_epoch`.
-4. Jon reviews the evidence and signs with a touch, or a touch and PIN for Kill.
+4. The operator reviews the evidence and signs with a touch, or a touch and PIN for Kill.
 5. The controller verifies the SSHSIG under the pinned key, checks the UP flag (and UV for Kill), and builds the `Event::Reset` fields from the verified bytes, never by parsing them again (C-RST-03).
 
 **Rules.**
 - A reset signed for another controller instance or boot is rejected (C-RST-04).
-- A Kill→Run challenge is issued only after the broker reports a `credential_epoch` above its value at Kill, which means Jon logged out and back in (C-RST-05).
+- A Kill→Run challenge is issued only after the broker reports a `credential_epoch` above its value at Kill, which means the operator logged out and back in (C-RST-05).
 - An in-sandbox credential is treated as burned after Kill.
 
 **Kernel laws.** These replace `reset_requires_fresh_counter`, for 38 laws in total:
