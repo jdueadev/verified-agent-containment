@@ -34,7 +34,7 @@ Every guarantee is a row in a claims table. Each row lists its evidence, the obs
 | Linux attack suite (2-core VM) | 176/176 runs; 29/29 sabotaged controllers caught. Cgroup limits were waived on this VM; a WSL2 run of an earlier build passed with limits in force |
 | Bytes admitted after a stop committed | 0 |
 | TLA+ host model (bounded: one sandbox, 12 ticks, no resets) | the property holds, and the model finds the bugs it is meant to find |
-| Live agent suite (real harness, scripted model) | 10/10; 7/7 sabotaged controllers caught |
+| Live agent suite (real harness, scripted model) | 11/11; 8/8 sabotaged controllers caught |
 
 "Sabotaged controllers" is the part I care about most. For every protection, there's a build with that protection removed, and the test suite **must fail** against it. A test that can't fail proves nothing.
 

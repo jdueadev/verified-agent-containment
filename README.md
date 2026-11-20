@@ -25,7 +25,7 @@ The v3 design is in [`docs/design-spec.md`](docs/design-spec.md). Every guarante
 | Weakened controllers | 29/29 caught | Each removes one protection; the suite must fail |
 | Bytes admitted after a stop committed | 0 | Across 158 measured stops |
 | Bytes written upstream after the cut | 0 | Same runs. Gateway stamps are HMAC-authenticated at the sink |
-| Live agent suite | 10/10 passed; 7/7 sabotaged controllers caught | The real agent harness with a scripted model: credential scoping, canary, unlisted hosts, budgets, cut on stop, workspace rebuild, HUD log redaction. `results/live-suite.json` |
+| Live agent suite | 11/11 passed; 8/8 sabotaged controllers caught | The real agent harness with a scripted model: credential scoping, canary, unlisted hosts, budgets, cut on stop, workspace rebuild, HUD log redaction. `results/live-suite.json` |
 | Red-team kit, obedient scripted model | 0 leaks in 6 tasks; both sabotaged controllers score `LEAK` | The scorer can see a leak when one happens. Real-model scorecards are produced by `redteam` on your machine |
 | Browser page | 10/10 sabotaged kernels caught | Checked with native WebAssembly and with the JavaScript fallback |
 | TLA+ host model | `ClassifierCannotForceStop` holds | 2,863,520 states (one sandbox, 12 ticks, renewal as its own action, no resets). Required counterexamples are found for the classifier in the health gate, an uncapped lag signal, and a dead monitor. `tools/tla_check.sh` |
@@ -150,7 +150,7 @@ sudo target/release/containment-lab ctl --run /run/verified-agent-containment/li
 
 A run ends on its own when the agent finishes in Run or Restrict. After Hold, Freeze or Kill it waits for a reset or a stop, up to `run.max_seconds` (default 900 s), and then tears down (failing closed). A reset from Kill rebuilds the sandbox with a fresh workspace.
 
-`containment-lab live-suite` checks all of this end to end with a scripted model and local fixture servers. It tests credential scoping, the canary, unlisted hosts, writes to read hosts, request and token budgets, the cut on stop, the workspace rebuild, and that the HUD log never holds secrets. Each check has a sabotaged controller that must fail it: 10/10 runs pass and 7/7 sabotaged controllers are caught (`results/live-suite.json`). The checks look at what reached the upstream servers, including the model server, not at what the agent reports.
+`containment-lab live-suite` checks all of this end to end with a scripted model and local fixture servers. It tests credential scoping, the canary, unlisted hosts, writes to read hosts, request and token budgets, the cut on stop, the workspace rebuild, that the HUD log never holds secrets, and that a slow model (800 ms per call) is not taken for a stalled classifier. Each check has a sabotaged controller that must fail it: 11/11 runs pass and 8/8 sabotaged controllers are caught (`results/live-suite.json`). The checks look at what reached the upstream servers, including the model server, not at what the agent reports.
 
 Two limits are specific to live runs:
 - A live reset is signed with a per-run key file that only root can read, not a hardware key, because reset v3 is not built yet. It proves that root on this host approved the reset, not that Jon did.

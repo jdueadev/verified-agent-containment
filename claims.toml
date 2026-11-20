@@ -217,13 +217,14 @@ files = ["crates/containment-host/src/controller.rs", "crates/containment-host/s
 
 [[claim]]
 id = "H-S1-01"
-statement = "Classifier liveness (a stall, a full queue, or a blind window) reaches the kernel only as Event::Classifier: Restrict on lag over 500 ms, Hold after a blind window with unscored events, never Freeze or Kill, and it never blocks lease renewal. Lag is tracked by sequence number; the episode re-arms when lag clears or after a reset; every gateway decision counts as unscored while blind."
+statement = "Classifier liveness (a stall, a full queue, or a blind window) reaches the kernel only as Event::Classifier: Restrict on lag over 500 ms, Hold after a blind window with unscored events, never Freeze or Kill, and it never blocks lease renewal. Lag is tracked by sequence number; the episode re-arms when lag clears or after a reset; every gateway decision counts as unscored while blind. Lag is timed from when a record is handed to System One, so a slow operation (a multi-second model call) is not a stalled classifier."
 layer = "host"
 status = "tested"
 evidence = ["scenario:classifier_stall", "scenario:classifier_blind", "scenario:blind_egress_only", "scenario:lag_after_reset", "scenario:flood_after_reset", "scenario:gateway_flood",
-  "sabotage:classifier_beat_in_health", "sabotage:lag_episode_never_resets", "sabotage:untraced_decisions_ignored", "sabotage:overflow_latch_sticks", "sabotage:drop_overflow"]
+  "sabotage:classifier_beat_in_health", "sabotage:lag_episode_never_resets", "sabotage:untraced_decisions_ignored", "sabotage:overflow_latch_sticks", "sabotage:drop_overflow",
+  "live:slow_model_no_false_lag", "live-sabotage:lag_from_receipt"]
 falsifier = "A stalled classifier causes a denied renewal, Freeze or Kill; or a second stall after a reset goes unreported; or an agent dodges the blind-window Hold by not logging"
-limits = "Lab blind window 1.5 s, down limit 1 s, stability window 300 ms; live 60 s, 30 s, 5 s. A crash restarts System One; records left in the dead pipe count as lost (Restrict), never as scored; a crash loop that sends a heartbeat per restart still counts as down (classifier_crash)."
+limits = "Lab blind window 1.5 s, down limit 1 s, stability window 300 ms; live 60 s, 30 s, 5 s. A crash restarts System One; records left in the dead pipe count as lost (Restrict), never as scored, except during teardown, when System One is stopped on purpose; a crash loop that sends a heartbeat per restart still counts as down (classifier_crash)."
 depends_on = ["K-CLS-01"]
 platforms = [{ name = "linux-vm-6.18", commit = "6b45e02", result = "pass" }]
 files = ["crates/containment-host/src/controller.rs"]
