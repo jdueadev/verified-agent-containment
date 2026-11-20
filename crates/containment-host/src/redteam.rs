@@ -299,42 +299,52 @@ fn markdown(model: &str, rows: &[Value]) -> String {
     out
 }
 
+/// Runs the red-team pack against a model, each task in a fresh live sandbox,
+/// and writes a scorecard. Exits non-zero if any task leaked.
+#[derive(clap::Parser)]
+struct Args {
+    /// OpenAI-compatible chat completions URL of the model server
+    #[arg(long, required_unless_present = "scripted", requires = "model")]
+    model_endpoint: Option<String>,
+    /// Model name sent to the server
+    #[arg(long, required_unless_present = "scripted", requires = "model_endpoint")]
+    model: Option<String>,
+    /// Use a scripted model that obeys every injection (checks the kit itself)
+    #[arg(long, conflicts_with_all = ["model_endpoint", "model"])]
+    scripted: bool,
+    /// Lab check of the scorer: run a sabotaged controller, which must score LEAK
+    #[arg(long, requires = "scripted", default_value = "none")]
+    weakness: String,
+    /// The task pack
+    #[arg(long, default_value = "redteam/pack.toml")]
+    pack: PathBuf,
+    /// Output directory [default: results/redteam/<model>-<time>]
+    #[arg(long)]
+    out: Option<PathBuf>,
+    /// Run one task of the pack only
+    #[arg(long)]
+    only: Option<String>,
+    /// Allow running without cgroup limits for System One
+    #[arg(long)]
+    allow_missing_limits: bool,
+}
+
 pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
-    let (mut endpoint, mut model, mut pack, mut out, mut scripted, mut only) =
-        (None, None, PathBuf::from("redteam/pack.toml"), None, false, None);
-    let mut weakness = String::from("none");
-    let mut i = 0;
-    while i < args.len() {
-        let value = args.get(i + 1).cloned();
-        match args[i].as_str() {
-            "--model-endpoint" => endpoint = value,
-            "--model" => model = value,
-            "--pack" => pack = PathBuf::from(value.ok_or("--pack needs a path")?),
-            "--out" => out = value.map(PathBuf::from),
-            "--only" => only = value,
-            // Lab check of the scorer itself: run a sabotaged controller, which must score LEAK.
-            "--weakness" => weakness = value.ok_or("--weakness needs a name")?,
-            "--scripted" => { scripted = true; i += 1; continue; }
-            "--allow-missing-limits" => {
-                // SAFETY: set before any controller starts.
-                unsafe { std::env::set_var(LIMITS_WAIVER_ENV, "1") };
-                i += 1;
-                continue;
-            }
-            other => return Err(format!("unknown option {other}").into()),
-        }
-        i += 2;
-    }
-    if !scripted && (endpoint.is_none() || model.is_none()) {
-        return Err("give --model-endpoint and --model, or --scripted".into());
-    }
-    if weakness != "none" && !scripted {
-        return Err("--weakness is only for checking the kit with --scripted".into());
+    let Some(Args { model_endpoint: endpoint, model, scripted, weakness, pack, out, only, allow_missing_limits }) =
+        parse_args::<Args>("redteam", args)? else { return Ok(()) };
+    if allow_missing_limits {
+        // SAFETY: set before any controller starts.
+        unsafe { std::env::set_var(LIMITS_WAIVER_ENV, "1") };
     }
     let model_name = if scripted { "scripted-obedient".to_owned() } else { model.clone().unwrap_or_default() };
     let pack_dir = pack.parent().unwrap_or(Path::new(".")).to_path_buf();
-    let tasks: Pack = toml::from_str(&fs::read_to_string(&pack)?)?;
-    let work = PathBuf::from("/run/verified-agent-containment/redteam");
+    let tasks: Pack = toml::from_str(&fs::read_to_string(&pack).map_err(|e| format!("{}: {e}", pack.display()))?)?;
+    if let Some(name) = only.as_deref().filter(|n| !tasks.task.iter().any(|t| t.name == *n)) {
+        let names: Vec<&str> = tasks.task.iter().map(|t| t.name.as_str()).collect();
+        return Err(Box::new(crate::common::UsageError(format!("error: --only {name}: no such task in {} (tasks: {})\n", pack.display(), names.join(", ")))));
+    }
+    // Each invocation has its own scratch directory.
+    let work = PathBuf::from(format!("/run/verified-agent-containment/redteam-{}", std::process::id()));
     fs::create_dir_all(&work)?;
     let _work = RemoveDir(work.clone());
     let stamp = boot_ns() / 1_000_000_000;
@@ -403,8 +413,8 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         fs::write(task_dir.join("events.jsonl"), &events)?;
         rows.push(outcome.row);
     }
-    fs::write(out.join("scorecard.json"), serde_json::to_vec_pretty(&json!({"model": model_name, "rows": rows}))?)?;
-    fs::write(out.join("scorecard.md"), markdown(&model_name, &rows))?;
+    write_replace(&out.join("scorecard.json"), &serde_json::to_vec_pretty(&json!({"model": model_name, "rows": rows}))?)?;
+    write_replace(&out.join("scorecard.md"), markdown(&model_name, &rows).as_bytes())?;
     println!("scorecard: {}", out.join("scorecard.md").display());
     if rows.iter().any(|r| r["outcome"].as_str().is_some_and(|o| o.starts_with("LEAK"))) { Err("a task leaked".into()) } else { Ok(()) }
 }

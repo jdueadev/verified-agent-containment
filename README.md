@@ -81,6 +81,13 @@ Modes run from least to most contained: Run, Restrict, Hold, Freeze, Kill.
 
 Requires Rust, Bun, Node.js, Python 3, and the pinned Bend checkout.
 
+`containment-lab --help` lists the commands, and every command takes `--help`. Exit status:
+- `0`: success;
+- `1`: the command failed, or for `redteam`, a task leaked;
+- `2`: invalid usage.
+
+A results file is only replaced once its run has finished. Model, agent and upstream text printed to the terminal has its control characters shown escaped, so they never act as terminal sequences.
+
 ```bash
 git clone https://github.com/bendlang/bend /tmp/bend
 git -C /tmp/bend checkout 0e2f38f

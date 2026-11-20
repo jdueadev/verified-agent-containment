@@ -144,7 +144,8 @@ pub fn wait(run: &mut LiveRun, mut on_line: impl FnMut(&Value), mut on_mode: imp
 
 fn short(value: &Value, limit: usize) -> String {
     let text = match value.as_str() { Some(s) => s.to_owned(), None => value.to_string() };
-    let one_line = text.replace('\n', " ⏎ ");
+    // Model, agent and upstream text can carry terminal escape sequences.
+    let one_line = terminal_safe(&text);
     if one_line.chars().count() > limit { format!("{}…", one_line.chars().take(limit).collect::<String>()) } else { one_line }
 }
 
@@ -178,31 +179,32 @@ pub fn summarise(report: &Value) -> String {
         report["live"])
 }
 
+/// Runs a live agent under a policy, streams what it does and saves the run.
+#[derive(clap::Parser)]
+struct LiveArgs {
+    /// Policy file (TOML), for example examples/live/policy.toml
+    #[arg(long)]
+    policy: PathBuf,
+    /// The task given to the agent
+    #[arg(long)]
+    task: String,
+    /// Where to save report.json, transcript.jsonl and events.jsonl [default: results/live/<run id>]
+    #[arg(long)]
+    out: Option<PathBuf>,
+    /// Also serve the read-only HUD on this local port (0 picks a free one)
+    #[arg(long, value_name = "PORT")]
+    hud: Option<u16>,
+    /// Allow running without cgroup limits for System One
+    #[arg(long)]
+    allow_missing_limits: bool,
+}
+
 pub fn live(args: &[String]) -> Result<(), Box<dyn Error>> {
-    let mut policy = None;
-    let mut task = None;
-    let mut out = None;
-    let mut hud_port: Option<u16> = None;
-    let mut i = 0;
-    while i < args.len() {
-        let value = args.get(i + 1).cloned();
-        match args[i].as_str() {
-            "--policy" => policy = value,
-            "--task" => task = value,
-            "--out" => out = value.map(PathBuf::from),
-            "--hud" => hud_port = Some(value.ok_or("--hud needs a port")?.parse()?),
-            "--allow-missing-limits" => {
-                // SAFETY: set before the controller is started; no other threads yet.
-                unsafe { std::env::set_var(LIMITS_WAIVER_ENV, "1") };
-                i += 1;
-                continue;
-            }
-            other => return Err(format!("unknown option {other}").into()),
-        }
-        i += 2;
+    let Some(LiveArgs { policy, task, out, hud: hud_port, allow_missing_limits }) = parse_args::<LiveArgs>("live", args)? else { return Ok(()) };
+    if allow_missing_limits {
+        // SAFETY: set before the controller is started; no other threads yet.
+        unsafe { std::env::set_var(LIMITS_WAIVER_ENV, "1") };
     }
-    let policy = PathBuf::from(policy.ok_or("--policy is required")?);
-    let task = task.ok_or("--task is required")?;
     let mut run = start(&policy, &task, &[], "none")?;
     eprintln!("run {} started; operator: sudo containment-lab ctl --run {} status|stop|reset MODE", run.run_id, run.root.display());
     if let Some(port) = hud_port {
@@ -213,31 +215,57 @@ pub fn live(args: &[String]) -> Result<(), Box<dyn Error>> {
     println!("\n{}", summarise(&report));
     let out = out.unwrap_or_else(|| PathBuf::from("results/live").join(&run.run_id));
     fs::create_dir_all(&out)?;
-    fs::write(out.join("report.json"), serde_json::to_vec_pretty(&report)?)?;
-    let _ = fs::copy(run.private_dir.join("agent.jsonl"), out.join("transcript.jsonl"));
-    let _ = fs::copy(run.private_dir.join("events.jsonl"), out.join("events.jsonl"));
+    // Everything is saved before the run directory is removed; a failed copy
+    // keeps the run directory so nothing is lost, and the command fails.
+    write_replace(&out.join("report.json"), &serde_json::to_vec_pretty(&report)?)?;
+    for (from, to) in [("agent.jsonl", "transcript.jsonl"), ("events.jsonl", "events.jsonl")] {
+        let source = run.private_dir.join(from);
+        if source.exists() {
+            fs::copy(&source, out.join(to)).map_err(|e| format!("saving {to}: {e}; the run is still in {}", run.root.display()))?;
+        }
+    }
     println!("saved to {}", out.display());
-    let _ = fs::remove_dir_all(&run.root);
+    fs::remove_dir_all(&run.root)?;
     Ok(())
 }
 
+/// Status, stop or a signed reset for a running live controller.
+#[derive(clap::Parser)]
+struct CtlArgs {
+    /// The run directory printed by `live` (/run/verified-agent-containment/live-...)
+    #[arg(long)]
+    run: PathBuf,
+    #[command(subcommand)]
+    action: CtlAction,
+}
+
+#[derive(clap::Subcommand)]
+enum CtlAction {
+    /// Print the controller's status as JSON
+    Status,
+    /// Ask the controller to stop the run
+    Stop,
+    /// Sign and send a reset out of the given mode
+    Reset {
+        #[arg(value_parser = ["restrict", "hold", "freeze", "kill"])]
+        mode: String,
+    },
+}
+
 pub fn ctl(args: &[String]) -> Result<(), Box<dyn Error>> {
-    let (root, rest) = match args {
-        [flag, root, rest @ ..] if flag == "--run" => (PathBuf::from(root), rest),
-        _ => return Err("usage: containment-lab ctl --run DIR status|stop|reset MODE".into()),
-    };
+    let Some(CtlArgs { run: root, action }) = parse_args::<CtlArgs>("ctl", args)? else { return Ok(()) };
     let status: Value = serde_json::from_slice(&fs::read(root.join("private/status.json"))?)?;
     let send = |m: &Value| {
         let socket = if m["op"] == "reset" { "reset_socket" } else { "control_socket" };
         request(Path::new(status[socket].as_str().unwrap_or("")), m).unwrap_or_else(|e| status_error(e.to_string()))
     };
-    match rest {
-        [cmd] if cmd == "status" => println!("{}", send(&json!({"op": "status"}))),
-        [cmd] if cmd == "stop" => {
+    match action {
+        CtlAction::Status => println!("{}", send(&json!({"op": "status"}))),
+        CtlAction::Stop => {
             fs::write(root.join("private/stop"), "")?;
             println!("stop requested");
         }
-        [cmd, mode] if cmd == "reset" => {
+        CtlAction::Reset { mode } => {
             let seed = crate::controller::hex(fs::read_to_string(root.join("operator/reset.key"))?.trim()).map_err(|()| "bad key file")?;
             let key = SigningKey::from_bytes(&seed.try_into().map_err(|_| "bad key length")?);
             let run_id = fs::read_to_string(root.join("operator/run_id"))?;
@@ -245,9 +273,12 @@ pub fn ctl(args: &[String]) -> Result<(), Box<dyn Error>> {
             let status = send(&json!({"op": "status"}));
             let counter = status["reset_counter"].as_u64().ok_or("status did not report the reset counter")? + 1;
             let now = status["now_ms"].as_u64().unwrap_or(0);
-            println!("{}", send(&sign_reset(&key, run_id.trim(), counter, mode, now + 10_000)));
+            let reply = send(&sign_reset(&key, run_id.trim(), counter, &mode, now + 10_000));
+            println!("{reply}");
+            if reply["ok"] != true {
+                return Err("the controller refused the reset".into());
+            }
         }
-        _ => return Err("usage: containment-lab ctl --run DIR status|stop|reset MODE".into()),
     }
     Ok(())
 }

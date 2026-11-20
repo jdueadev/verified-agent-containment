@@ -129,3 +129,95 @@ pub fn status_error(message: impl Into<String>) -> Value {
 pub fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
+
+/// A usage error: clap has already rendered it; the CLI prints it as is and exits 2.
+#[derive(Debug)]
+pub struct UsageError(pub String);
+
+impl std::fmt::Display for UsageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for UsageError {}
+
+/// Parses one subcommand's arguments with clap. `Ok(None)` means help was
+/// printed (to stdout) and the command should exit successfully.
+pub fn parse_args<T: clap::Parser>(command: &str, args: &[String]) -> Result<Option<T>, Box<dyn std::error::Error>> {
+    match T::try_parse_from(std::iter::once(format!("containment-lab {command}")).chain(args.iter().cloned())) {
+        Ok(parsed) => Ok(Some(parsed)),
+        Err(e) if matches!(e.kind(), clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion) => {
+            print!("{e}");
+            Ok(None)
+        }
+        Err(e) => Err(Box::new(UsageError(e.render().to_string()))),
+    }
+}
+
+/// Text from the model, the agent or an upstream, made safe for a terminal:
+/// control characters (escape sequences included) are shown, not executed.
+pub fn terminal_safe(text: &str) -> String {
+    text.chars().flat_map(|c| match c {
+        '\n' => vec!['⏎', ' '],
+        '\t' => vec![' '],
+        // Control characters, and the invisible format characters that can
+        // reorder or hide text on screen (bidi overrides, zero-width marks).
+        c if c.is_control() || is_invisible_format(c) => c.escape_unicode().collect(),
+        c => vec![c],
+    }).collect()
+}
+
+fn is_invisible_format(c: char) -> bool {
+    matches!(c, '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{2069}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
+}
+
+/// Replaces `path` only once the new contents are fully written, so an
+/// interrupted run never leaves a truncated results file behind.
+pub fn write_replace(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+    let name = path.file_name().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "no file name"))?;
+    let staged = dir.join(format!(".{}.{}.tmp", name.to_string_lossy(), std::process::id()));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&staged)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        std::fs::rename(&staged, path)?;
+        // Make the rename itself durable.
+        std::fs::File::open(dir)?.sync_all()
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    result
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_escapes_are_shown_not_run() {
+        let hostile = "ok\u{1b}]0;pwned\u{7}\u{1b}[2J\rnext\nline";
+        let safe = terminal_safe(hostile);
+        assert!(!safe.chars().any(|c| c.is_control()), "{safe:?}");
+        assert!(safe.contains("\\u{1b}") && safe.contains("next") && safe.contains('⏎'));
+        let spoof = terminal_safe("invoice\u{202E}fdp.exe\u{200B}");
+        assert!(spoof.contains("\\u{202e}") && spoof.contains("\\u{200b}"), "{spoof}");
+    }
+
+    #[test]
+    fn replace_keeps_the_old_file_until_the_new_one_is_written() {
+        let dir = std::env::temp_dir().join(format!("write-replace-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("results.json");
+        std::fs::write(&path, b"old").unwrap();
+        write_replace(&path, b"new").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        // No staged file is left behind.
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
