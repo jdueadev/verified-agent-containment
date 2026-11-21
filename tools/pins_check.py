@@ -32,20 +32,16 @@ LITERALS = [
 
 
 def version_input_errors(name, text):
-    """A `bun-version`, `node-version` or `java-version` input must be exactly its
-    own pin, `${{ env.BUN_VERSION }}` and so on. The YAML value is compared, so
-    quotes and a trailing comment are allowed, and nothing else is."""
+    """Wherever `bun-version`, `node-version` or `java-version` appears as a key,
+    in block or flow style, its value must be exactly its own pin:
+    `${{ env.BUN_VERSION }}` and so on, optionally quoted."""
     out = []
-    for line in text.splitlines():
-        match = re.match(r"\s*(?:-\s*)?(bun|node|java)-version:(.*)$", line)
-        if not match:
-            continue
-        value = re.sub(r"\s+#.*$", "", match.group(2)).strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-            value = value[1:-1].strip()
+    for match in re.finditer(r"\b(bun|node|java)-version\b", text):
         pin = match.group(1).upper() + "_VERSION"
-        if not re.fullmatch(r"\$\{\{\s*env\." + pin + r"\s*\}\}", value):
-            out.append(f"{name}: {match.group(1)}-version must be ${{{{ env.{pin} }}}}, read from ci/pins.env")
+        allowed = r"\s*:[ \t]*(['\"]?)\$\{\{\s*env\." + pin + r"\s*\}\}\1[ \t]*(?=[,}\r\n]|#|\Z)"
+        if not re.match(allowed, text[match.end():]):
+            line = text.count("\n", 0, match.start()) + 1
+            out.append(f"{name}:{line}: {match.group(1)}-version must be ${{{{ env.{pin} }}}}, read from ci/pins.env")
     return out
 
 
