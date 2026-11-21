@@ -37,6 +37,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # tools/claims_check.py diffs each claim's files against its
+          # recorded platform commit, so it needs the full history.
+          fetch-depth: 0
 
       - name: Rust toolchain
         run: |
