@@ -65,12 +65,14 @@ COMMIT="$(git rev-parse --short HEAD)"
 # not confirmed stops the run: nothing is built on an unchecked toolchain.
 say "  Rust toolchain (pinned in rust-toolchain.toml)"
 [ ! -e rust-toolchain ] || fail "the clone has a legacy rust-toolchain file, which rustup would prefer over rust-toolchain.toml"
+[ ! -e .cargo/config ] || fail "the clone has a legacy .cargo/config, which cargo would prefer over .cargo/config.toml"
 # Overrides would make rustup or cargo use a compiler, flags or C toolchain other
 # than the one checked here. The distro is new each run, so none belongs here.
-for var in RUSTC RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER RUSTFLAGS CARGO_ENCODED_RUSTFLAGS RUSTUP_TOOLCHAIN CC CXX CFLAGS CXXFLAGS LDFLAGS; do
+for var in RUSTC RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER RUSTFLAGS CARGO_ENCODED_RUSTFLAGS RUSTC_BOOTSTRAP RUSTUP_TOOLCHAIN \
+           CARGO_HOME CC CXX CFLAGS CXXFLAGS LDFLAGS; do
   [ -z "${!var+x}" ] || fail "$var is set; the lab builds with the pinned toolchain and no overrides"
 done
-OVERRIDES="$(compgen -e | grep -E '^CARGO_(BUILD|TARGET|PROFILE)_' || true)"
+OVERRIDES="$(compgen -e | grep -E '^CARGO_(BUILD|TARGET|PROFILE|UNSTABLE)_' || true)"
 [ -z "$OVERRIDES" ] || fail "cargo build variables are set: $(echo "$OVERRIDES" | tr '\n' ' ')"
 for cfg in /root/.cargo/config /root/.cargo/config.toml /.cargo/config /.cargo/config.toml; do
   [ ! -e "$cfg" ] || fail "$cfg exists; only the repository's .cargo/config.toml may configure the build"
@@ -86,9 +88,11 @@ rustup toolchain install "$PIN" --profile minimal --component clippy --component
 # cargo runs the first `rustc` on PATH, so both must be rustup's own proxies,
 # which resolve the toolchain checked below. A stand-in that prints the right
 # version is refused here.
-RUSTUP_BIN="$(readlink -f "$(command -v rustup)")" || fail "rustup is not on PATH"
+TOOL_BIN="$(command -v rustup)" || fail "rustup is not on PATH"
+RUSTUP_BIN="$(readlink -f "$TOOL_BIN")"
 for tool in rustc cargo; do
-  TOOL_BIN="$(readlink -f "$(command -v "$tool")")" || fail "$tool is not on PATH"
+  TOOL_BIN="$(command -v "$tool")" || fail "$tool is not on PATH"
+  TOOL_BIN="$(readlink -f "$TOOL_BIN")"
   cmp -s "$TOOL_BIN" "$RUSTUP_BIN" || fail "$tool on PATH ($TOOL_BIN) is not the rustup proxy"
 done
 python3 tools/pins_check.py drift --rustc --cargo || fail "the active rustc or cargo is not the pinned Rust $PIN"

@@ -63,8 +63,8 @@ The exit code is 0 only if every step passed and no red-team task leaked.
   - A value that is still empty is trusted once and written to `results\<stamp>\pins.env` for review and commit.
   - rustup comes from Ubuntu's `rustup` package. The Rust version is not in `pins.env`: it is the `channel` in `rust-toolchain.toml`, the same pin CI uses.
 - **The toolchain is checked before the build (#68).** If any of these checks fails, the run stops and nothing is built:
-  - there is no legacy `rust-toolchain` file;
-  - no build override is set (`RUSTC`, `RUSTC_WRAPPER`, `RUSTC_WORKSPACE_WRAPPER`, `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, `RUSTUP_TOOLCHAIN`, `CC`, `CXX`, `CFLAGS`, `CXXFLAGS`, `LDFLAGS`, `CARGO_BUILD_*`, `CARGO_TARGET_*`, `CARGO_PROFILE_*`), and no cargo config exists above the clone;
+  - there is no legacy `rust-toolchain` or `.cargo/config` file in the clone;
+  - no build override is set (`RUSTC`, `RUSTC_WRAPPER`, `RUSTC_WORKSPACE_WRAPPER`, `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, `RUSTC_BOOTSTRAP`, `RUSTUP_TOOLCHAIN`, `CARGO_HOME`, `CC`, `CXX`, `CFLAGS`, `CXXFLAGS`, `LDFLAGS`, `CARGO_BUILD_*`, `CARGO_TARGET_*`, `CARGO_PROFILE_*`, `CARGO_UNSTABLE_*`), and no cargo config exists above the clone (`CARGO_HOME` is refused, so cargo looks only in `/root/.cargo` and `/.cargo`, which are checked);
   - `rustc` and `cargo` on `PATH` are rustup's proxies;
   - `tools/pins_check.py drift --rustc --cargo` passes, so both report exactly the pinned version;
   - `rustup which` places both in the installed `<channel>-<host>` toolchain, which rules out a linked one.
