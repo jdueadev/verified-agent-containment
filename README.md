@@ -102,6 +102,8 @@ The full list is in [`docs/evidence.md`](docs/evidence.md#scope-limits).
 - **Reproduce the proofs and suites:** Bend, Lean, TLA+, WebAssembly and the full `--repeat 30` attack suite are in [`docs/verification.md`](docs/verification.md).
 - **Architecture spec:** [`docs/design-spec.md`](docs/design-spec.md).
 - **Claims matrix:** every guarantee, its evidence and its falsifier is a row in [`claims.toml`](claims.toml), rendered as [`docs/claims.md`](docs/claims.md) and checked by `tools/claims_check.py`.
+- **What the guarantees apply to:** tagged releases, where the `release` workflow has confirmed that every claim's evidence is fresh. A commit on `main` between releases may carry a claim marked stale in [`docs/claims.md`](docs/claims.md).
+- **Changing this repository:** [`AGENTS.md`](AGENTS.md) lists the rules that must not be broken and which changes need the maintainer, for people and for AI agents alike.
 
 ## License
 

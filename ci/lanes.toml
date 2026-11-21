@@ -1,0 +1,82 @@
+# Merge lanes. The authority for which changes need the maintainer.
+# Read by tools/policy_check.py; .github/CODEOWNERS is generated from lane C.
+#
+# A path takes the lane of the first pattern it matches, checking C, then B,
+# then A. A path that matches nothing is lane C. A pull request takes the
+# highest lane of any path it touches, and a ratchet (see policy_check.py)
+# can raise it to C whatever the paths say.
+#
+#   A  free                merges on a green `check`
+#   B  evidence-carrying   also needs the ratchets and the evidence checks to hold
+#   C  trusted base        also needs the maintainer's approval
+#
+# Patterns: an exact file, `dir/**` for everything under a directory, or a
+# single `*` inside one file name. Keep them that simple: CODEOWNERS has to
+# express the same set.
+
+owner = "@jdueadev"
+
+[lanes]
+C = [
+  # The rules and the machinery that enforces them.
+  ".github/**",
+  "ci/**",
+  "scripts/**",
+  ".gitattributes",
+  "AGENTS.md",
+  "CLAUDE.md",
+  "docs/decisions/**",
+  # Verifiers: a change to a checker is a change to the proof.
+  "tools/claims_check.py",
+  "tools/policy_check.py",
+  "tools/pins_check.py",
+  "tools/test_*.py",
+  "tools/mutation_check.py",
+  "tools/differential.mjs",
+  "tools/wasm_check.mjs",
+  "tools/law_audit.mjs",
+  "tools/tla_check.sh",
+  "tools/generate_proof.py",
+  # The attack harness, live suite, red-team runner and the kernel law tests
+  # decide what "passed" means. Weakening an assertion keeps its name, so no
+  # ratchet can see it; these files need the maintainer.
+  "crates/containment-host/src/harness.rs",
+  "crates/containment-host/src/live_suite.rs",
+  "crates/containment-host/src/redteam.rs",
+  "crates/containment-kernel/tests/**",
+  # Evidence that CI does not regenerate: the root lab runs and the Lean recheck.
+  "results/attack-suite*",
+  "results/live-suite*",
+  "results/linux-vm/**",
+  "results/wsl2/**",
+  "results/redteam/**",
+  "results/formal-verdict.json",
+]
+B = [
+  "crates/**",
+  "formal/**",
+  "Cargo.toml",
+  "Cargo.lock",
+  ".cargo/**",
+  "rust-toolchain.toml",
+  "rustfmt.toml",
+  "clippy.toml",
+  "claims.toml",
+  "docs/claims.md",
+  "docs/design-spec.md",
+  "docs/evidence.md",
+  "docs/verification.md",
+  "README.md",
+  "tools/kernel_mutants.py",
+  "redteam/**",
+  # Results that `scripts/check.sh` regenerates on every CI run.
+  "results/**",
+]
+A = [
+  "docs/**",
+  "web/**",
+  "examples/**",
+  "CONTRIBUTING.md",
+  ".gitignore",
+  "tools/page_check.py",
+]

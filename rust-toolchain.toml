@@ -1,0 +1,8 @@
+# The one place the Rust version is written. CI installs exactly this, so a new
+# stable release cannot fail the -D warnings gate on its own. Raise it in a
+# change of its own: a new compiler changes the binaries the lab evidence covers.
+[toolchain]
+channel = "1.100.0"
+components = ["clippy", "rustfmt"]
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

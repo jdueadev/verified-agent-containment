@@ -1,0 +1,11 @@
+# Keep the bytes in the repository identical on every platform. Claim freshness
+# and the proof digests are computed from file contents, so a checkout that
+# rewrites line endings must never leak into a commit.
+* text=auto eol=lf
+*.sh text eol=lf
+*.bend text eol=lf
+*.tla text eol=lf
+*.cfg text eol=lf
+*.cmd -text
+*.png binary
+*.gguf binary

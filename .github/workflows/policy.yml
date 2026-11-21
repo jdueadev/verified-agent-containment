@@ -1,0 +1,64 @@
+name: policy
+
+# Decides which merge lane a pull request is in (ci/lanes.toml) and whether it
+# needs the maintainer. The classifier always comes from the base branch, and
+# it only reads the pull request's files through git, so a pull request cannot
+# reclassify itself and none of its code runs here.
+#
+# Until the repository variable POLICY_ENFORCE is "true" the job reports the
+# lane and passes. Switch it on once agents push under their own identity:
+# before that, the maintainer is the author of every pull request and cannot
+# approve their own.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: policy-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Classify the change
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+          ENFORCE: ${{ vars.POLICY_ENFORCE }}
+        run: |
+          if [ ! -f tools/policy_check.py ]; then
+            echo "The base branch has no policy check yet; nothing to classify."
+            exit 0
+          fi
+          git fetch --quiet origin "pull/$PR/head"
+          test "$(git rev-parse FETCH_HEAD)" = "$HEAD_SHA"
+          base="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+          # Reviews come oldest first, so every page is needed to see the latest one.
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews?per_page=100" > "$RUNNER_TEMP/reviews.json"
+          # The diff and ratchets start from the merge base; the lane map is the target branch's current one.
+          args=(classify --base "$base" --map-ref "$BASE_SHA" --head "$HEAD_SHA" --reviews "$RUNNER_TEMP/reviews.json" --head-sha "$HEAD_SHA")
+          if [ "$FORK" = "true" ]; then args+=(--fork); fi
+          if [ "$ENFORCE" = "true" ]; then args+=(--enforce); fi
+          # Run the classifier in this shell, not inside a pipeline, so its exit status survives.
+          code=0
+          python3 tools/policy_check.py "${args[@]}" > "$RUNNER_TEMP/policy.json" || code=$?
+          { echo '```json'; cat "$RUNNER_TEMP/policy.json"; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$code"
