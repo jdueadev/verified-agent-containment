@@ -164,10 +164,11 @@ def _skip_literal_or_comment(src, i):
         # A char literal is one char or one escape between quotes; anything else
         # starting with an apostrophe (`'a`, `'static`) is a lifetime or label.
         if src.startswith("\\", i + 1):
-            end = src.find("'", i + 3)
-            if end < 0 or end > i + 12:
-                raise InventoryError("unterminated char literal")
-            return end + 1, "char"
+            # Follow the escape's own shape: \u{hex and _}, \xNN, or one char.
+            escape = re.compile(r"\\(?:u\{[0-9A-Fa-f_]+\}|x[0-9A-Fa-f]{2}|[^\n])'").match(src, i + 1)
+            if not escape:
+                raise InventoryError("malformed char literal")
+            return escape.end(), "char"
         if i + 2 < len(src) and src[i + 2] == "'" and src[i + 1] not in "'\n":
             return i + 3, "char"
     return None

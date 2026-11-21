@@ -258,6 +258,8 @@ const SABOTAGE: &[(&str, &str, &str, &[&str])] = &[
     def test_char_literals_raw_strings_and_lifetimes_elsewhere_in_the_file(self):
         rest = ("const QUOTE: char = '\"';\n"
                 "const ESCAPED: char = '\\'';\n"
+                "const LETTER: char = '\\u{0_0_0_0_4_1}';\n"
+                "const BYTE: u8 = b'\\x7f';\n"
                 "const SLASHES: &str = r#\"a \"b\" // not a comment\"#;\n"
                 "const BYTES: &[u8] = br\"x\\\";\n"
                 "fn borrow<'a>(s: &'a str) -> &'a str { s }\n")
