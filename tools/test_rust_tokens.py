@@ -257,6 +257,12 @@ class SpliceTests(unittest.TestCase):
         # A comma that is really there still matches.
         self.assertSplices("m!(a, kill(),)", "kill(),", "k(),", "m!(a, k(),)")
 
+    def test_a_negated_call_is_not_a_macro(self):
+        # `!f(...)` negates a call; only `macro_rules! name { ... }` is a definition (CodeRabbit on #67).
+        self.assertSplices("let v = !f(kill());", "kill(),", "k(),", "let v = !f(k(),);")
+        self.assertSplices("let v = !f(match m { A => {\n    x\n}\nB => y, });", "A => x,", "A => z,",
+                           "let v = !f(match m { A => z, B => y, });")
+
     def test_a_trailing_comma_matches_where_rustfmt_drops_one(self):
         self.assertSplices("f(a, kill())", "kill(),", "k(),", "f(a, k(),)")
         self.assertSplices("g(kill())", "kill(),", "k(),", "g(k(),)")

@@ -316,8 +316,10 @@ def _in_macro(toks, partner):
     inside = set()
     for j, k in partner.items():
         bang = j > 0 and toks[j - 1].kind == "punct" and toks[j - 1].text == "!"
-        rules = (j > 1 and toks[j - 1].kind == "ident" and toks[j - 2].kind == "punct"
-                 and toks[j - 2].text == "!")
+        # `macro_rules! name {`: only that keyword, never a negated call `!f(...)`.
+        rules = (j > 2 and toks[j - 1].kind == "ident" and toks[j - 2].kind == "punct"
+                 and toks[j - 2].text == "!" and toks[j - 3].kind == "ident"
+                 and toks[j - 3].text == "macro_rules")
         if bang or rules:
             inside.update(range(j + 1, k))
     return inside
