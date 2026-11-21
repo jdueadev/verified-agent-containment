@@ -143,6 +143,13 @@ pub(super) fn monitor_handler(shared: &Arc<Shared>, message: Value, peer: Option
 }
 
 pub(super) fn verify_reset(shared: &Shared, message: &Value) -> Option<(bool, u64, Mode, u64, u64)> {
+    check_reset(&shared.run_id, &shared.public_key, message)
+}
+
+/// Parses a reset and checks its signature over this run's id and every field
+/// the kernel will act on. `None` means the request is malformed; a `false`
+/// first element means it parsed but is not signed by the operator key.
+fn check_reset(run_id: &str, public_key: &VerifyingKey, message: &Value) -> Option<(bool, u64, Mode, u64, u64)> {
     let counter = message["counter"].as_u64()?;
     let from_text = message["from_mode"].as_str()?;
     let from_mode = parse_mode(from_text)?;
@@ -151,8 +158,8 @@ pub(super) fn verify_reset(shared: &Shared, message: &Value) -> Option<(bool, u6
     let verified = (|| {
         let bytes = hex(message["signature"].as_str()?).ok()?;
         let array = <[u8; 64]>::try_from(bytes.as_slice()).ok()?;
-        let text = reset_message(&shared.run_id, counter, from_text, not_after, ttl);
-        shared.public_key.verify(text.as_bytes(), &Signature::from_bytes(&array)).ok()
+        let text = reset_message(run_id, counter, from_text, not_after, ttl);
+        public_key.verify(text.as_bytes(), &Signature::from_bytes(&array)).ok()
     })().is_some();
     Some((verified, counter, from_mode, not_after, ttl))
 }
@@ -240,6 +247,65 @@ mod tests {
 
     const STRANGER: Option<libc::ucred> = Some(libc::ucred { pid: 1, uid: 1000, gid: 1000 });
     const ROOT: Option<libc::ucred> = Some(libc::ucred { pid: 1, uid: 0, gid: 0 });
+
+    fn signed(key: &ed25519_dalek::SigningKey, run_id: &str, counter: u64, from_mode: &str, not_after_ms: u64, ttl_ms: u64) -> Value {
+        use ed25519_dalek::Signer;
+        let signature = key.sign(reset_message(run_id, counter, from_mode, not_after_ms, ttl_ms).as_bytes());
+        let hex: String = signature.to_bytes().iter().map(|byte| format!("{byte:02x}")).collect();
+        json!({"op": "reset", "counter": counter, "from_mode": from_mode, "not_after_ms": not_after_ms, "ttl_ms": ttl_ms, "signature": hex})
+    }
+
+    fn operator_key() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[7; 32])
+    }
+
+    #[test]
+    fn verify_reset_accepts_the_operator_signature() {
+        let key = operator_key();
+        let reset = signed(&key, "run-1", 3, "freeze", 9_000, 500);
+        assert_eq!(check_reset("run-1", &key.verifying_key(), &reset), Some((true, 3, Mode::Freeze, 9_000, 500)));
+    }
+
+    #[test]
+    fn verify_reset_rejects_forged() {
+        let key = operator_key();
+        let other = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+        let forged = signed(&other, "run-1", 3, "freeze", 9_000, 500);
+        assert_eq!(check_reset("run-1", &key.verifying_key(), &forged).map(|r| r.0), Some(false));
+        let mut unsigned = signed(&key, "run-1", 3, "freeze", 9_000, 500);
+        unsigned["signature"] = json!("00");
+        assert_eq!(check_reset("run-1", &key.verifying_key(), &unsigned).map(|r| r.0), Some(false));
+    }
+
+    /// The kernel rejects an expired, replayed or wrong-mode reset by its
+    /// fields. This shows those fields cannot be edited after signing.
+    #[test]
+    fn verify_reset_rejects_expired_replayed_wrong_mode_edits() {
+        let key = operator_key();
+        let public = key.verifying_key();
+        let original = signed(&key, "run-1", 3, "freeze", 9_000, 500);
+        for (field, value) in [("not_after_ms", json!(99_000)), ("counter", json!(4)), ("from_mode", json!("kill")), ("ttl_ms", json!(60_000))] {
+            let mut edited = original.clone();
+            edited[field] = value;
+            assert_eq!(check_reset("run-1", &public, &edited).map(|r| r.0), Some(false), "{field} was edited after signing");
+        }
+        // A reset signed for another run is a replay here.
+        assert_eq!(check_reset("run-2", &public, &original).map(|r| r.0), Some(false));
+    }
+
+    #[test]
+    fn verify_reset_refuses_malformed_requests() {
+        let key = operator_key();
+        let public = key.verifying_key();
+        for field in ["counter", "from_mode", "not_after_ms", "ttl_ms"] {
+            let mut broken = signed(&key, "run-1", 3, "freeze", 9_000, 500);
+            broken.as_object_mut().expect("object").remove(field);
+            assert_eq!(check_reset("run-1", &public, &broken), None, "{field} missing");
+        }
+        let mut bad_mode = signed(&key, "run-1", 3, "freeze", 9_000, 500);
+        bad_mode["from_mode"] = json!("sideways");
+        assert_eq!(check_reset("run-1", &public, &bad_mode), None);
+    }
 
     #[test]
     fn slots_stop_at_the_limit_and_return_on_drop() {
