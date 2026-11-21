@@ -1,13 +1,13 @@
-commit: ab9a061
-default binary sha256: 60f924eec961d4bac2c1b01449821117e50a13d05529ad393d10e750d0074d56
-sabotage binary sha256: 681786fbe5b0e05c122b47b52062bdfeed225ffbf135db8bf13e970e4a27bdd4
+commit: 617913e
+default binary sha256: a72bcc04047a1abcc7697d3311bbf98724845ab4a9aa64ec32324ef4a2b875d2
+sabotage binary sha256: 140bbfcff3ba08e9a78fdb435a9ab238383d5d770cd80a4403e69694ba16067a
 kernel: 6.18.58.1-microsoft-standard-WSL2
 cgroup v2 controllers: cpuset cpu io memory hugetlb pids rdma
 cpus: 24
                total        used        free      shared  buff/cache   available
 Mem:            45Gi       2.3Gi        28Gi       187Mi        15Gi        43Gi
 Swap:           12Gi          0B        12Gi
-Fri Nov 20 22:05:07 2026       
+Fri Nov 20 22:13:48 2026       
 +-----------------------------------------------------------------------------------------+
 | NVIDIA-SMI 620.73.02              KMD Version: 621.24        CUDA UMD Version: 13.5     |
 +-----------------------------------------+------------------------+----------------------+
@@ -16,7 +16,7 @@ Fri Nov 20 22:05:07 2026
 |                                         |                        |               MIG M. |
 |=========================================+========================+======================|
 |   0  NVIDIA GeForce RTX 5080        On  |   00000000:01:00.0  On |                  N/A |
-| 30%   35C    P0             67W /  360W |    5058MiB /  16303MiB |      1%      Default |
+| 30%   35C    P0             65W /  360W |    5121MiB /  16303MiB |      1%      Default |
 |                                         |                        |                  N/A |
 +-----------------------------------------+------------------------+----------------------+
 
