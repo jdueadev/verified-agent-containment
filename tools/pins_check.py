@@ -84,16 +84,19 @@ def reports_version(output, tool, channel):
     release: `rustc 1.100.0 (hash date)`. A pre-release, a longer version, or the
     version appearing anywhere else in the output does not count."""
     first = (output or "").splitlines()[0].strip() if (output or "").strip() else ""
-    return re.fullmatch(rf"{tool} {re.escape(channel)}( \(.*\))?", first) is not None
+    return re.fullmatch(rf"{tool} {re.escape(channel)}( \([^()]*\))?", first) is not None
 
 
 def tool_version(command):
-    """stdout of `command`, or "" when it cannot run or exits non-zero."""
+    """stdout of `command`. When it cannot run or exits non-zero, a note that says
+    why instead; the note starts with `(`, so it never reads as a version."""
     try:
         done = subprocess.run(command, capture_output=True, text=True, cwd=ROOT)
-    except OSError:
-        return ""
-    return done.stdout if done.returncode == 0 else ""
+    except OSError as exc:
+        return f"(could not run {command[0]}: {exc})"
+    if done.returncode != 0:
+        return f"(exit {done.returncode}: {done.stderr.strip()[:200]})"
+    return done.stdout
 
 
 def drift_errors(pins, channel, workflows, rustc_version=None, cargo_version=None):

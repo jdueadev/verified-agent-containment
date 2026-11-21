@@ -67,12 +67,13 @@ say "  Rust toolchain (pinned in rust-toolchain.toml)"
 [ ! -e rust-toolchain ] || fail "the clone has a legacy rust-toolchain file, which rustup would prefer over rust-toolchain.toml"
 [ ! -e .cargo/config ] || fail "the clone has a legacy .cargo/config, which cargo would prefer over .cargo/config.toml"
 # Build overrides: variables that make rustup, cargo, rustc or the cc crate (which
-# builds ring's C code into the binary) use another compiler, flags, toolchain,
-# source or C toolchain. The distro is new each run, so none of them belongs
+# builds ring's C code into the binary), gcc or the dynamic loader (rustc loads
+# librustc_driver at run time) use another compiler, flags, toolchain, source or
+# C toolchain. The distro is new each run, so none of them belongs
 # here; one that is set, even to an empty value, stops the run. Only names are
 # reported, never values. The paths below assume HOME=/root (lab.ps1 runs as root).
 [ "$HOME" = /root ] || fail "HOME is '$HOME', not /root; the cargo config and toolchain paths checked here assume it"
-BUILD_OVERRIDES='^(RUSTC|RUSTC_.*|RUSTFLAGS|RUSTDOCFLAGS|CARGO_ENCODED_.*|RUSTUP_.*|CARGO_HOME|CARGO_(BUILD|TARGET|PROFILE|UNSTABLE|SOURCE|REGISTRIES|REGISTRY)_.*|(HOST_|TARGET_)?(CC|CXX|AR|CFLAGS|CXXFLAGS|ARFLAGS|LDFLAGS)(_.*)?|CRATE_CC_NO_DEFAULTS|LD_PRELOAD)$'
+BUILD_OVERRIDES='^(RUSTC|RUSTC_.*|RUSTFLAGS|RUSTDOCFLAGS|CARGO_ENCODED_.*|RUSTUP_.*|CARGO_HOME|CARGO_(BUILD|TARGET|PROFILE|UNSTABLE|SOURCE|REGISTRIES|REGISTRY)_.*|(HOST_|TARGET_)?(CC|CXX|AR|CFLAGS|CXXFLAGS|ARFLAGS|LDFLAGS|RANLIB|RANLIBFLAGS|CXXSTDLIB)(_.*)?|CRATE_CC_NO_DEFAULTS|COMPILER_PATH|GCC_EXEC_PREFIX|LIBRARY_PATH|CPATH|C_INCLUDE_PATH|CPLUS_INCLUDE_PATH|LD_.*)$'
 # Names come from the process environment, not `compgen -e`: bash cannot list a
 # name such as CFLAGS_x86_64-unknown-linux-gnu, but it still passes it to cargo.
 ENV_NAMES="$(python3 -c 'import os; print("\n".join(sorted(os.environ)))')" || fail "could not list the environment"

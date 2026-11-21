@@ -99,14 +99,23 @@ class ToolVersionTests(unittest.TestCase):
         channel = pk.toolchain_channel((ROOT / "rust-toolchain.toml").read_text(encoding="utf-8"))
         right = f"rustc {channel} (abc 2026-01-01)\n"
         self.assertEqual(self.run_main(["drift", "--rustc"], {"rustc": (right, 101)}), 1)
-        with mock.patch.object(pk.subprocess, "run", side_effect=FileNotFoundError):
-            self.assertEqual(pk.tool_version(["rustc", "--version"]), "")
+        with mock.patch.object(pk.subprocess, "run",
+                               return_value=subprocess.CompletedProcess([], 101, right, "boom\n")):
+            note = pk.tool_version(["rustc", "--version"])
+        self.assertIn("exit 101", note)
+        self.assertIn("boom", note)
+        self.assertFalse(pk.reports_version(note, "rustc", channel))
+        with mock.patch.object(pk.subprocess, "run", side_effect=FileNotFoundError("no rustc")):
+            note = pk.tool_version(["rustc", "--version"])
+        self.assertIn("could not run rustc", note)
+        self.assertFalse(pk.reports_version(note, "rustc", channel))
 
     def test_only_the_first_line_counts(self):
         self.assertTrue(pk.reports_version("rustc 1.100.0 (abc 2026-01-01)\n", "rustc", "1.100.0"))
         self.assertTrue(pk.reports_version("cargo 1.100.0\n", "cargo", "1.100.0"))
         for bad in ("warning: not rustc 1.100.0 really\n", "boom\nrustc 1.100.0 (abc)\n",
-                    " rustc 1.100.0x (abc)\n", "rustc 1.100.0 junk\n", "rustc 1.100.0(abc)\n", "", "\n"):
+                    " rustc 1.100.0x (abc)\n", "rustc 1.100.0 junk\n", "rustc 1.100.0(abc)\n", "", "\n",
+                    "rustc 1.100.0 (x) junk (y)\n"):
             self.assertFalse(pk.reports_version(bad, "rustc", "1.100.0"), bad)
 
 
