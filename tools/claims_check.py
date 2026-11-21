@@ -119,6 +119,83 @@ def git_pathspec(pattern: str) -> str:
     return f":(glob){norm}" if is_glob(norm) else norm
 
 
+class InventoryError(Exception):
+    """An inventory could not be taken completely. Never treated as an empty one."""
+
+
+def _skip_literal_or_comment(src, i):
+    """If a string, char literal or comment starts at i, return the index after it, else None.
+    Enough for the plain literals the suite tables use; a full Rust lexer is #61 step 2."""
+    if src.startswith("//", i):
+        end = src.find("\n", i)
+        return len(src) if end < 0 else end
+    if src.startswith("/*", i):
+        depth, j = 1, i + 2
+        while depth:
+            if j >= len(src):
+                raise InventoryError("unterminated block comment")
+            if src.startswith("/*", j):
+                depth, j = depth + 1, j + 2
+            elif src.startswith("*/", j):
+                depth, j = depth - 1, j + 2
+            else:
+                j += 1
+        return j
+    if src[i] == '"':
+        j = i + 1
+        while j < len(src) and src[j] != '"':
+            j += 2 if src[j] == "\\" else 1
+        if j >= len(src):
+            raise InventoryError("unterminated string")
+        return j + 1
+    return None
+
+
+def const_array_names(src, const, where):
+    """Names in `const <const>: ... = &[ ... ];`, one per top-level entry, whatever the
+    line layout. An entry is a string literal or a tuple whose first field is one.
+    Raises InventoryError when the block is missing, repeated, unclosed or empty, or
+    when any entry yields no name: an inventory is either complete or an error."""
+    decls = [m for m in re.finditer(rf"(?m)^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?const[ \t]+{const}[ \t]*:", src)]
+    if len(decls) != 1:
+        raise InventoryError(f"{where}: expected one `const {const}:` declaration, found {len(decls)}")
+    eq = src.find("=", decls[0].end())
+    open_at = src.find("[", eq) if eq >= 0 else -1
+    if open_at < 0 or src[eq + 1:open_at].strip() != "&":
+        raise InventoryError(f"{where}: `const {const}` is not `= &[ ... ]`")
+    entries, start, depth, i = [], open_at + 1, 0, open_at + 1
+    while True:
+        if i >= len(src):
+            raise InventoryError(f"{where}: `const {const}` is not closed")
+        after = _skip_literal_or_comment(src, i)
+        if after is not None:
+            i = after
+            continue
+        ch = src[i]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}" and depth:
+            depth -= 1
+        elif (ch == "," and depth == 0) or (ch == "]" and depth == 0):
+            entries.append(src[start:i])
+            start = i + 1
+            if ch == "]":
+                break
+        i += 1
+    names = []
+    for raw in entries:
+        entry = re.sub(r"//[^\n]*|/\*.*?\*/", " ", raw, flags=re.S).strip()
+        if not entry:
+            continue  # trailing comma, or a comment between entries
+        match = re.fullmatch(r'\(\s*"([a-z_]+)"\s*(?:,.*)?\)|"([a-z_]+)"', entry, re.S)
+        if not match:
+            raise InventoryError(f"{where}: an entry of `const {const}` has no literal name: {entry[:60]!r}")
+        names.append(match.group(1) or match.group(2))
+    if not names:
+        raise InventoryError(f"{where}: `const {const}` has no entries")
+    return names
+
+
 def load_inventory():
     laws = re.findall(r"^law ([a-z_0-9]+):", (ROOT / "formal/LAWS.bend").read_text(encoding="utf-8"), re.M)
     spec = importlib.util.spec_from_file_location("kernel_mutants", ROOT / "tools/kernel_mutants.py")
@@ -126,14 +203,14 @@ def load_inventory():
     spec.loader.exec_module(mutants)
     bend = [m[0] for m in mutants.BEND_MUTANTS]
     rust = [m[0] for m in mutants.RUST_MUTANTS]
-    harness = (ROOT / "crates/containment-host/src/harness.rs").read_text(encoding="utf-8")
-    sabotage_block = harness.split("const SABOTAGE")[1].split("];")[0]
-    sabotage = re.findall(r'\("([a-z_]+)",\s*"[a-z_]+"\)', sabotage_block)
-    scenario_block = harness.split("const SCENARIOS")[1].split("];")[0]
-    scenarios = re.findall(r'"([a-z_]+)"', scenario_block)
-    live_src = (ROOT / "crates/containment-host/src/live_suite.rs").read_text(encoding="utf-8")
-    live_sabotage = re.findall(r'\("([a-z_]+)",\s*"[a-z_]+",', live_src.split("const SABOTAGE")[1].split("];")[0])
-    live_scenarios = re.findall(r'"([a-z_]+)"', live_src.split("const SCENARIOS")[1].split("];")[0])
+    harness_path = "crates/containment-host/src/harness.rs"
+    live_path = "crates/containment-host/src/live_suite.rs"
+    harness = (ROOT / harness_path).read_text(encoding="utf-8")
+    live_src = (ROOT / live_path).read_text(encoding="utf-8")
+    sabotage = const_array_names(harness, "SABOTAGE", harness_path)
+    scenarios = const_array_names(harness, "SCENARIOS", harness_path)
+    live_sabotage = const_array_names(live_src, "SABOTAGE", live_path)
+    live_scenarios = const_array_names(live_src, "SCENARIOS", live_path)
     return laws, bend, rust, sabotage, scenarios, live_scenarios, live_sabotage
 
 
@@ -343,7 +420,11 @@ def main(argv=None):
 
     strict = "--strict" in args
     write = "--write" in args
-    laws, bend, rust, sabotage, scenarios, live_scenarios, live_sabotage = load_inventory()
+    try:
+        laws, bend, rust, sabotage, scenarios, live_scenarios, live_sabotage = load_inventory()
+    except InventoryError as error:
+        print(json.dumps({"claims": len(claims), "errors": [f"CI-2 inventory: {error}"]}, indent=2))
+        return 1
     bend_ok, rust_ok, scenario_ok, sabotage_ok, diffs, live_ok, live_sab_ok = load_results()
     errors = []
     by_id = {}

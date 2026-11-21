@@ -176,5 +176,98 @@ class NarrowedClaimsTests(unittest.TestCase):
         self.assertNotIn("H-LEASE-01", gateway_ids)
 
 
+class SuiteInventoryTests(unittest.TestCase):
+    """CI-2 reads scenario and sabotage names out of harness.rs and live_suite.rs.
+    The names must not depend on line layout, and a block that yields no names,
+    or an entry that yields no name, is an error rather than an empty inventory
+    (an empty inventory makes "every control is cited" pass vacuously)."""
+
+    ONE_LINE = '''
+const SABOTAGE: &[(&str, &str, &str, &[&str])] = &[
+    ("live_canary_unchecked", "canary_exfil", "canary_never_reached_any_upstream", &["canary_found_in_workspace"]),
+    ("live_write_unchecked", "write_to_read_host", "read_host_got_no_write", &["write_was_attempted"]),
+];
+'''
+    # The same block as `cargo fmt` lays it out: one field per line, trailing commas.
+    REFLOWED = '''
+const SABOTAGE: &[(&str, &str, &str, &[&str])] = &[
+    (
+        "live_canary_unchecked",
+        "canary_exfil",
+        "canary_never_reached_any_upstream",
+        &["canary_found_in_workspace"],
+    ),
+    (
+        "live_write_unchecked",
+        "write_to_read_host",
+        "read_host_got_no_write",
+        &["write_was_attempted"],
+    ),
+];
+'''
+    NAMES = ["live_canary_unchecked", "live_write_unchecked"]
+
+    def names(self, src, const="SABOTAGE"):
+        return cc.const_array_names(src, const, "fixture.rs")
+
+    def test_one_line_tuples(self):
+        self.assertEqual(self.names(self.ONE_LINE), self.NAMES)
+
+    def test_reflowed_tuples_give_the_same_names(self):
+        self.assertEqual(self.names(self.REFLOWED), self.NAMES)
+
+    def test_the_old_layout_bound_regex_misses_the_reflowed_block(self):
+        # Records the hole this replaces: the previous pattern found nothing here.
+        import re
+        block = self.REFLOWED.split("const SABOTAGE")[1].split("];")[0]
+        self.assertEqual(re.findall(r'\("([a-z_]+)",\s*"[a-z_]+",', block), [])
+
+    def test_plain_string_entries_one_per_line_with_trailing_comma(self):
+        src = 'const SCENARIOS: &[&str] = &[\n    "benign",\n    "canary_exfil",\n];\n'
+        self.assertEqual(self.names(src, "SCENARIOS"), ["benign", "canary_exfil"])
+
+    def test_two_field_tuples_several_per_line(self):
+        src = 'const SABOTAGE: &[(&str, &str)] = &[\n    ("ignore_expiry", "monitor_crash"), ("no_kill", "process_escape"),\n];\n'
+        self.assertEqual(self.names(src), ["ignore_expiry", "no_kill"])
+
+    def test_commas_and_brackets_inside_strings_and_comments_do_not_split(self):
+        src = ('const SABOTAGE: &[(&str, &str)] = &[\n'
+               '    // a comment with ], ( and , in it\n'
+               '    ("first", "a, b ] c"), /* ), ( */ ("second", "x"),\n'
+               '];\n')
+        self.assertEqual(self.names(src), ["first", "second"])
+
+    def test_a_mention_in_a_comment_is_not_the_declaration(self):
+        src = '// const SABOTAGE lists the controls\n' + self.ONE_LINE
+        self.assertEqual(self.names(src), self.NAMES)
+
+    def test_empty_block_is_an_error(self):
+        with self.assertRaises(cc.InventoryError):
+            self.names("const SABOTAGE: &[(&str, &str)] = &[];\n")
+
+    def test_entry_without_a_literal_name_is_an_error(self):
+        for entry in ['(NAME, "monitor_crash")', '(concat!("ignore", "_expiry"), "x")', '("Bad-Name", "x")']:
+            with self.subTest(entry=entry), self.assertRaises(cc.InventoryError):
+                self.names(f"const SABOTAGE: &[(&str, &str)] = &[\n    {entry},\n];\n")
+
+    def test_missing_or_repeated_declaration_is_an_error(self):
+        with self.assertRaises(cc.InventoryError):
+            self.names("const OTHER: &[&str] = &[\"a\"];\n")
+        with self.assertRaises(cc.InventoryError):
+            self.names(self.ONE_LINE + self.ONE_LINE)
+
+    def test_unclosed_block_is_an_error(self):
+        with self.assertRaises(cc.InventoryError):
+            self.names('const SABOTAGE: &[(&str, &str)] = &[\n    ("a", "b"),\n')
+
+    def test_repository_inventory_is_complete(self):
+        # Counts at the time this check was written; growing them is fine.
+        _laws, _bend, _rust, sabotage, scenarios, live_scenarios, live_sabotage = cc.load_inventory()
+        self.assertGreaterEqual(len(sabotage), 29)
+        self.assertGreaterEqual(len(scenarios), 31)
+        self.assertGreaterEqual(len(live_scenarios), 11)
+        self.assertGreaterEqual(len(live_sabotage), 8)
+
+
 if __name__ == "__main__":
     unittest.main()
