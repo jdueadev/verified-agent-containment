@@ -741,15 +741,25 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     {
         let shared = Arc::clone(&shared);
-        thread::spawn(move || serve(monitor_listener, shared, monitor_handler));
+        thread::spawn(move || serve(monitor_listener, shared, PeerRule::Monitor, monitor_handler));
     }
     {
         let shared = Arc::clone(&shared);
-        thread::spawn(move || serve(control_listener, shared, control_handler));
+        let rule = PeerRule::Operator {
+            unchecked: shared.weak.control_peer_unchecked,
+            rejected: |shared| &shared.control_rejected,
+            refusal: "control is accepted only from the operator",
+        };
+        thread::spawn(move || serve(control_listener, shared, rule, control_handler));
     }
     {
         let shared = Arc::clone(&shared);
-        thread::spawn(move || serve(reset_listener, shared, reset_handler));
+        let rule = PeerRule::Operator {
+            unchecked: shared.weak.reset_peer_unchecked,
+            rejected: |shared| &shared.reset_rejected,
+            refusal: "resets are accepted only from the operator",
+        };
+        thread::spawn(move || serve(reset_listener, shared, rule, reset_handler));
     }
     {
         let shared = Arc::clone(&shared);

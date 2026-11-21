@@ -22,15 +22,95 @@ pub(super) fn read_request(reader: &mut BufReader<UnixStream>, line: &mut Vec<u8
     Some(serde_json::from_slice(line).unwrap_or_else(|_| json!({"op": "invalid"})))
 }
 
-pub(super) fn serve(listener: UnixListener, shared: Arc<Shared>, handler: fn(&Arc<Shared>, Value, Option<libc::ucred>) -> Value) {
+/// Operator connections served at once, per socket.
+pub(super) const MAX_CONTROL_CONNECTIONS: usize = 16;
+/// Refusals being written at once, per socket. Further refused peers are dropped unanswered.
+const MAX_REFUSALS_IN_FLIGHT: usize = 4;
+/// An operator connection that sends nothing for this long is closed.
+const OPERATOR_IDLE: Duration = Duration::from_secs(30);
+/// How long a refused peer has to send its request and take its one reply.
+const REFUSAL_WAIT: Duration = Duration::from_secs(1);
+
+/// Who may hold a connection on a socket.
+#[derive(Clone, Copy)]
+pub(super) enum PeerRule {
+    /// The monitor socket: its handler checks each request against the monitor pid.
+    Monitor,
+    /// An operator socket: the peer must be root when it connects. `unchecked`
+    /// is the lab defect that skips the check.
+    Operator { unchecked: bool, rejected: fn(&Shared) -> &AtomicU64, refusal: &'static str },
+}
+
+/// A bounded count of connections. A permit gives its place back when dropped.
+pub(super) struct Slots {
+    used: AtomicUsize,
+    limit: usize,
+}
+
+pub(super) struct Permit(Arc<Slots>);
+
+impl Slots {
+    pub(super) fn new(limit: usize) -> Arc<Self> {
+        Arc::new(Self { used: AtomicUsize::new(0), limit })
+    }
+
+    pub(super) fn acquire(self: &Arc<Self>) -> Option<Permit> {
+        self.used.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < self.limit).then_some(n + 1)).ok()?;
+        Some(Permit(Arc::clone(self)))
+    }
+}
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        self.0.used.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Answers a refused peer once and closes. It reads at most one bounded
+/// request first, so a client that writes before it reads still gets the
+/// reply. The request is discarded and never reaches a handler.
+pub(super) fn refuse(mut stream: UnixStream, refusal: &str) {
+    let _ = stream.set_read_timeout(Some(REFUSAL_WAIT));
+    let _ = stream.set_write_timeout(Some(REFUSAL_WAIT));
+    if let Ok(reader) = stream.try_clone() {
+        let _ = read_request(&mut BufReader::new(reader), &mut Vec::new());
+    }
+    let _ = writeln!(stream, "{}", status_error(refusal));
+}
+
+pub(super) fn serve(listener: UnixListener, shared: Arc<Shared>, rule: PeerRule, handler: fn(&Arc<Shared>, Value, Option<libc::ucred>) -> Value) {
+    let operators = Slots::new(MAX_CONTROL_CONNECTIONS);
+    let refusals = Slots::new(MAX_REFUSALS_IN_FLIGHT);
     for stream in listener.incoming() {
         if shared.stop.load(Ordering::Relaxed) {
             break;
         }
         let Ok(mut stream) = stream else { continue };
+        // SO_PEERCRED is fixed at connect time, so it is read once, here.
+        let peer = peer_credentials(&stream);
+        let permit = match rule {
+            PeerRule::Monitor => None,
+            PeerRule::Operator { unchecked, rejected, refusal } => {
+                if !operator_peer(unchecked, rejected(&shared), peer) {
+                    // A refused peer never takes an operator slot.
+                    if let Some(permit) = refusals.acquire() {
+                        thread::spawn(move || {
+                            refuse(stream, refusal);
+                            drop(permit);
+                        });
+                    }
+                    continue;
+                }
+                let Some(permit) = operators.acquire() else { continue };
+                if stream.set_read_timeout(Some(OPERATOR_IDLE)).is_err() {
+                    continue;
+                }
+                Some(permit)
+            }
+        };
         let shared = Arc::clone(&shared);
         thread::spawn(move || {
-            let peer = peer_credentials(&stream);
+            let _permit = permit;
             let Ok(reader) = stream.try_clone() else { return };
             let mut reader = BufReader::new(reader);
             let mut line = Vec::new();
@@ -152,4 +232,70 @@ pub(super) fn reset_handler(shared: &Arc<Shared>, message: Value, peer: Option<l
         }
     }
     json!({"ok": accepted, "mode": mode_name(result.control.mode), "counter": result.control.reset_counter})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const STRANGER: Option<libc::ucred> = Some(libc::ucred { pid: 1, uid: 1000, gid: 1000 });
+    const ROOT: Option<libc::ucred> = Some(libc::ucred { pid: 1, uid: 0, gid: 0 });
+
+    #[test]
+    fn slots_stop_at_the_limit_and_return_on_drop() {
+        let slots = Slots::new(2);
+        let first = slots.acquire().expect("first");
+        let _second = slots.acquire().expect("second");
+        assert!(slots.acquire().is_none());
+        drop(first);
+        assert!(slots.acquire().is_some());
+    }
+
+    #[test]
+    fn rejected_peers_do_not_consume_operator_slots() {
+        let operators = Slots::new(MAX_CONTROL_CONNECTIONS);
+        let refusals = Slots::new(MAX_REFUSALS_IN_FLIGHT);
+        let rejected = AtomicU64::new(0);
+        let mut held = Vec::new();
+        for _ in 0..100 {
+            assert!(!operator_peer(false, &rejected, STRANGER));
+            held.extend(refusals.acquire());
+        }
+        assert_eq!(rejected.load(Ordering::Relaxed), 100);
+        assert_eq!(held.len(), MAX_REFUSALS_IN_FLIGHT);
+        for _ in 0..MAX_CONTROL_CONNECTIONS {
+            assert!(operator_peer(false, &rejected, ROOT));
+            held.push(operators.acquire().expect("an operator slot is free"));
+        }
+        assert!(operators.acquire().is_none());
+    }
+
+    #[test]
+    fn a_peer_without_credentials_is_not_the_operator() {
+        let rejected = AtomicU64::new(0);
+        assert!(!operator_peer(false, &rejected, None));
+        assert_eq!(rejected.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn a_refused_peer_gets_one_reply_and_a_closed_socket() {
+        let (mut client, server) = UnixStream::pair().expect("pair");
+        writeln!(client, "{}", json!({"op": "hard", "level": "kill"})).expect("write");
+        refuse(server, "control is accepted only from the operator");
+        let mut reply = String::new();
+        BufReader::new(client).read_to_string(&mut reply).expect("read");
+        let lines: Vec<&str> = reply.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let value: Value = serde_json::from_str(lines[0]).expect("json");
+        assert_eq!(value["ok"], false);
+    }
+
+    #[test]
+    fn a_silent_refused_peer_is_dropped_after_the_wait() {
+        let (client, server) = UnixStream::pair().expect("pair");
+        let started = Instant::now();
+        refuse(server, "resets are accepted only from the operator");
+        assert!(started.elapsed() < REFUSAL_WAIT * 3);
+        drop(client);
+    }
 }
