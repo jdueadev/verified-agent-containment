@@ -284,6 +284,25 @@ const SABOTAGE: &[(&str, &str, &str, &[&str])] = &[
         with self.assertRaises(cc.InventoryError):
             self.names('const SABOTAGE: &[(&str, &str)] = &[\n    ("a", "b"),\n')
 
+    def test_registry_and_controls_must_match_both_ways(self):
+        self.assertEqual(cc.registry_errors(["a", "b"], ["b", "a"]), [])
+        missing = cc.registry_errors(["a", "b"], ["a"])
+        self.assertTrue(len(missing) == 1 and "no sabotage control: b" in missing[0], missing)
+        unknown = cc.registry_errors(["a"], ["a", "ghost"])
+        self.assertTrue(len(unknown) == 1 and "ghost" in unknown[0], unknown)
+
+    def test_mutants_are_read_as_data_not_run(self):
+        text = 'import os\nos.exit(3)\nBEND_MUTANTS = [("b1", "x", "y")]\nRUST_MUTANTS = [("r1", "x", "y")]\n'
+        self.assertEqual(cc.mutant_names(text), (["b1"], ["r1"]))
+        with self.assertRaises(cc.InventoryError):
+            cc.mutant_names('BEND_MUTANTS = []\nRUST_MUTANTS = [("r1", "x", "y")]\n')
+
+    def test_repository_mutants_match_the_imported_module(self):
+        import kernel_mutants
+        bend, rust = cc.mutant_names((cc.ROOT / "tools/kernel_mutants.py").read_text(encoding="utf-8"))
+        self.assertEqual(bend, [m[0] for m in kernel_mutants.BEND_MUTANTS])
+        self.assertEqual(rust, [m[0] for m in kernel_mutants.RUST_MUTANTS])
+
     def test_repository_inventory_is_complete(self):
         # Counts at the time this check was written; growing them is fine.
         _laws, _bend, _rust, sabotage, scenarios, live_scenarios, live_sabotage = cc.load_inventory()

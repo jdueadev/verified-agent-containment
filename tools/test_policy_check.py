@@ -126,6 +126,21 @@ class RatchetTests(unittest.TestCase):
         out = reasons(**{"crates/containment-host/src/harness.rs": HARNESS.replace('("ignore_expiry", "monitor_crash")', "")})
         self.assertTrue(any("SABOTAGE:ignore_expiry was removed" in r for r in out), out)
 
+    def test_reflowing_the_suite_tables_is_not_a_change(self):
+        reflowed = ('const SCENARIOS: &[&str] = &[\n    "monitor_crash",\n    // the race\n    "exfil_race",\n];\n'
+                    'const SABOTAGE: &[(&str, &str)] = &[\n    (\n        "ignore_expiry",\n        "monitor_crash",\n    ),\n];\n')
+        self.assertEqual(reasons(**{"crates/containment-host/src/harness.rs": reflowed}), [])
+
+    def test_a_control_aimed_at_another_scenario_is_a_change(self):
+        # The old ratchet compared one flattened set of strings, so this passed.
+        swapped = HARNESS.replace('("ignore_expiry", "monitor_crash")', '("ignore_expiry", "exfil_race")')
+        out = reasons(**{"crates/containment-host/src/harness.rs": swapped})
+        self.assertTrue(any("SABOTAGE:ignore_expiry was changed" in r for r in out), out)
+
+    def test_a_suite_table_the_head_cannot_read_escalates(self):
+        out = reasons(**{"crates/containment-host/src/harness.rs": HARNESS.replace("const SABOTAGE", "const SABOTAGES")})
+        self.assertTrue(any("SABOTAGE could not be read" in r for r in out), out)
+
     def test_claim_weakened(self):
         cases = {
             "claim K-1 was removed": "",

@@ -31,14 +31,17 @@ CI-8  (--strict) results/attack-suite.json and results/live-suite.json record th
 CI-9  every passing platform names a commit that has tracked artifacts under results/ (a path
       containing the commit id). This shows the evidence is linked, not that it is authentic.
 """
+import ast
 import hashlib
-import importlib.util
 import json
 import re
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import rust_tokens  # noqa: E402  (trusted base, lane C)
 
 ROOT = Path(__file__).resolve().parent.parent
 RANK = {"proved": 5, "checked-bounded": 4, "tested": 3, "assumed": 2, "planned": 1, "stale": 0}
@@ -123,133 +126,61 @@ class InventoryError(Exception):
     """An inventory could not be taken completely. Never treated as an empty one."""
 
 
-_RAW_STRING = re.compile(r'b?r(#*)"')
-
-
-def _skip_literal_or_comment(src, i):
-    """If a comment, string or char literal starts at i, return (index after it, kind),
-    else None. Covers line and nested block comments, plain, byte and raw strings,
-    and char literals as distinct from lifetimes. Enough to find the suite tables
-    reliably; a full Rust lexer is #61 step 2."""
-    if src.startswith("//", i):
-        end = src.find("\n", i)
-        return (len(src) if end < 0 else end), "comment"
-    if src.startswith("/*", i):
-        depth, j = 1, i + 2
-        while depth:
-            if j >= len(src):
-                raise InventoryError("unterminated block comment")
-            if src.startswith("/*", j):
-                depth, j = depth + 1, j + 2
-            elif src.startswith("*/", j):
-                depth, j = depth - 1, j + 2
-            else:
-                j += 1
-        return j, "comment"
-    raw = _RAW_STRING.match(src, i)
-    if raw and (i == 0 or not (src[i - 1].isalnum() or src[i - 1] == "_")):
-        close = '"' + raw.group(1)
-        end = src.find(close, raw.end())
-        if end < 0:
-            raise InventoryError("unterminated raw string")
-        return end + len(close), "string"
-    if src[i] == '"':
-        j = i + 1
-        while j < len(src) and src[j] != '"':
-            j += 2 if src[j] == "\\" else 1
-        if j >= len(src):
-            raise InventoryError("unterminated string")
-        return j + 1, "string"
-    if src[i] == "'":
-        # A char literal is one char or one escape between quotes; anything else
-        # starting with an apostrophe (`'a`, `'static`) is a lifetime or label.
-        if src.startswith("\\", i + 1):
-            # Follow the escape's own shape: \u{hex and _}, \xNN, or one char.
-            escape = re.compile(r"\\(?:u\{[0-9A-Fa-f_]+\}|x[0-9A-Fa-f]{2}|[^\n])'").match(src, i + 1)
-            if not escape:
-                raise InventoryError("malformed char literal")
-            return escape.end(), "char"
-        if i + 2 < len(src) and src[i + 2] == "'" and src[i + 1] not in "'\n":
-            return i + 3, "char"
-    return None
-
-
-def _blank(src, comments=True, strings=False):
-    """src with comments (and optionally string and char contents) replaced by spaces.
-    Offsets and newlines are kept, so positions and line starts still line up with src."""
-    out, i = [], 0
-    while i < len(src):
-        found = _skip_literal_or_comment(src, i)
-        if found is None:
-            out.append(src[i])
-            i += 1
-            continue
-        after, kind = found
-        piece = src[i:after]
-        if kind == "comment" and comments:
-            piece = re.sub(r"[^\n]", " ", piece)
-        elif kind != "comment" and strings:
-            piece = piece[0] + re.sub(r"[^\n]", " ", piece[1:-1]) + piece[-1]
-        out.append(piece)
-        i = after
-    return "".join(out)
-
-
 def const_array_names(src, const, where):
-    """Names in `const <const>: ... = &[ ... ];`, one per top-level entry, whatever the
-    line layout. An entry is a string literal or a tuple whose first field is one.
-    Comments are ignored, including a commented-out declaration. Raises InventoryError
-    when the block is missing, repeated, unclosed or empty, or when any entry yields
-    no name: an inventory is either complete or an error."""
-    src = _blank(src)
-    code_only = _blank(src, comments=False, strings=True)
-    decls = [m for m in re.finditer(rf"(?m)^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?const[ \t]+{const}[ \t]*:", code_only)]
-    if len(decls) != 1:
-        raise InventoryError(f"{where}: expected one `const {const}:` declaration, found {len(decls)}")
-    eq = src.find("=", decls[0].end())
-    open_at = src.find("[", eq) if eq >= 0 else -1
-    if open_at < 0 or src[eq + 1:open_at].strip() != "&":
-        raise InventoryError(f"{where}: `const {const}` is not `= &[ ... ]`")
-    entries, start, depth, i = [], open_at + 1, 0, open_at + 1
-    while True:
-        if i >= len(src):
-            raise InventoryError(f"{where}: `const {const}` is not closed")
-        found = _skip_literal_or_comment(src, i)
-        if found is not None:
-            i = found[0]
-            continue
-        ch = src[i]
-        if ch in "([{":
-            depth += 1
-        elif ch in ")]}" and depth:
-            depth -= 1
-        elif (ch == "," and depth == 0) or (ch == "]" and depth == 0):
-            entries.append(src[start:i])
-            start = i + 1
-            if ch == "]":
-                break
-        i += 1
+    """Names in `const <const>: ... = &[ ... ];`, one per top-level entry, read with the
+    shared Rust lexer so that layout and comments never matter. An entry is a string
+    literal or a tuple whose first field is one. Raises InventoryError when the block
+    is missing, repeated, unclosed or empty, or when any entry yields no name: an
+    inventory is either complete or an error."""
+    try:
+        entries = rust_tokens.const_array_entries(src, const)
+    except rust_tokens.LexError as error:
+        raise InventoryError(f"{where}: {error}") from None
     names = []
-    for raw in entries:
-        entry = raw.strip()  # comments were already blanked by the scanner
-        if not entry:
-            continue  # trailing comma, or a comment between entries
-        match = re.fullmatch(r'\(\s*"([a-z_]+)"\s*(?:,.*)?\)|"([a-z_]+)"', entry, re.S)
-        if not match:
-            raise InventoryError(f"{where}: an entry of `const {const}` has no literal name: {entry[:60]!r}")
-        names.append(match.group(1) or match.group(2))
+    for entry in entries:
+        first = entry[1] if entry[0].text == "(" and len(entry) > 1 else entry[0]
+        name = rust_tokens.string_value(first)
+        shape_ok = len(entry) == 1 or (entry[0].text == "(" and entry[-1].text == ")")
+        if not shape_ok or name is None or not re.fullmatch(r"[a-z_]+", name):
+            text = " ".join(t.text for t in entry)
+            raise InventoryError(f"{where}: an entry of `const {const}` has no literal name: {text[:60]!r}")
+        names.append(name)
     if not names:
         raise InventoryError(f"{where}: `const {const}` has no entries")
     return names
 
 
+def mutant_names(text):
+    """BEND_MUTANTS and RUST_MUTANTS names from tools/kernel_mutants.py, read with ast.
+    The file is data here: it is never imported or run."""
+    out = {}
+    for node in ast.parse(text).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) \
+                and node.targets[0].id in ("BEND_MUTANTS", "RUST_MUTANTS"):
+            out[node.targets[0].id] = [entry[0] for entry in ast.literal_eval(node.value)]
+    if set(out) != {"BEND_MUTANTS", "RUST_MUTANTS"} or not all(out.values()):
+        raise InventoryError("tools/kernel_mutants.py: BEND_MUTANTS and RUST_MUTANTS must both be non-empty literal lists")
+    return out["BEND_MUTANTS"], out["RUST_MUTANTS"]
+
+
+WEAKNESS_PATH = "crates/containment-host/src/controller/weakness.rs"
+
+
+def registry_errors(registry, controls):
+    """Every defect in the `weaknesses!` registry has a control, and every control
+    names a defect in it. Either gap means a sabotage claim is not what it says."""
+    out = []
+    missing, unknown = sorted(set(registry) - set(controls)), sorted(set(controls) - set(registry))
+    if missing:
+        out.append(f"{WEAKNESS_PATH}: defects with no sabotage control: {', '.join(missing)}")
+    if unknown:
+        out.append(f"sabotage controls that name no defect in {WEAKNESS_PATH}: {', '.join(unknown)}")
+    return out
+
+
 def load_inventory():
     laws = re.findall(r"^law ([a-z_0-9]+):", (ROOT / "formal/LAWS.bend").read_text(encoding="utf-8"), re.M)
-    spec = importlib.util.spec_from_file_location("kernel_mutants", ROOT / "tools/kernel_mutants.py")
-    mutants = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mutants)
-    bend = [m[0] for m in mutants.BEND_MUTANTS]
-    rust = [m[0] for m in mutants.RUST_MUTANTS]
+    bend, rust = mutant_names((ROOT / "tools/kernel_mutants.py").read_text(encoding="utf-8"))
     harness_path = "crates/containment-host/src/harness.rs"
     live_path = "crates/containment-host/src/live_suite.rs"
     harness = (ROOT / harness_path).read_text(encoding="utf-8")
@@ -258,6 +189,13 @@ def load_inventory():
     scenarios = const_array_names(harness, "SCENARIOS", harness_path)
     live_sabotage = const_array_names(live_src, "SABOTAGE", live_path)
     live_scenarios = const_array_names(live_src, "SCENARIOS", live_path)
+    try:
+        registry = rust_tokens.macro_idents((ROOT / WEAKNESS_PATH).read_text(encoding="utf-8"), "weaknesses")
+    except rust_tokens.LexError as error:
+        raise InventoryError(f"{WEAKNESS_PATH}: {error}") from None
+    gaps = registry_errors(registry, sabotage + live_sabotage)
+    if gaps:
+        raise InventoryError("; ".join(gaps))
     return laws, bend, rust, sabotage, scenarios, live_scenarios, live_sabotage
 
 

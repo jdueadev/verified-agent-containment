@@ -31,6 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from claims_check import RANK  # noqa: E402
+import rust_tokens  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 LANES_FILE = "ci/lanes.toml"
@@ -129,14 +130,27 @@ def mutant_entries(text):
     return out
 
 
-def suite_names(text):
-    """Scenario and sabotage names in harness.rs or live_suite.rs."""
-    out = set()
+def suite_entries(text):
+    """name -> layout-free key of each entry of SCENARIOS and SABOTAGE in harness.rs or
+    live_suite.rs, read with the shared Rust lexer (never run). Returns the entries and
+    the reasons a table could not be read; an unreadable table is never an empty one."""
+    entries, problems = {}, []
+    if not text:
+        return entries, problems
     for const in ("SCENARIOS", "SABOTAGE"):
-        parts = (text or "").split(f"const {const}")
-        if len(parts) > 1:
-            out |= {f"{const}:{name}" for name in re.findall(r'"([a-z_]+)"', parts[1].split("];")[0])}
-    return out
+        try:
+            rows = rust_tokens.const_array_entries(text, const)
+        except rust_tokens.LexError as error:
+            problems.append(f"{const} could not be read: {error}")
+            continue
+        for row in rows:
+            first = row[1] if row[0].text == "(" and len(row) > 1 else row[0]
+            name = rust_tokens.string_value(first)
+            if name is None:
+                problems.append(f"{const} has an entry with no literal name")
+                continue
+            entries[f"{const}:{name}"] = rust_tokens.entry_key(row)
+    return entries, problems
 
 
 def claim_rows(text):
@@ -161,8 +175,15 @@ def ratchets(base_get, head_get):
         elif head_mut[name] != body:
             out.append(f"mutant {name} was changed")
     for path in ("crates/containment-host/src/harness.rs", "crates/containment-host/src/live_suite.rs"):
-        for name in sorted(suite_names(base_get(path)) - suite_names(head_get(path))):
-            out.append(f"{path}: {name} was removed")
+        (base_rows, _), (head_rows, head_problems) = suite_entries(base_get(path)), suite_entries(head_get(path))
+        if base_rows and head_problems:
+            out.extend(f"{path}: {problem}" for problem in head_problems)
+        for name, key in sorted(base_rows.items()):
+            if name not in head_rows:
+                if not head_problems:
+                    out.append(f"{path}: {name} was removed")
+            elif head_rows[name] != key:
+                out.append(f"{path}: {name} was changed")
     try:
         base_claims, head_claims = claim_rows(base_get("claims.toml")), claim_rows(head_get("claims.toml"))
     except tomllib.TOMLDecodeError as error:

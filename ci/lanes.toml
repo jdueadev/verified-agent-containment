@@ -30,6 +30,7 @@ C = [
   "tools/claims_check.py",
   "tools/policy_check.py",
   "tools/pins_check.py",
+  "tools/rust_tokens.py",
   "tools/test_*.py",
   "tools/mutation_check.py",
   "tools/differential.mjs",

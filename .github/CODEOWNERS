@@ -12,6 +12,7 @@
 /tools/claims_check.py @jdueadev
 /tools/policy_check.py @jdueadev
 /tools/pins_check.py @jdueadev
+/tools/rust_tokens.py @jdueadev
 /tools/test_*.py @jdueadev
 /tools/mutation_check.py @jdueadev
 /tools/differential.mjs @jdueadev
