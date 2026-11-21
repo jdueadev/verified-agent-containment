@@ -166,7 +166,7 @@ layer = "host"
 status = "tested"
 evidence = ["scenario:agent_attacks_control", "scenario:forged_renewal", "sabotage:writable_policy", "sabotage:unauthenticated_monitor"]
 falsifier = "A policy change or renewal originating from the agent"
-limits = "The control socket accepts several roles and ignores the peer credential (C-ARCH-01)."
+limits = "This row covers the agent only. What the operator and reset sockets accept from other processes, and their peer-credential check, is H-CTL-02."
 platforms = [{ name = "linux-vm-6.18", commit = "d81a32e", result = "pass" }, { name = "wsl2-6.18.58", commit = "f88aeef", result = "pass (results/wsl2/lab-f88aeef; also lab-9ffd69a)" }, { name = "wsl2-6.18.58", commit = "4fff400", result = "pass (results/wsl2/lab-4fff400; honest runs on the default build, controls on the sabotage build)" }]
 files = ["crates/containment-host/src/controller.rs"]
 
