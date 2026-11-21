@@ -25,11 +25,28 @@ ROOT = Path(__file__).resolve().parent.parent
 PINS = ("BUN_VERSION", "NODE_VERSION", "JAVA_VERSION", "BEND_COMMIT", "TLA_VERSION", "TLA_SHA256")
 # A workflow may read a pin, never state one.
 LITERALS = [
-    (r"\b(bun|node|java)-version:(?!\s*\$\{\{\s*env\.[A-Z_]+_VERSION\s*\}\}\s*$)", "a tool version that is not read from ci/pins.env"),
     (r"\bRUST_TOOLCHAIN\b", "its own Rust toolchain variable"),
     (r"\b(BEND_COMMIT|TLA_VERSION|TLA_SHA256|BUN_VERSION|NODE_VERSION|JAVA_VERSION):\s*\S", "its own copy of a pin"),
     (r"rustup\s+(toolchain\s+install|default)\s+[0-9]", "a literal Rust version"),
 ]
+
+
+def version_input_errors(name, text):
+    """A `bun-version`, `node-version` or `java-version` input must be exactly its
+    own pin, `${{ env.BUN_VERSION }}` and so on. The YAML value is compared, so
+    quotes and a trailing comment are allowed, and nothing else is."""
+    out = []
+    for line in text.splitlines():
+        match = re.match(r"\s*(?:-\s*)?(bun|node|java)-version:(.*)$", line)
+        if not match:
+            continue
+        value = re.sub(r"\s+#.*$", "", match.group(2)).strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1].strip()
+        pin = match.group(1).upper() + "_VERSION"
+        if not re.fullmatch(r"\$\{\{\s*env\." + pin + r"\s*\}\}", value):
+            out.append(f"{name}: {match.group(1)}-version must be ${{{{ env.{pin} }}}}, read from ci/pins.env")
+    return out
 
 
 def parse_pins(text):
@@ -50,6 +67,7 @@ def drift_errors(pins, channel, workflows, rustc_version=None):
     if not channel or not re.fullmatch(r"\d+\.\d+\.\d+", channel):
         errors.append("rust-toolchain.toml: channel must be an exact version")
     for name, text in sorted(workflows.items()):
+        errors.extend(version_input_errors(name, text))
         for pattern, what in LITERALS:
             if re.search(pattern, text, re.M):
                 errors.append(f"{name}: carries {what}; read it from ci/pins.env or rust-toolchain.toml")

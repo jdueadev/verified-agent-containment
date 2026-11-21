@@ -24,9 +24,17 @@ class DriftTests(unittest.TestCase):
     def test_workflow_with_a_literal_version_fails(self):
         for bad in ("      bun-version: 1.4.5\n", "      node-version: 22\n", "      java-version: '21'\n",
                     "      bun-version: latest\n", "      node-version: lts/*\n", "      java-version: ${{ env.OTHER }}\n",
+                    "      bun-version: ${{ env.OTHER_VERSION }}\n", "      node-version: ${{ env.BUN_VERSION }}\n",
+                    "      java-version: '${{ env.JAVA_VERSION }}-ea'\n", "      bun-version: ${{ env.BUN_VERSION }}x\n",
                     "env:\n  RUST_TOOLCHAIN: 1.100.0\n", "env:\n  BEND_COMMIT: 0e2f38f759cc830849e4\n",
                     "run: rustup toolchain install 1.100.0\n", "run: echo 936a262061c914694dfd\n"):
             self.assertTrue(self.errors(GOOD + bad), bad)
+
+    def test_each_input_accepts_only_its_own_pin(self):
+        for good in ("      node-version: ${{ env.NODE_VERSION }}\n", "      java-version: '${{ env.JAVA_VERSION }}'\n",
+                     '      bun-version: "${{env.BUN_VERSION}}"  # from ci/pins.env\n',
+                     "    - bun-version: ${{ env.BUN_VERSION }} # pinned\n"):
+            self.assertEqual(self.errors(GOOD + good), [], good)
 
     def test_missing_pin_or_loose_channel_fails(self):
         self.assertTrue(self.errors(pins={k: v for k, v in PINS.items() if k != "TLA_SHA256"}))
