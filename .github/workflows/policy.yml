@@ -43,7 +43,14 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
           ENFORCE: ${{ vars.POLICY_ENFORCE }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
+          # Only a pull request into main is classified by main's checker. One aimed at
+          # another branch would run that branch's copy, so it fails here instead.
+          if [ "$BASE_REF" != "main" ]; then
+            echo "policy: only pull requests into main are classified (base is '$BASE_REF')." >&2
+            exit 1
+          fi
           if [ ! -f tools/policy_check.py ]; then
             echo "The base branch has no policy check yet; nothing to classify."
             exit 0
