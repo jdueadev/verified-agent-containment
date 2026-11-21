@@ -355,10 +355,10 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     // the ones a default build wrote instead of producing its own.
     let honest_build = match &honest_from {
         Some(path) => {
-            let (taken, build) = honest_results(path)?;
-            println!("honest runs: {} taken from {}", taken.len(), path.display());
-            runs = taken;
-            build
+            let honest = honest_results(path, "live")?;
+            println!("honest runs: {} taken from {}", honest.runs.len(), path.display());
+            runs = honest.runs;
+            honest.build
         }
         None => build_stamp()?,
     };
@@ -389,7 +389,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     let passed = runs.iter().filter(|r| r["passed"] == true).count();
     let detected = sabotage.iter().filter(|s| s["detected"] == true).count();
-    let output = json!({"kernel": fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default().trim(),
+    let output = json!({"suite": "live", "kernel": fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default().trim(),
         "runs_passed": passed, "runs_total": runs.len(), "sabotage_detected": detected, "sabotage_total": sabotage.len(),
         "runs": runs, "sabotage": sabotage, "build": {"honest": honest_build, "sabotage": sabotage_build}});
     if let Some(parent) = out.parent() {

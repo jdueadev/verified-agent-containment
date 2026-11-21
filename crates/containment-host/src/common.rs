@@ -233,20 +233,32 @@ pub fn build_stamp() -> io::Result<Value> {
     Ok(json!({"sabotage": SABOTAGE_BUILD, "binary_sha256": hex}))
 }
 
-/// Reads the honest runs a default build wrote, so a sabotage build can add
-/// its controls to them without re-running them on the wrong binary.
-pub fn honest_results(path: &Path) -> Result<(Vec<Value>, Value), Box<dyn std::error::Error>> {
-    let results: Value = serde_json::from_slice(&std::fs::read(path)?)?;
-    honest_part(&results).map_err(|reason| format!("{}: {reason}", path.display()).into())
+/// The honest part of a results file: its runs, the stamp of the build that
+/// produced them, and the whole file for the settings they ran with.
+pub struct Honest {
+    pub runs: Vec<Value>,
+    pub build: Value,
+    pub results: Value,
 }
 
-fn honest_part(results: &Value) -> Result<(Vec<Value>, Value), &'static str> {
+/// Reads the honest runs a default build wrote for `suite`, so a sabotage
+/// build can add its controls to them without re-running them on the wrong
+/// binary.
+pub fn honest_results(path: &Path, suite: &str) -> Result<Honest, Box<dyn std::error::Error>> {
+    let results: Value = serde_json::from_slice(&std::fs::read(path)?)?;
+    honest_part(results, suite).map_err(|reason| format!("{}: {reason}", path.display()).into())
+}
+
+fn honest_part(results: Value, suite: &str) -> Result<Honest, &'static str> {
+    if results["suite"] != suite {
+        return Err("the results are from a different suite");
+    }
     let build = &results["build"]["honest"];
     if build["sabotage"] != false || !build["binary_sha256"].is_string() {
         return Err("the honest runs were not written by a default build");
     }
     match results["runs"].as_array() {
-        Some(runs) if !runs.is_empty() => Ok((runs.clone(), build.clone())),
+        Some(runs) if !runs.is_empty() => Ok(Honest { runs: runs.clone(), build: build.clone(), results }),
         _ => Err("there are no honest runs"),
     }
 }
@@ -258,13 +270,24 @@ mod build_tests {
     #[test]
     fn honest_runs_are_taken_only_from_a_default_build() {
         let stamp = |sabotage: bool| json!({"sabotage": sabotage, "binary_sha256": "00"});
-        let good = json!({"build": {"honest": stamp(false)}, "runs": [{"scenario": "a", "passed": true}]});
-        let (runs, build) = honest_part(&good).expect("default build");
-        assert_eq!(runs.len(), 1);
-        assert_eq!(build["sabotage"], false);
-        assert!(honest_part(&json!({"build": {"honest": stamp(true)}, "runs": [{}]})).is_err());
-        assert!(honest_part(&json!({"runs": [{}]})).is_err());
-        assert!(honest_part(&json!({"build": {"honest": stamp(false)}, "runs": []})).is_err());
+        let good = json!({"suite": "attack", "timed_repeat": 1, "build": {"honest": stamp(false)}, "runs": [{"scenario": "a", "passed": true}]});
+        let Ok(honest) = honest_part(good, "attack") else { panic!("a default build was refused") };
+        assert_eq!(honest.runs.len(), 1);
+        assert_eq!(honest.build["sabotage"], false);
+        assert_eq!(honest.results["timed_repeat"], 1);
+        assert!(honest_part(json!({"suite": "attack", "build": {"honest": stamp(true)}, "runs": [{}]}), "attack").is_err());
+        assert!(honest_part(json!({"suite": "attack", "runs": [{}]}), "attack").is_err());
+        assert!(honest_part(json!({"suite": "attack", "build": {"honest": stamp(false)}, "runs": []}), "attack").is_err());
+    }
+
+    #[test]
+    fn honest_runs_from_another_suite_are_refused() {
+        let stamp = json!({"sabotage": false, "binary_sha256": "00"});
+        let attack = json!({"suite": "attack", "build": {"honest": stamp}, "runs": [{"scenario": "a", "passed": true}]});
+        assert!(honest_part(attack.clone(), "live").is_err());
+        let mut unnamed = attack;
+        unnamed.as_object_mut().expect("object").remove("suite");
+        assert!(honest_part(unnamed, "attack").is_err());
     }
 
     #[test]

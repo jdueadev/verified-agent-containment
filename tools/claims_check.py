@@ -115,12 +115,15 @@ def expand(paths):
 
 
 def uncovered_sources(claims, root="crates/containment-host/src"):
-    """Tracked host sources that no claim lists in `files` (CI-7)."""
+    """Tracked host sources that no claim lists in `files` (CI-7). An inventory
+    that cannot be taken, or is empty, is reported: it is not full coverage."""
     try:
         tracked = subprocess.run(["git", "-C", str(ROOT), "ls-files", root],
                                  capture_output=True, text=True, check=True).stdout.splitlines()
     except (subprocess.CalledProcessError, FileNotFoundError):
-        return []
+        tracked = []
+    if not tracked:
+        return [f"{root} (git could not list its tracked files, so coverage was not checked)"]
     listed = {path.rstrip("/") for claim in claims for path in expand(claim.get("files", []))}
     return [f for f in tracked if not any(f == path or f.startswith(path + "/") for path in listed)]
 
@@ -139,6 +142,8 @@ def build_errors():
             out.append(f"CI-8 results/{name}: the honest runs are not stamped as coming from a default build")
         elif controls.get("sabotage") is not True:
             out.append(f"CI-8 results/{name}: the sabotage controls are not stamped as coming from a sabotage build")
+        elif not all(re.fullmatch(r"[0-9a-f]{64}", str(part.get("binary_sha256"))) for part in (honest, controls)):
+            out.append(f"CI-8 results/{name}: a build stamp has no SHA-256 of its binary")
         elif honest.get("binary_sha256") == controls.get("binary_sha256"):
             out.append(f"CI-8 results/{name}: the honest runs and the controls came from the same binary")
     return out

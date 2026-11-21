@@ -779,12 +779,15 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let mut runs = Vec::new();
     // The honest runs describe the default build. A sabotage build may reuse
     // the ones a default build wrote instead of producing its own.
+    let mut honest_settings = None;
     let honest_build = match &honest_from {
         Some(path) => {
-            let (taken, build) = honest_results(path)?;
-            println!("honest runs: {} taken from {}", taken.len(), path.display());
-            runs = taken;
-            build
+            let honest = honest_results(path, "attack")?;
+            println!("honest runs: {} taken from {}", honest.runs.len(), path.display());
+            runs = honest.runs;
+            // The honest runs keep the settings they actually ran with.
+            honest_settings = Some((honest.results["timed_repeat"].clone(), honest.results["cgroup_limits_waived"].clone()));
+            honest.build
         }
         None => build_stamp()?,
     };
@@ -826,12 +829,14 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let passed = runs.iter().filter(|r| r["passed"] == true).count();
     let detected = sabotage.iter().filter(|r| r["detected"] == true).count();
     let timed_runs = runs.iter().filter(|r| r["scenario"].as_str().is_some_and(|s| TIMED.contains(&s))).count();
+    let (timed_repeat, limits_waived) = honest_settings.unwrap_or((json!(repeat), json!(allow_missing_limits())));
     let output = json!({
+        "suite": "attack",
         "kernel": fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default().trim(),
         "cgroup_root": cgroup_root()?,
         "wsl_interop_handler": fs::read_to_string("/proc/sys/fs/binfmt_misc/WSLInterop").ok().map(|t| t.trim().to_owned()), "runs_total": runs.len(), "runs_passed": passed,
-        "scenarios": SCENARIOS.len(), "timed_scenarios": TIMED.len(), "timed_repeat": repeat, "timed_runs": timed_runs,
-        "contained_runs_measured": contained_runs.len(), "cgroup_limits_waived": allow_missing_limits(),
+        "scenarios": SCENARIOS.len(), "timed_scenarios": TIMED.len(), "timed_repeat": timed_repeat, "timed_runs": timed_runs,
+        "contained_runs_measured": contained_runs.len(), "cgroup_limits_waived": limits_waived, "controls_cgroup_limits_waived": allow_missing_limits(),
         "bytes_admitted_after_commit_total": sum("bytes_admitted_after_commit"), "bytes_written_after_cut_total": sum("bytes_written_after_cut"),
         "bytes_arrived_commit_to_cut_total": sum("bytes_arrived_commit_to_cut"),
         "sabotage_total": sabotage.len(), "sabotage_detected": detected, "metrics": metrics, "sabotage": sabotage, "runs": runs,

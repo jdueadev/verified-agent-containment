@@ -304,6 +304,8 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
 /// Removes exact credential values from anything returned to the agent, in
 /// case an upstream echoes request headers or puts a token in an error.
 const REDACTED: &str = "[redacted]";
+/// How many suffixes are tried to keep a redacted object key unique.
+const MAX_KEY_SUFFIXES: usize = 64;
 
 pub(super) fn redact(live: &LiveState, value: Value) -> Value {
     redact_value(&live.secret_values, value)
@@ -326,27 +328,41 @@ fn redact_text(secrets: &[String], text: &str) -> Option<String> {
 /// are searched as decoded text, so a secret that the serialized form would
 /// escape (a quote, a backslash, a non-ASCII character) is still found. A
 /// number whose digits contain a secret cannot be partly replaced, so the
-/// whole number is replaced: redaction fails closed for that leaf only.
+/// whole number is replaced: redaction fails closed for that leaf only. A
+/// boolean or null is replaced when its JSON text is itself a secret.
 fn redact_value(secrets: &[String], value: Value) -> Value {
     match value {
         Value::String(text) => Value::String(redact_text(secrets, &text).unwrap_or(text)),
         Value::Number(number) => {
             if redact_text(secrets, &number.to_string()).is_some() { Value::String(REDACTED.into()) } else { Value::Number(number) }
         }
+        Value::Bool(_) | Value::Null => {
+            let text = value.to_string();
+            if secrets.contains(&text) { Value::String(REDACTED.into()) } else { value }
+        }
         Value::Array(items) => Value::Array(items.into_iter().map(|item| redact_value(secrets, item)).collect()),
         Value::Object(fields) => {
             let mut clean = serde_json::Map::with_capacity(fields.len());
             for (key, field) in fields {
-                let mut key = redact_text(secrets, &key).unwrap_or(key);
-                // Two keys can become equal once redacted; keep both fields.
-                while clean.contains_key(&key) {
-                    key.push('_');
+                // Two keys can become equal once redacted; a numbered suffix
+                // keeps both fields. A suffixed key could itself spell a
+                // secret, so each candidate is redacted again before it is
+                // used. A field whose key cannot be made both unique and
+                // clean is dropped.
+                let base = redact_text(secrets, &key).unwrap_or(key);
+                let mut key = base.clone();
+                let mut suffix = 1;
+                while clean.contains_key(&key) && suffix <= MAX_KEY_SUFFIXES {
+                    suffix += 1;
+                    let candidate = format!("{base}_{suffix}");
+                    key = redact_text(secrets, &candidate).unwrap_or(candidate);
                 }
-                clean.insert(key, redact_value(secrets, field));
+                if !clean.contains_key(&key) {
+                    clean.insert(key, redact_value(secrets, field));
+                }
             }
             Value::Object(clean)
         }
-        other => other,
     }
 }
 
@@ -451,6 +467,23 @@ mod tests {
         let mut values: Vec<u64> = fields.values().filter_map(Value::as_u64).collect();
         values.sort_unstable();
         assert_eq!(values, [1, 2, 3]);
+    }
+
+    #[test]
+    fn a_suffixed_key_never_spells_a_secret() {
+        let all = secrets(&["s1", "s2", "[redacted]_"]);
+        let clean = redact_value(&all, json!({"s1": 1, "s2": 2}));
+        let fields = clean.as_object().expect("object");
+        assert_eq!(fields.len(), 2);
+        assert!(fields.keys().all(|key| all.iter().all(|secret| !key.contains(secret.as_str()))), "{fields:?}");
+    }
+
+    #[test]
+    fn redacts_a_boolean_or_null_that_is_a_secret_and_keeps_the_others() {
+        let clean = redact_value(&secrets(&["false"]), json!({"a": false, "b": true, "c": null}));
+        assert_eq!(clean, json!({"a": "[redacted]", "b": true, "c": null}));
+        let clean = redact_value(&secrets(&["null"]), json!([null, false]));
+        assert_eq!(clean, json!(["[redacted]", false]));
     }
 
     #[test]

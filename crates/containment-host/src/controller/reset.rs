@@ -102,7 +102,9 @@ pub(super) fn serve(listener: UnixListener, shared: Arc<Shared>, rule: PeerRule,
                     continue;
                 }
                 let Some(permit) = operators.acquire() else { continue };
-                if stream.set_read_timeout(Some(OPERATOR_IDLE)).is_err() {
+                // Both directions are bounded: a client that stops reading its
+                // replies must not hold a slot any longer than one that stops writing.
+                if stream.set_read_timeout(Some(OPERATOR_IDLE)).is_err() || stream.set_write_timeout(Some(OPERATOR_IDLE)).is_err() {
                     continue;
                 }
                 Some(permit)
