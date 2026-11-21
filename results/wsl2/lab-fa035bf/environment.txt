@@ -1,0 +1,31 @@
+commit: fa035bf
+default binary sha256: c433b21d2a006c926b3620b7f3c647956e16bc5b4745c8dfb47359a817922496
+sabotage binary sha256: d5a8b129646f7f68aa5a64b879fa89ecb9cde6e500ed3d051b2667ffb0b69547
+kernel: 6.18.58.1-microsoft-standard-WSL2
+cgroup v2 controllers: cpuset cpu io memory hugetlb pids rdma
+cpus: 24
+               total        used        free      shared  buff/cache   available
+Mem:            45Gi       2.3Gi        28Gi       186Mi        15Gi        43Gi
+Swap:           12Gi          0B        12Gi
+Fri Nov 20 21:03:29 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 620.73.02              KMD Version: 621.24        CUDA UMD Version: 13.5     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 5080        On  |   00000000:01:00.0  On |                  N/A |
+| 30%   35C    P0             65W /  360W |    5081MiB /  16303MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+Cuda compilation tools, release 13.0, V13.0.88
+Build cuda_13.0.r13.0/compiler.36424714_0
