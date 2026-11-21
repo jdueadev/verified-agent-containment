@@ -14,8 +14,8 @@ GOOD = "steps:\n  - uses: oven-sh/setup-bun@abc\n    with:\n      bun-version: $
 
 
 class DriftTests(unittest.TestCase):
-    def errors(self, workflow=GOOD, pins=PINS, channel="1.100.0", rustc=None):
-        return pk.drift_errors(pins, channel, {"check.yml": workflow}, rustc)
+    def errors(self, workflow=GOOD, pins=PINS, channel="1.100.0", rustc=None, cargo=None):
+        return pk.drift_errors(pins, channel, {"check.yml": workflow}, rustc, cargo)
 
     def test_clean_configuration_passes(self):
         self.assertEqual(self.errors(), [])
@@ -53,6 +53,18 @@ class DriftTests(unittest.TestCase):
 
     def test_wrong_rustc_fails(self):
         self.assertTrue(self.errors(rustc="rustc 1.99.1 (abc 2026-01-01)\n"))
+        # Whole fields only: a pre-release or a longer version is not the pin.
+        for bad in ("rustc 1.100.0-beta.1 (abc 2026-01-01)\n", "rustc 1.100.01 (abc 2026-01-01)\n",
+                    "rustc 11.100.0 (abc)\n", ""):
+            self.assertTrue(self.errors(rustc=bad), bad)
+
+    def test_cargo_must_be_the_pinned_one(self):
+        self.assertEqual(self.errors(cargo="cargo 1.100.0 (abc 2026-01-01)\n"), [])
+        for bad in ("cargo 1.99.0 (abc 2026-01-01)\n", "cargo 1.100.0-nightly (abc 2026-01-01)\n",
+                    "cargo 1.100.01 (abc)\n", "rustc 1.100.0 (abc)\n", ""):
+            self.assertTrue(self.errors(cargo=bad), bad)
+        # The rustc and cargo checks are independent: a right rustc does not excuse a wrong cargo.
+        self.assertTrue(self.errors(rustc="rustc 1.100.0 (abc)\n", cargo="cargo 1.99.0 (abc)\n"))
 
     def test_repository_configuration_passes(self):
         workflows = pk.load_workflows()

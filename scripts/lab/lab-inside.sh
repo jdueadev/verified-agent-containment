@@ -36,8 +36,8 @@ say "STEP 4/6 apt packages"
 apt-get update -q
 apt-get install -y -q build-essential git curl ca-certificates python3 cmake pkg-config rustup >/dev/null
 # rustup from Ubuntu's signed archive (not curl | sh); it checks toolchain hashes.
-say "  Rust stable (rustup from apt)"
-rustup default stable >/dev/null
+# The toolchain itself is the one rust-toolchain.toml pins; it is installed and
+# checked after the clone below, before anything is built.
 
 GPU=cpu
 if [ -e /usr/lib/wsl/lib/libcuda.so.1 ] || [ -e /usr/lib/wsl/lib/libcuda.so ]; then
@@ -59,6 +59,76 @@ rm -rf /root/vac
 git clone -q "$REPO" /root/vac
 cd /root/vac
 COMMIT="$(git rev-parse --short HEAD)"
+
+# The binaries must come from the toolchain rust-toolchain.toml pins, and the
+# record of that toolchain is written before the build (#68). Anything that is
+# not confirmed stops the run: nothing is built on an unchecked toolchain.
+say "  Rust toolchain (pinned in rust-toolchain.toml)"
+[ ! -e rust-toolchain ] || fail "the clone has a legacy rust-toolchain file, which rustup would prefer over rust-toolchain.toml"
+# Overrides would make rustup or cargo use a compiler, flags or C toolchain other
+# than the one checked here. The distro is new each run, so none belongs here.
+for var in RUSTC RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER RUSTFLAGS CARGO_ENCODED_RUSTFLAGS RUSTUP_TOOLCHAIN CC CXX CFLAGS CXXFLAGS LDFLAGS; do
+  [ -z "${!var+x}" ] || fail "$var is set; the lab builds with the pinned toolchain and no overrides"
+done
+OVERRIDES="$(compgen -e | grep -E '^CARGO_(BUILD|TARGET|PROFILE)_' || true)"
+[ -z "$OVERRIDES" ] || fail "cargo build variables are set: $(echo "$OVERRIDES" | tr '\n' ' ')"
+for cfg in /root/.cargo/config /root/.cargo/config.toml /.cargo/config /.cargo/config.toml; do
+  [ ! -e "$cfg" ] || fail "$cfg exists; only the repository's .cargo/config.toml may configure the build"
+done
+# The channel is read by the same tested parser CI uses (tomllib, exact X.Y.Z).
+PIN="$(python3 -c 'import sys; sys.path.insert(0, "tools"); import pins_check; print(pins_check.toolchain_channel(open("rust-toolchain.toml", encoding="utf-8").read()) or "")')" \
+  || fail "could not read rust-toolchain.toml"
+[[ "$PIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "rust-toolchain.toml channel '$PIN' is not an exact version"
+# Installed explicitly, with what check.yml installs, so nothing depends on
+# whether this rustup auto-installs an override.
+rustup toolchain install "$PIN" --profile minimal --component clippy --component rustfmt --target wasm32-unknown-unknown >/dev/null \
+  || fail "could not install Rust $PIN"
+# cargo runs the first `rustc` on PATH, so both must be rustup's own proxies,
+# which resolve the toolchain checked below. A stand-in that prints the right
+# version is refused here.
+RUSTUP_BIN="$(readlink -f "$(command -v rustup)")" || fail "rustup is not on PATH"
+for tool in rustc cargo; do
+  TOOL_BIN="$(readlink -f "$(command -v "$tool")")" || fail "$tool is not on PATH"
+  cmp -s "$TOOL_BIN" "$RUSTUP_BIN" || fail "$tool on PATH ($TOOL_BIN) is not the rustup proxy"
+done
+python3 tools/pins_check.py drift --rustc --cargo || fail "the active rustc or cargo is not the pinned Rust $PIN"
+RUSTC_VV="$(rustc -vV)" || fail "rustc -vV failed"
+HOST="$(sed -n 's/^host: //p' <<<"$RUSTC_VV")"
+[ -n "$HOST" ] || fail "rustc -vV reported no host"
+TOOLCHAIN_BIN="${RUSTUP_HOME:-/root/.rustup}/toolchains/$PIN-$HOST/bin"
+RUSTC_PATH="$(rustup which rustc)" || fail "rustup which rustc failed"
+CARGO_PATH="$(rustup which cargo)" || fail "rustup which cargo failed"
+# A toolchain added with `rustup toolchain link` reports any version it likes;
+# only an installed release lives at this path.
+[ "$RUSTC_PATH" = "$TOOLCHAIN_BIN/rustc" ] || fail "rustc is $RUSTC_PATH, not the installed $PIN-$HOST"
+[ "$CARGO_PATH" = "$TOOLCHAIN_BIN/cargo" ] || fail "cargo is $CARGO_PATH, not the installed $PIN-$HOST"
+CARGO_V="$(cargo -V)" || fail "cargo -V failed"
+ACTIVE="$(rustup show active-toolchain)" || fail "rustup show active-toolchain failed"
+RUSTUP_V="$(rustup --version 2>/dev/null | sed -n 1p)" || fail "rustup --version failed"
+CC_V="$(cc --version | sed -n 1p)" || fail "cc --version failed"
+LD_V="$(ld --version | sed -n 1p)" || fail "ld --version failed"
+PKGS="$(dpkg-query -W gcc binutils libc6-dev)" || fail "dpkg-query failed for the C toolchain"
+LOCK_SHA="$(sha256sum Cargo.lock | cut -d' ' -f1)" || fail "no Cargo.lock"
+CFG_SHA="none"
+[ ! -e .cargo/config.toml ] || CFG_SHA="$(sha256sum .cargo/config.toml | cut -d' ' -f1)"
+{
+  echo "commit: $COMMIT"
+  echo "commit id: $(git rev-parse HEAD)"
+  echo "rust-toolchain channel: $PIN"
+  echo "rustup: $RUSTUP_V"
+  echo "rustup active toolchain: $ACTIVE"
+  echo "rustc path: $RUSTC_PATH"
+  echo "rustc on PATH: $(command -v rustc) (rustup proxy $RUSTUP_BIN)"
+  sed 's/^/rustc: /' <<<"$RUSTC_VV"
+  echo "cargo: $CARGO_V"
+  echo "Cargo.lock sha256: $LOCK_SHA"
+  echo ".cargo/config.toml sha256: $CFG_SHA"
+  echo "cc: $CC_V"
+  echo "ld: $LD_V"
+  sed 's/^/package: /' <<<"$PKGS"
+  echo "build overrides: none (checked before the build)"
+} > "$RES/environment.txt"
+
 # Two binaries. The default build is the one that ships: it runs the honest
 # suites and, later, the model. The sabotage build contains the deliberate
 # defects and runs only the controls that prove the suites can see them.
@@ -66,9 +136,12 @@ cargo build --release -q --locked -p containment-host
 cargo build --release -q --locked -p containment-host --features sabotage --target-dir /root/vac/target-sabotage
 LAB_BIN=/root/vac/target/release/containment-lab
 SAB_BIN=/root/vac/target-sabotage/release/containment-lab
+# The build ran code from the clone (build scripts, proc macros) as root. The
+# toolchain must still be the one recorded above.
+[ "$(rustc -vV)" = "$RUSTC_VV" ] || fail "rustc -vV changed during the build"
+[ "$(rustup which rustc)" = "$RUSTC_PATH" ] || fail "the rustc path changed during the build"
 
 {
-  echo "commit: $COMMIT"
   echo "default binary sha256: $(sha256sum "$LAB_BIN" | cut -d' ' -f1)"
   echo "sabotage binary sha256: $(sha256sum "$SAB_BIN" | cut -d' ' -f1)"
   echo "kernel: $(uname -r)"
@@ -77,8 +150,8 @@ SAB_BIN=/root/vac/target-sabotage/release/containment-lab
   free -h
   /usr/lib/wsl/lib/nvidia-smi 2>/dev/null || echo "nvidia-smi: not available"
   command -v nvcc >/dev/null && nvcc --version | tail -2
-} > "$RES/environment.txt" 2>&1
-say "  built $COMMIT; environment in results/$STAMP/environment.txt"
+} >> "$RES/environment.txt" 2>&1
+say "  built $COMMIT with Rust $PIN; environment in results/$STAMP/environment.txt"
 
 # shellcheck source=pins.env
 . /root/vac/scripts/lab/pins.env
