@@ -8,3 +8,6 @@ __pycache__/
 formal/host/*_TTrace_*
 *.gguf
 target-sabotage/
+
+# Personal agent notes, never shared
+CLAUDE.local.md

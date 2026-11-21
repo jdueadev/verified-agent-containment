@@ -8,6 +8,19 @@ edition = "2021"
 publish = false
 license = "MIT OR Apache-2.0"
 
+# Lints every crate inherits. Only lints the code already passes are listed, so
+# adding them changes no source file. Stricter ones arrive with the formatting
+# sweeps, which need fresh lab evidence. The kernel additionally forbids unsafe
+# code as a crate attribute; the host and wasm crates need it.
+[workspace.lints.rust]
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+mem_forget = "deny"
+
 [profile.release]
 lto = true
 codegen-units = 1

@@ -1,0 +1,29 @@
+name: Story
+description: A change in behaviour, stated as what a user or operator gets
+title: "[US-nnn] "
+labels: ["user-story"]
+body:
+  - type: textarea
+    id: story
+    attributes:
+      label: User story
+      description: As a <who>, I want <what>, so that <why>.
+    validations:
+      required: true
+  - type: textarea
+    id: criteria
+    attributes:
+      label: Acceptance criteria
+      description: A checklist. Each item names how it will be verified.
+    validations:
+      required: true
+  - type: input
+    id: claims
+    attributes:
+      label: Claims affected
+      description: Claim ids from claims.toml, or "none".
+  - type: textarea
+    id: plan
+    attributes:
+      label: Plan
+      description: Required before work starts on a lane C change (see AGENTS.md). Include the outcome of the design review.

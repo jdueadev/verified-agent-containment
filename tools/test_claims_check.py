@@ -117,6 +117,35 @@ class BuildStampAndFullRunTests(unittest.TestCase):
             self.assertTrue(any("no SHA-256" in e for e in errs), errs)
 
 
+class ProvenanceTests(unittest.TestCase):
+    TRACKED = ["results/wsl2/lab-cd7172f/attack-suite.json", "results/linux-vm/attack-suite-d81a32e.json"]
+
+    def claim(self, commit, result="pass"):
+        return [{"id": "H-X", "platforms": [{"name": "wsl2", "commit": commit, "result": result}]}]
+
+    def test_passing_platform_with_artifacts_is_accepted(self):
+        self.assertEqual(cc.provenance_errors(self.claim("cd7172f"), self.TRACKED), [])
+        self.assertEqual(cc.provenance_errors(self.claim("d81a32e", "pass (note)"), self.TRACKED), [])
+
+    def test_passing_platform_at_an_unused_commit_fails(self):
+        errs = cc.provenance_errors(self.claim("abc1234"), self.TRACKED)
+        self.assertTrue(any("CI-9 H-X" in e and "abc1234" in e for e in errs), errs)
+
+    def test_passing_platform_needs_a_commit_id(self):
+        self.assertTrue(cc.provenance_errors(self.claim("HEAD"), self.TRACKED))
+        self.assertTrue(cc.provenance_errors(self.claim(""), self.TRACKED))
+
+    def test_failed_platform_needs_no_artifacts(self):
+        self.assertEqual(cc.provenance_errors(self.claim("abc1234", "fail: reason"), self.TRACKED), [])
+
+    def test_unlistable_results_is_an_error_not_a_pass(self):
+        self.assertTrue(cc.provenance_errors(self.claim("cd7172f"), []))
+
+    def test_repository_claims_have_provenance(self):
+        claims = tomllib.loads((cc.ROOT / "claims.toml").read_text(encoding="utf-8"))["claim"]
+        self.assertEqual(cc.provenance_errors(claims), [])
+
+
 class NarrowedClaimsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

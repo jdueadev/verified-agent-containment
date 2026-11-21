@@ -1,0 +1,27 @@
+# Generated from ci/lanes.toml by `python3 tools/policy_check.py codeowners --write`. Do not edit by hand.
+# These are the lane C paths: changes to them need the maintainer's review.
+# A path listed in no lane is also lane C; tools/policy_check.py enforces that part.
+
+/.github/ @jdueadev
+/ci/ @jdueadev
+/scripts/ @jdueadev
+/.gitattributes @jdueadev
+/AGENTS.md @jdueadev
+/CLAUDE.md @jdueadev
+/docs/decisions/ @jdueadev
+/tools/claims_check.py @jdueadev
+/tools/policy_check.py @jdueadev
+/tools/pins_check.py @jdueadev
+/tools/test_*.py @jdueadev
+/tools/mutation_check.py @jdueadev
+/tools/differential.mjs @jdueadev
+/tools/wasm_check.mjs @jdueadev
+/tools/law_audit.mjs @jdueadev
+/tools/tla_check.sh @jdueadev
+/tools/generate_proof.py @jdueadev
+/results/attack-suite* @jdueadev
+/results/live-suite* @jdueadev
+/results/linux-vm/ @jdueadev
+/results/wsl2/ @jdueadev
+/results/redteam/ @jdueadev
+/results/formal-verdict.json @jdueadev

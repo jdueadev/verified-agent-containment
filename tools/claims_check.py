@@ -28,6 +28,8 @@ CI-7  every tracked file under crates/containment-host/src is matched by the fil
 CI-8  (--strict) results/attack-suite.json and results/live-suite.json record that the honest runs
       came from a default build and the sabotage controls from a different, sabotage build, and
       results/attack-suite.json is a full unwaived run (timed_repeat >= 30, no limits waiver)
+CI-9  every passing platform names a commit that has tracked artifacts under results/ (a path
+      containing the commit id). This shows the evidence is linked, not that it is authentic.
 """
 import hashlib
 import importlib.util
@@ -206,6 +208,31 @@ def uncovered_sources(claims, root="crates/containment-host/src", tracked=None):
         return [f"{root} (git could not list its tracked files, so coverage was not checked)"]
     patterns = [pattern for claim in claims for pattern in claim.get("files", [])]
     return [f for f in tracked if not any(path_matches(f, pattern) for pattern in patterns)]
+
+
+def provenance_errors(claims, tracked=None):
+    """A passing platform entry must point at lab artifacts that are in the
+    repository (CI-9): some tracked path under results/ contains its commit id.
+    A listing that cannot be taken is reported, not treated as a pass."""
+    if tracked is None:
+        try:
+            tracked = subprocess.run(["git", "-C", str(ROOT), "ls-files", "results"],
+                                     capture_output=True, text=True, check=True).stdout.splitlines()
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            tracked = []
+    if not tracked:
+        return ["CI-9 git could not list results/, so platform provenance was not checked"]
+    out = []
+    for claim in claims:
+        for platform in claim.get("platforms", []):
+            commit = str(platform.get("commit", ""))
+            if not str(platform.get("result", "")).startswith("pass"):
+                continue
+            if not re.fullmatch(r"[0-9a-f]{7,40}", commit):
+                out.append(f"CI-9 {claim['id']}: platform {platform.get('name')} has no commit id")
+            elif not any(commit in path for path in tracked):
+                out.append(f"CI-9 {claim['id']}: no tracked file under results/ records the run at {commit}")
+    return out
 
 
 def build_errors(results_dir=None):
@@ -433,6 +460,8 @@ def main(argv=None):
 
     for path in uncovered_sources(claims):
         errors.append(f"CI-7 {path} is not covered by the files of any claim")
+
+    errors.extend(provenance_errors(claims))
 
     stale = {c["id"]: c["_stale"] for c in claims if c["_stale"]}
     warnings = [f"CI-4 {cid}: stale, {', '.join(files)} changed after its platform commit; rerun and update platforms"
