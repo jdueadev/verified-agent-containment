@@ -222,6 +222,22 @@ mod cli_tests {
     }
 }
 
+/// What a secret is replaced with in anything the agent or the HUD sees.
+pub const REDACTED: &str = "[redacted]";
+
+/// Refuses secrets that redaction cannot hide. Whatever redaction does, its
+/// output can contain the marker, so a secret that is part of the marker
+/// (`redacted`, `d`, `[`) would appear in redacted text. Such a value is
+/// rejected when the policy is loaded, which is what makes "redacted output
+/// holds no secret" true for every policy that loads. The message does not
+/// repeat the value.
+pub fn check_redactable(secrets: &[String]) -> Result<(), String> {
+    match secrets.iter().any(|secret| !secret.is_empty() && REDACTED.contains(secret.as_str())) {
+        true => Err(format!("a credential value is part of the redaction marker {REDACTED:?} and so cannot be hidden; use a different value")),
+        false => Ok(()),
+    }
+}
+
 /// True when this binary contains the deliberate defects (`sabotage` feature).
 pub const SABOTAGE_BUILD: bool = cfg!(feature = "sabotage");
 
@@ -288,6 +304,16 @@ mod build_tests {
         let mut unnamed = attack;
         unnamed.as_object_mut().expect("object").remove("suite");
         assert!(honest_part(unnamed, "attack").is_err());
+    }
+
+    #[test]
+    fn credentials_inside_the_redaction_marker_are_refused() {
+        let list = |values: &[&str]| values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+        for hidden_by_nothing in ["redacted", "d", "[", "[redacted]", "act"] {
+            let error = check_redactable(&list(&["sk-live-123", hidden_by_nothing])).expect_err(hidden_by_nothing);
+            assert!(!error.contains(&format!("{hidden_by_nothing:?}")) || hidden_by_nothing == "[redacted]", "{error}");
+        }
+        assert!(check_redactable(&list(&["sk-live-123", "", "Bearer sk-live-123", "redacted!", "[redacted]_"])).is_ok());
     }
 
     #[test]

@@ -303,7 +303,6 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
 
 /// Removes exact credential values from anything returned to the agent, in
 /// case an upstream echoes request headers or puts a token in an error.
-const REDACTED: &str = "[redacted]";
 /// How many suffixes are tried to keep a redacted object key unique.
 const MAX_KEY_SUFFIXES: usize = 64;
 
@@ -319,8 +318,9 @@ pub(super) fn redact(live: &LiveState, value: Value) -> Value {
 /// however the secrets relate to the marker.
 ///
 /// A replacement can still leave a secret in the result: one that spans a
-/// marker and its neighbours, or one that is part of the marker itself. Such a
-/// text cannot be cleaned piece by piece, so it is replaced whole.
+/// marker and its neighbours. Such a text cannot be cleaned piece by piece, so
+/// it is replaced whole. The policy loader refuses any secret that is part of
+/// the marker (`check_redactable`), so the marker alone never holds one.
 fn redact_text(secrets: &[String], text: &str) -> Option<String> {
     let mut clean = String::new();
     let mut found = false;
@@ -514,8 +514,9 @@ mod tests {
         }
     }
 
-    /// Secrets that are part of the marker must not make the output grow: the
-    /// scan never revisits a marker it wrote, and the text is replaced whole.
+    /// The policy loader refuses secrets that are part of the marker. If one
+    /// got here anyway it must not make the output grow: the scan never
+    /// revisits a marker it wrote, and the text is replaced whole.
     #[test]
     fn secrets_inside_the_marker_do_not_expand_the_output() {
         let all = secrets(&["d", "e"]);

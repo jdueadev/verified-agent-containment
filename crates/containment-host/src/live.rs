@@ -193,6 +193,7 @@ impl LiveState {
         secret_values.sort_by_key(|v| std::cmp::Reverse(v.len()));
         secret_values.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
         secret_values.dedup();
+        crate::common::check_redactable(&secret_values)?;
         Ok(Self { policy, model_url, model_header, hosts, canary, used: Mutex::default(), tokens: AtomicU64::new(0), lease: AtomicU64::new(0), task, secret_values })
     }
 }
