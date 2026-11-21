@@ -99,5 +99,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      # Checks committed evidence in a clean checkout. Changes to formal/ specs
+      # or host sources must commit their updated results/ artifacts (e.g.
+      # results/formal-verdict.json, results/tla-check.json, lab suites) before
+      # marking a PR Ready for Review; see docs/verification.md.
       - name: Strict claims and evidence freshness gate
         run: python3 tools/claims_check.py --strict

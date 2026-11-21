@@ -13,7 +13,7 @@ work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 # so changing a bound in a .cfg also invalidates the recorded result.
 configs=(HostModel HostModelSlowRenew HostModelPre1 HostModelLagUncapped HostModelNoMonitor)
 inputs=(formal/host/HostModel.tla); for c in "${configs[@]}"; do inputs+=("formal/host/$c.cfg"); done
-spec_sha="$(cat "${inputs[@]}" | sha256sum | cut -d' ' -f1)"
+spec_sha="$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(b"".join(pathlib.Path(p).read_bytes().replace(b"\r\n", b"\n") for p in sys.argv[1:])).hexdigest())' "${inputs[@]}")"
 results=()
 fail=0
 for cfg in "${configs[@]}"; do

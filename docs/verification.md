@@ -32,7 +32,10 @@ CI (`.github/workflows/check.yml`) separates fast per-push checks from the merge
 
 1. **Open the PR as a Draft.** On every push, the `check` job runs `scripts/check.sh --no-strict` (Bend proofs, TLA+, differential, mutation, Clippy, both unit-test builds, tooling tests, and non-strict `claims_check.py`). Formal proofs and source coverage (`CI-7`) are enforced on every commit; stale host claims print as warnings.
 2. **Iterate through review rounds** using fast unit tests and the `check` job.
-3. **Run the root lab once on the final host commit** (only if `--affected origin/main` reports host lab claims), commit the results, update `claims.toml`, and regenerate `docs/claims.md` with `python3 tools/claims_check.py --write`.
+3. **Refresh committed evidence once on the final commit** before marking Ready:
+   * If `--affected origin/main` reports host lab claims, run the root lab once, commit the results, and update `claims.toml`.
+   * If `formal/host/*` or `formal/*.bend` changed, commit the regenerated `results/tla-check.json` (from `tools/tla_check.sh`) or `results/formal-verdict.json` (from `scripts/verdict.sh`), since `evidence-freshness` validates committed evidence on a clean checkout.
+   * Regenerate `docs/claims.md` with `python3 tools/claims_check.py --write`.
 4. **Mark the PR Ready for Review.** The `evidence-freshness` job runs `python3 tools/claims_check.py --strict` as a merge gate—nothing merges to `main` with stale claims, missing dual-binary stamps, or partial/waived attack-suite runs.
 5. **Merge strategy for lab commits:** Because `CI-4` diffs against the commit SHA recorded in `claims.toml`, merge PRs that add a new branch lab commit with a regular merge commit (not squash), or update the recorded SHA to the squashed commit if squashing, so clean clones of `main` can resolve that commit.
 

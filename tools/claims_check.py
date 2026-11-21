@@ -88,8 +88,6 @@ def glob_to_regex(pattern: str) -> re.Pattern[str]:
                 body = pattern[i + 1 : j]
                 if body.startswith("!"):
                     body = "^" + body[1:]
-                elif body.startswith("^"):
-                    body = "\\" + body
                 body = body.replace("\\", "\\\\")
                 if body.startswith("^"):
                     out.append(f"[{body}/]")
