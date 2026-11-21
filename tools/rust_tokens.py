@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """A small Rust lexer for the checkers, so that what they read never depends on layout.
 
-Checks that read Rust source (the suite inventories, the policy ratchets, and later
-the mutant matcher and the staleness fingerprint) go through this one lexer instead
-of regexes over text. Formatting changes whitespace, line breaks and trailing commas;
+Checks that read Rust source (the suite inventories, the policy ratchets, the Rust
+mutant matcher `splice_once`, and later the staleness fingerprint) go through this
+one lexer instead of regexes over text. Formatting changes whitespace, line breaks and trailing commas;
 it never changes the sequence of code tokens, so anything computed from that
 sequence survives `cargo fmt`.
 
@@ -291,6 +291,158 @@ def entry_key(entry):
     """A layout-free identity for one array entry: its tokens, without the trailing
     commas rustfmt adds when it splits a tuple."""
     return tuple((t.kind, t.text) for t in drop_layout_commas(entry))
+
+
+class MatchError(ValueError):
+    """A mutant pattern does not match exactly once, or its match cannot be spliced."""
+
+
+def _partners(toks):
+    """{index of an opening delimiter: index of its closing one} for every balanced pair."""
+    partner, stack = {}, []
+    for k, tok in enumerate(toks):
+        if tok.kind == "punct" and tok.text in _OPEN:
+            stack.append(k)
+        elif tok.kind == "punct" and tok.text in _CLOSE and stack:
+            j = stack.pop()
+            if _OPEN.index(toks[j].text) == _CLOSE.index(tok.text):
+                partner[j] = k
+    return partner
+
+
+def _in_macro(toks, partner):
+    """The set of token indexes inside a macro invocation's token tree."""
+    inside = set()
+    for j, k in partner.items():
+        if j > 0 and toks[j - 1].kind == "punct" and toks[j - 1].text == "!":
+            inside.update(range(j + 1, k))
+    return inside
+
+
+def _arm_blocks(toks, partner, macro):
+    """(open, close) of each match-arm body written as a block that holds one
+    expression: `=> { expr }`, with no top-level `;`. rustfmt wraps a long arm body
+    `=> expr,` in such a block, so the two forms mean the same thing."""
+    out = []
+    for i in range(len(toks) - 1):
+        if not (toks[i].kind == "punct" and toks[i].text == "=>" and toks[i + 1].text == "{"):
+            continue
+        j = i + 1
+        if j not in partner or j in macro or partner[j] == j + 1:
+            continue
+        k, statement = j + 1, False
+        while k < partner[j]:
+            if k in partner:
+                k = partner[k] + 1
+                continue
+            statement = statement or toks[k].text == ";"
+            k += 1
+        if not statement:
+            out.append((j, partner[j]))
+    return out
+
+
+class _ArmBlock(NamedTuple):
+    open: Token   # the `{`
+    close: Token  # the `}`
+    first: Token  # the first token inside
+    last: Token   # the last token inside
+
+
+def _canonical(tokens):
+    """The tokens the mutant matcher compares, each keeping its source span, plus the
+    arm blocks that were unwrapped. Plain comments are dropped. Two rustfmt rewrites are
+    undone: the braces of an arm body wrapped in `{ }` are dropped (a zero-width comma
+    takes their place when another arm follows), and trailing commas are dropped as in
+    drop_layout_commas. A pattern is a fragment, so a comma before a closing `]` or `}`
+    whose opening delimiter lies outside it is dropped too, and so is a final comma."""
+    toks = [t for t in tokens if t.kind != "comment"]
+    partner = _partners(toks)
+    pairs = _arm_blocks(toks, partner, _in_macro(toks, partner))
+    removed = {k for pair in pairs for k in pair}
+    separator, blocks = set(), []
+    for j, k in pairs:
+        inner = [m for m in range(j + 1, k) if m not in removed]
+        blocks.append(_ArmBlock(toks[j], toks[k], toks[inner[0]], toks[inner[-1]]))
+        after = toks[k + 1] if k + 1 < len(toks) else None
+        if after is not None and not (after.kind == "punct" and (after.text == "," or after.text in _CLOSE)):
+            separator.add(k)  # `=> { e } next` reads as `=> e, next`
+    spanned = []
+    for k, tok in enumerate(toks):
+        if k not in removed:
+            spanned.append(tok)
+        if k in separator:
+            spanned.append(Token("punct", ",", tok.end, tok.end))
+    out, depth = [], 0
+    for tok in drop_layout_commas(spanned):
+        if tok.kind == "punct" and tok.text in _OPEN:
+            depth += 1
+        elif tok.kind == "punct" and tok.text in _CLOSE:
+            if depth == 0 and tok.text in "]}" and out and out[-1].kind == "punct" and out[-1].text == ",":
+                out.pop()
+            depth = max(depth - 1, 0)
+        out.append(tok)
+    if out and out[-1].kind == "punct" and out[-1].text == ",":
+        out.pop()
+    return out, blocks
+
+
+def _absorb_blocks(lo, hi, blocks):
+    """Widen the byte span [lo, hi) of a match so that it never splits an unwrapped arm
+    block's braces. A match wholly inside a block, or wholly around one, is left alone.
+    A match that crosses one brace takes in the other only when it reaches the block's
+    inner edge (it starts at the first inner token or ends at the last); otherwise the
+    splice would leave a brace unbalanced, which is a MatchError."""
+    for block in blocks:
+        crosses_open = lo < block.open.start < hi
+        crosses_close = lo < block.close.start < hi
+        if crosses_open == crosses_close:
+            continue
+        if crosses_open and hi == block.last.end:
+            hi = block.close.end
+        elif crosses_close and lo == block.first.start:
+            lo = block.open.start
+        else:
+            raise MatchError("mutant pattern cuts a match-arm block apart")
+    return lo, hi
+
+
+def splice_once(src, old, new):
+    """src with the one place whose code tokens are old's replaced by new.
+
+    Matching is by canonical tokens (see _canonical), so it survives rustfmt: changed
+    whitespace and line breaks, comments, added or removed trailing commas, and an arm
+    body wrapped in braces. The replacement is spliced into the original bytes, from the
+    first matched token to the last, so nothing outside the match changes. When old ends
+    with a comma, the match must be followed by a comma (which new then replaces), by a
+    closing delimiter, or by the end of an arm block it took in. Raises MatchError unless
+    there is exactly one match, or when the match would split an arm block's braces;
+    LexError when either side cannot be read."""
+    pattern = [t for t in tokenize(old) if t.kind != "comment"]
+    if not pattern:
+        raise MatchError("empty mutant pattern")
+    ends_with_comma = pattern[-1].kind == "punct" and pattern[-1].text == ","
+    needle = [(t.kind, t.text) for t in _canonical(pattern)[0]]
+    raw = [t for t in tokenize(src) if t.kind != "comment"]
+    hay, blocks = _canonical(raw)
+    keys = [(t.kind, t.text) for t in hay]
+    hits = []
+    for i in range(len(keys) - len(needle) + 1):
+        if keys[i:i + len(needle)] != needle:
+            continue
+        lo, hi = _absorb_blocks(hay[i].start, max(t.end for t in hay[i:i + len(needle)]), blocks)
+        if ends_with_comma:
+            after = next((t for t in raw if t.start >= hi), None)
+            if after is not None and after.kind == "punct" and after.text == ",":
+                hi = after.end
+            elif not (after is None or (after.kind == "punct" and after.text in _CLOSE)
+                      or any(hi == b.close.end for b in blocks)):
+                continue
+        hits.append((lo, hi))
+    if len(hits) != 1:
+        raise MatchError(f"mutant pattern matches {len(hits)} times, expected exactly once")
+    lo, hi = hits[0]
+    return src[:lo] + new + src[hi:]
 
 
 def macro_idents(src, name):

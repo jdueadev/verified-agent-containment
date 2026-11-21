@@ -5,6 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from kernel_mutants import BEND_MUTANTS, RUST_MUTANTS
+from rust_tokens import splice_once
 
 ROOT = Path(__file__).resolve().parents[1]
 BEND = os.environ.get("BEND", "bend")
@@ -34,6 +35,13 @@ def bend_mutants():
             out.append({"mutant": name, "rejected": rejected, "first_failure": where, "laws_violated": violated, "witness": bool(violated)})
     return out
 
+def rust_mutant(source, name, old, new):
+    """lib.rs with one Rust mutant applied, or an error naming the mutant."""
+    try:
+        return splice_once(source, old, new)
+    except ValueError as err:
+        raise SystemExit(f"mutation target {name}: {err}") from err
+
 def rust_mutants(kernel_mjs):
     out = []
     env = {**os.environ, "CARGO_TARGET_DIR": str(ROOT / "target/mutation")}
@@ -41,10 +49,11 @@ def rust_mutants(kernel_mjs):
         repo = Path(tmp) / "repo"
         shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns("target", ".git", "results"))
         path = repo / "crates/containment-kernel/src/lib.rs"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         for name, old, new in RUST_MUTANTS:
-            assert source.count(old) == 1, f"mutation target missing: {name}"
-            path.write_text(source.replace(old, new, 1))
+            # Matched by tokens, not bytes, so reformatting lib.rs cannot lose a mutant
+            # (#61). splice_once raises unless the pattern matches exactly once.
+            path.write_text(rust_mutant(source, name, old, new), encoding="utf-8")
             build = run(["cargo", "build", "-q", "-p", "containment-host"], cwd=repo, env=env)
             assert build.returncode == 0, build.stderr[-2000:]
             exe = ROOT / "target/mutation/debug/containment-lab"
@@ -65,4 +74,6 @@ def main():
     Path(sys.argv[2]).write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({k: report[k] for k in ("bend_rejected", "bend_witnessed", "bend_total", "rust_rejected", "rust_total")}))
     return 0 if not report["original_violations"] and report["bend_witnessed"] == report["bend_total"] and report["bend_rejected"] == report["bend_total"] and report["rust_rejected"] == report["rust_total"] else 1
-sys.exit(main())
+
+if __name__ == "__main__":
+    sys.exit(main())
