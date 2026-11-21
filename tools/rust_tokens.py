@@ -202,19 +202,25 @@ def drop_layout_commas(tokens):
     A comma before a closing delimiter is dropped only where it carries no meaning:
     before `]` or `}`, before `)` of a group that already has another element, and
     before `)` of a call-like group (one opened right after a non-keyword identifier,
-    `)`, `]`, `>` or `!`). The comma of a one-element tuple, `(x,)`, is kept: `(x)` is
-    a different expression."""
+    `)`, `]` or `>`). The comma of a one-element tuple, `(x,)`, is kept: `(x)` is a
+    different expression. Nothing inside a macro invocation (`name!(...)`, `[...]` or
+    `{...}`) is dropped, because a macro matcher can tell the two apart; if rustfmt
+    adds such a comma, that counts as a change, which errs towards staleness."""
     out, groups = [], []
     for tok in tokens:
         if tok.kind == "punct" and tok.text in _OPEN:
             before = out[-1] if out else None
             call_like = before is not None and (
                 (before.kind == "ident" and before.text not in _KEYWORDS)
-                or (before.kind == "punct" and before.text in (")", "]", ">", "!")))
-            groups.append({"commas": 0, "call_like": call_like})
+                or (before.kind == "punct" and before.text in (")", "]", ">")))
+            # Inside a macro invocation every token is significant: a matcher can tell
+            # `m!(x,)` from `m!(x)`. The whole token tree is kept as written.
+            in_macro = bool(groups and groups[-1]["in_macro"]) or (
+                before is not None and before.kind == "punct" and before.text == "!")
+            groups.append({"commas": 0, "call_like": call_like, "in_macro": in_macro})
         elif tok.kind == "punct" and tok.text in _CLOSE and groups:
             group = groups.pop()
-            if out and out[-1].kind == "punct" and out[-1].text == "," and (
+            if not group["in_macro"] and out and out[-1].kind == "punct" and out[-1].text == "," and (
                     tok.text in "]}" or group["call_like"] or group["commas"] >= 2):
                 out.pop()
         elif tok.kind == "punct" and tok.text == "," and groups:

@@ -297,6 +297,17 @@ const SABOTAGE: &[(&str, &str, &str, &[&str])] = &[
         with self.assertRaises(cc.InventoryError):
             cc.mutant_names('BEND_MUTANTS = []\nRUST_MUTANTS = [("r1", "x", "y")]\n')
 
+    def test_any_other_write_to_a_mutant_list_is_an_error(self):
+        # The mutation runner imports the module, so it would see writes this reader skips.
+        base = 'BEND_MUTANTS = [("b1", "x", "y")]\nRUST_MUTANTS = [("r1", "x", "y")]\n'
+        for extra in ['BEND_MUTANTS += [("b2", "x", "y")]', 'RUST_MUTANTS.append(("r2", "x", "y"))',
+                      'BEND_MUTANTS = BEND_MUTANTS + [("b2", "x", "y")]', 'RUST_MUTANTS[0] = ("r9", "x", "y")',
+                      'RUST_MUTANTS: list = []', 'for RUST_MUTANTS in [[]]:\n    pass',
+                      'def f():\n    global BEND_MUTANTS\n    BEND_MUTANTS = []']:
+            with self.subTest(extra=extra), self.assertRaises(cc.InventoryError):
+                cc.mutant_names(base + extra + "\n")
+        self.assertEqual(cc.mutant_names(base + "ALL = BEND_MUTANTS + RUST_MUTANTS\n"), (["b1"], ["r1"]))
+
     def test_repository_mutants_match_the_imported_module(self):
         import kernel_mutants
         bend, rust = cc.mutant_names((cc.ROOT / "tools/kernel_mutants.py").read_text(encoding="utf-8"))

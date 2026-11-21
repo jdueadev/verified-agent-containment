@@ -152,13 +152,38 @@ def const_array_names(src, const, where):
 
 def mutant_names(text):
     """BEND_MUTANTS and RUST_MUTANTS names from tools/kernel_mutants.py, read with ast.
-    The file is data here: it is never imported or run."""
-    out = {}
-    for node in ast.parse(text).body:
+    The file is data here: it is never imported or run. The mutation runner does import
+    it, so each list must be exactly one top-level literal assignment; any other write
+    to either name (`+=`, `.append`, item assignment, a rebinding anywhere) is an error,
+    because this reader could not see what the runner would run."""
+    lists = ("BEND_MUTANTS", "RUST_MUTANTS")
+    tree = ast.parse(text)
+    out, literal_nodes = {}, set()
+    for node in tree.body:
         if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) \
-                and node.targets[0].id in ("BEND_MUTANTS", "RUST_MUTANTS"):
-            out[node.targets[0].id] = [entry[0] for entry in ast.literal_eval(node.value)]
-    if set(out) != {"BEND_MUTANTS", "RUST_MUTANTS"} or not all(out.values()):
+                and node.targets[0].id in lists:
+            name = node.targets[0].id
+            if name in out:
+                raise InventoryError(f"tools/kernel_mutants.py: {name} is assigned more than once")
+            try:
+                out[name] = [entry[0] for entry in ast.literal_eval(node.value)]
+            except (ValueError, TypeError, IndexError, SyntaxError):
+                raise InventoryError(f"tools/kernel_mutants.py: {name} is not a literal list of tuples") from None
+            literal_nodes.add(id(node.targets[0]))
+    for node in ast.walk(tree):
+        target = None
+        if isinstance(node, ast.Name) and node.id in lists and not isinstance(node.ctx, ast.Load) \
+                and id(node) not in literal_nodes:
+            target = node.id
+        elif isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(node.value, ast.Name) \
+                and node.value.id in lists and (isinstance(node, ast.Attribute) or not isinstance(node.ctx, ast.Load)):
+            target = node.value.id
+        elif isinstance(node, (ast.Global, ast.Nonlocal)) and set(node.names) & set(lists):
+            target = sorted(set(node.names) & set(lists))[0]
+        if target:
+            raise InventoryError(f"tools/kernel_mutants.py: {target} is written outside its one literal assignment "
+                                 f"(line {getattr(node, 'lineno', '?')})")
+    if set(out) != set(lists) or not all(out.values()):
         raise InventoryError("tools/kernel_mutants.py: BEND_MUTANTS and RUST_MUTANTS must both be non-empty literal lists")
     return out["BEND_MUTANTS"], out["RUST_MUTANTS"]
 

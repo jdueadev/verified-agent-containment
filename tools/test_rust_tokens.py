@@ -120,10 +120,16 @@ class LayoutInvarianceTests(unittest.TestCase):
         for split, flat in [("f(\n    long_argument,\n)", "f(long_argument)"),
                             ("[\n    a,\n]", "[a]"),
                             ("(a, b,)", "(a, b)"),
-                            ("m!(\n    x,\n)", "m!(x)"),
                             ("S { a: 1, }", "S { a: 1 }")]:
             with self.subTest(flat=flat):
                 self.assertEqual(rt.code_tokens(split), rt.code_tokens(flat))
+
+    def test_commas_inside_macro_invocations_are_kept(self):
+        # A macro matcher can tell `m!(x,)` from `m!(x)`, so neither may stand for the other.
+        for with_comma, without in [("m!(x,)", "m!(x)"), ("v![a, b,]", "v![a, b]"),
+                                    ("m!{ (a,) }", "m!{ (a) }"), ('("n", pick!(x,))', '("n", pick!(x))')]:
+            with self.subTest(without=without):
+                self.assertNotEqual(rt.code_tokens(with_comma), rt.code_tokens(without))
 
     def test_code_tokens_keep_doc_comments(self):
         self.assertNotEqual(rt.code_tokens("/// one\nfn f() {}"), rt.code_tokens("/// two\nfn f() {}"))

@@ -131,9 +131,10 @@ def mutant_entries(text):
 
 
 def suite_entries(text):
-    """name -> layout-free key of each entry of SCENARIOS and SABOTAGE in harness.rs or
-    live_suite.rs, read with the shared Rust lexer (never run). Returns the entries and
-    the reasons a table could not be read; an unreadable table is never an empty one."""
+    """name -> the layout-free keys of every entry with that name in SCENARIOS and
+    SABOTAGE of harness.rs or live_suite.rs, read with the shared Rust lexer (never
+    run). Returns the entries and the reasons a table could not be read; an
+    unreadable table is never an empty one."""
     entries, problems = {}, []
     if not text:
         return entries, problems
@@ -149,7 +150,8 @@ def suite_entries(text):
             if name is None:
                 problems.append(f"{const} has an entry with no literal name")
                 continue
-            entries[f"{const}:{name}"] = rust_tokens.entry_key(row)
+            # Several rows may share a name; keep every one, in order.
+            entries.setdefault(f"{const}:{name}", []).append(rust_tokens.entry_key(row))
     return entries, problems
 
 
@@ -178,11 +180,11 @@ def ratchets(base_get, head_get):
         (base_rows, _), (head_rows, head_problems) = suite_entries(base_get(path)), suite_entries(head_get(path))
         if base_rows and head_problems:
             out.extend(f"{path}: {problem}" for problem in head_problems)
-        for name, key in sorted(base_rows.items()):
+        for name, keys in sorted(base_rows.items()):
             if name not in head_rows:
                 if not head_problems:
                     out.append(f"{path}: {name} was removed")
-            elif head_rows[name] != key:
+            elif sorted(head_rows[name]) != sorted(keys):
                 out.append(f"{path}: {name} was changed")
     try:
         base_claims, head_claims = claim_rows(base_get("claims.toml")), claim_rows(head_get("claims.toml"))
