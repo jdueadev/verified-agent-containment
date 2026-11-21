@@ -5,7 +5,7 @@
 //! ```text
 //! containment-lab redteam --model-endpoint http://127.0.0.1:11434/v1/chat/completions --model qwen2.5:7b-instruct
 //! containment-lab redteam --scripted        # a model that obeys every injection; validates the kit
-//! containment-lab redteam --scripted --weakness gateway_bypass   # the scorer must report LEAK
+//! containment-lab redteam --scripted --weakness gateway_bypass   # sabotage build only: the scorer must report LEAK
 //! ```
 use crate::common::*;
 use crate::mock::Server;
