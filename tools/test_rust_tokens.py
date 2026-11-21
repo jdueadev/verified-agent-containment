@@ -116,6 +116,10 @@ class LayoutInvarianceTests(unittest.TestCase):
         self.assertNotEqual(rt.code_tokens("let (a,) = t;"), rt.code_tokens("let (a) = t;"))
         self.assertNotEqual(rt.code_tokens("fn f() -> (u8,) {}"), rt.code_tokens("fn f() -> (u8) {}"))
 
+    def test_a_comparison_before_a_tuple_keeps_the_tuple_comma(self):
+        # `>` may be a comparison, not the end of generic arguments.
+        self.assertNotEqual(rt.code_tokens("a > (b,)"), rt.code_tokens("a > (b)"))
+
     def test_layout_commas_are_dropped(self):
         for split, flat in [("f(\n    long_argument,\n)", "f(long_argument)"),
                             ("[\n    a,\n]", "[a]"),

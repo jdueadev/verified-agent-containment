@@ -202,8 +202,9 @@ def drop_layout_commas(tokens):
     A comma before a closing delimiter is dropped only where it carries no meaning:
     before `]` or `}`, before `)` of a group that already has another element, and
     before `)` of a call-like group (one opened right after a non-keyword identifier,
-    `)`, `]` or `>`). The comma of a one-element tuple, `(x,)`, is kept: `(x)` is a
-    different expression. Nothing inside a macro invocation (`name!(...)`, `[...]` or
+    `)` or `]`). The comma of a one-element tuple, `(x,)`, is kept: `(x)` is a
+    different expression. `>` does not make a group call-like, because in `a > (b,)`
+    it is a comparison; a turbofish call `f::<T>(x,)` therefore keeps its comma. Nothing inside a macro invocation (`name!(...)`, `[...]` or
     `{...}`) is dropped, because a macro matcher can tell the two apart; if rustfmt
     adds such a comma, that counts as a change, which errs towards staleness."""
     out, groups = [], []
@@ -212,7 +213,7 @@ def drop_layout_commas(tokens):
             before = out[-1] if out else None
             call_like = before is not None and (
                 (before.kind == "ident" and before.text not in _KEYWORDS)
-                or (before.kind == "punct" and before.text in (")", "]", ">")))
+                or (before.kind == "punct" and before.text in (")", "]")))
             # Inside a macro invocation every token is significant: a matcher can tell
             # `m!(x,)` from `m!(x)`. The whole token tree is kept as written.
             in_macro = bool(groups and groups[-1]["in_macro"]) or (
