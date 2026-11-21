@@ -17,7 +17,7 @@ scripts/check.sh          # proofs, tests, differential, wasm, mutation (with la
 scripts/verdict.sh        # Lean recheck; needs Lean v4.34.0, or BENDTT set to a built kernel
 ```
 
-`scripts/check.sh` ends with `python3 tools/claims_check.py`, which fails if any row of [`claims.toml`](../claims.toml) has evidence that no longer holds, or if [`claims.md`](claims.md) is out of date (`--write` regenerates it).
+`scripts/check.sh` ends with `python3 tools/claims_check.py --strict`, which fails if any row of [`claims.toml`](../claims.toml) has evidence that no longer holds, or if [`claims.md`](claims.md) is out of date (`--write` regenerates it).
 
 ## What the laws cover
 
@@ -33,14 +33,21 @@ scripts/verdict.sh        # Lean recheck; needs Lean v4.34.0, or BENDTT set to a
 Run as root in a disposable distribution:
 
 ```bash
-export CARGO_TARGET_DIR=/tmp/verified-agent-containment-target
-cargo build --release -p containment-host
-sudo "$CARGO_TARGET_DIR/release/containment-lab" attack-suite --repeat 30 --out results/attack-suite-local.json
-sudo "$CARGO_TARGET_DIR/release/containment-lab" live-suite --out results/live-suite-local.json
+T=/tmp/verified-agent-containment-target
+cargo build --release -p containment-host --target-dir "$T/default"
+cargo build --release -p containment-host --features sabotage --target-dir "$T/sabotage"
+# Honest runs on the default build, which is the one that ships.
+sudo "$T/default/release/containment-lab" attack-suite --repeat 30 --out results/attack-suite-honest.json
+sudo "$T/default/release/containment-lab" live-suite --out results/live-suite-honest.json
+# Sabotage controls on the build that contains the defects; each takes the honest runs from the file above.
+sudo "$T/sabotage/release/containment-lab" attack-suite --honest-results results/attack-suite-honest.json --out results/attack-suite-local.json
+sudo "$T/sabotage/release/containment-lab" live-suite --honest-results results/live-suite-honest.json --out results/live-suite-local.json
 # add --allow-missing-limits only if the host has no cgroup v2 pids/memory/cpu controllers; it is recorded
 ```
 
-`scripts/run-wsl2.sh` wraps the same steps with kernel and cgroup checks. On Windows, [`scripts/lab/`](../scripts/lab/README.md) runs both suites in a throwaway WSL2 distro.
+The deliberate defects exist only in a build with the `sabotage` feature. A default build refuses every `--weakness` except `none` and runs no controls; each results file records the feature set and SHA-256 of the binary behind the honest runs and behind the controls, and `tools/claims_check.py --strict` requires them to differ.
+
+`scripts/run-wsl2.sh` wraps the attack-suite steps with kernel and cgroup checks. On Windows, [`scripts/lab/`](../scripts/lab/README.md) runs both suites in a throwaway WSL2 distro.
 
 ## Browser showcase
 

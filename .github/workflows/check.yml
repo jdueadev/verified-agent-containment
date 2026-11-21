@@ -1,8 +1,8 @@
 name: check
 
 # Runs every check that does not need root: the Bend proofs, the kernel and
-# host tests, clippy, the Rust/Bend/WebAssembly differential, the mutation
-# check, the TLA+ model and the claims registry. The root attack and live
+# host tests and clippy for both feature sets, the Rust/Bend/WebAssembly
+# differential, the mutation check, the TLA+ model and the claims registry. The root attack and live
 # suites are not run here; they stay a lab step recorded in claims.toml.
 
 on:
@@ -19,11 +19,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Pinned so a new stable release cannot fail the gate on its own. 1.98.0 is
-  # the last release before Atomic::fetch_update was deprecated (1.99.0);
-  # controller.rs on main still calls it, so clippy -D warnings fails on
-  # 1.99 and later. Raise this pin in the change that renames those calls.
-  RUST_TOOLCHAIN: 1.98.0
+  # Pinned so a new stable release cannot fail the -D warnings gate on its
+  # own. Raise it deliberately, in a change that fixes any new lints.
+  RUST_TOOLCHAIN: 1.100.0
   BEND_COMMIT: 0e2f38f759cc830849e489307f3d256a7d148288
   TLA_VERSION: v1.7.4
   TLA_SHA256: 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
@@ -86,17 +84,3 @@ jobs:
 
       - name: scripts/check.sh
         run: bash scripts/check.sh
-
-      - name: Host tests
-        run: cargo test -q -p containment-host
-
-      # The sabotage feature does not exist on main yet. Once it does, the
-      # sabotage build must also pass tests and clippy.
-      - name: Host tests and clippy with the sabotage feature
-        run: |
-          if grep -q '^sabotage *=' crates/containment-host/Cargo.toml; then
-            cargo test -q -p containment-host --features sabotage
-            cargo clippy -q -p containment-host --all-targets --features sabotage -- -D warnings
-          else
-            echo "no sabotage feature in containment-host; skipped"
-          fi
