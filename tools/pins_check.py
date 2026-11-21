@@ -8,7 +8,9 @@ Usage:
 drift    The Rust version lives only in rust-toolchain.toml and every other
          tool pin only in ci/pins.env. Fails if a workflow carries its own
          copy, if a pin is missing, or (--rustc, --cargo) if the active rustc
-         or cargo is not the pinned one. The lab runs it before every build.
+         or cargo is not the pinned one. scripts/lab/lab-inside.sh runs it with
+         --rustc --cargo before building; a tool that exits non-zero counts as
+         not the pinned one.
 require  Fails when CI=true and a tool or file is missing. Outside CI it lists
          what is missing as SKIPPED and succeeds, so a partial local run is
          visible but is never mistaken for the full gate.
@@ -77,6 +79,23 @@ def toolchain_channel(text):
     return tomllib.loads(text).get("toolchain", {}).get("channel")
 
 
+def reports_version(output, tool, channel):
+    """True when the first line of `<tool> --version` output is exactly the pinned
+    release: `rustc 1.100.0 (hash date)`. A pre-release, a longer version, or the
+    version appearing anywhere else in the output does not count."""
+    first = (output or "").splitlines()[0].strip() if (output or "").strip() else ""
+    return re.fullmatch(rf"{tool} {re.escape(channel)}( \(.*\))?", first) is not None
+
+
+def tool_version(command):
+    """stdout of `command`, or "" when it cannot run or exits non-zero."""
+    try:
+        done = subprocess.run(command, capture_output=True, text=True, cwd=ROOT)
+    except OSError:
+        return ""
+    return done.stdout if done.returncode == 0 else ""
+
+
 def drift_errors(pins, channel, workflows, rustc_version=None, cargo_version=None):
     errors = [f"ci/pins.env: {key} is missing" for key in PINS if not pins.get(key)]
     if not channel or not re.fullmatch(r"\d+\.\d+\.\d+", channel):
@@ -89,9 +108,9 @@ def drift_errors(pins, channel, workflows, rustc_version=None, cargo_version=Non
         for key, value in pins.items():
             if len(value) >= 8 and value in text:
                 errors.append(f"{name}: repeats the value of {key}")
-    if rustc_version is not None and channel and f"rustc {channel} " not in rustc_version + " ":
+    if rustc_version is not None and channel and not reports_version(rustc_version, "rustc", channel):
         errors.append(f"active rustc is `{rustc_version.strip()}`, not the pinned {channel}")
-    if cargo_version is not None and channel and f"cargo {channel} " not in cargo_version + " ":
+    if cargo_version is not None and channel and not reports_version(cargo_version, "cargo", channel):
         errors.append(f"active cargo is `{cargo_version.strip()}`, not the pinned {channel}")
     return errors
 
@@ -122,9 +141,9 @@ def main(argv):
         workflows = load_workflows()
         rustc = cargo = None
         if "--rustc" in argv:
-            rustc = subprocess.run(["rustc", "--version"], capture_output=True, text=True, cwd=ROOT).stdout
+            rustc = tool_version(["rustc", "--version"])
         if "--cargo" in argv:
-            cargo = subprocess.run(["cargo", "--version"], capture_output=True, text=True, cwd=ROOT).stdout
+            cargo = tool_version(["cargo", "--version"])
         errors = drift_errors(parse_pins((ROOT / "ci/pins.env").read_text(encoding="utf-8")),
                               toolchain_channel((ROOT / "rust-toolchain.toml").read_text(encoding="utf-8")), workflows, rustc, cargo)
         for error in errors:

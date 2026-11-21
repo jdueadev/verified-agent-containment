@@ -66,18 +66,23 @@ COMMIT="$(git rev-parse --short HEAD)"
 say "  Rust toolchain (pinned in rust-toolchain.toml)"
 [ ! -e rust-toolchain ] || fail "the clone has a legacy rust-toolchain file, which rustup would prefer over rust-toolchain.toml"
 [ ! -e .cargo/config ] || fail "the clone has a legacy .cargo/config, which cargo would prefer over .cargo/config.toml"
-# Overrides would make rustup or cargo use a compiler, flags or C toolchain other
-# than the one checked here. The distro is new each run, so none belongs here.
-for var in RUSTC RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER RUSTFLAGS CARGO_ENCODED_RUSTFLAGS RUSTC_BOOTSTRAP RUSTUP_TOOLCHAIN \
-           CARGO_HOME CC CXX CFLAGS CXXFLAGS LDFLAGS; do
-  [ -z "${!var+x}" ] || fail "$var is set; the lab builds with the pinned toolchain and no overrides"
-done
-OVERRIDES="$(compgen -e | grep -E '^CARGO_(BUILD|TARGET|PROFILE|UNSTABLE)_' || true)"
-[ -z "$OVERRIDES" ] || fail "cargo build variables are set: $(echo "$OVERRIDES" | tr '\n' ' ')"
+# Build overrides: variables that make rustup, cargo, rustc or the cc crate (which
+# builds ring's C code into the binary) use another compiler, flags, toolchain,
+# source or C toolchain. The distro is new each run, so none of them belongs
+# here; one that is set, even to an empty value, stops the run. Only names are
+# reported, never values. The paths below assume HOME=/root (lab.ps1 runs as root).
+[ "$HOME" = /root ] || fail "HOME is '$HOME', not /root; the cargo config and toolchain paths checked here assume it"
+BUILD_OVERRIDES='^(RUSTC|RUSTC_.*|RUSTFLAGS|RUSTDOCFLAGS|CARGO_ENCODED_.*|RUSTUP_.*|CARGO_HOME|CARGO_(BUILD|TARGET|PROFILE|UNSTABLE|SOURCE|REGISTRIES|REGISTRY)_.*|(HOST_|TARGET_)?(CC|CXX|AR|CFLAGS|CXXFLAGS|ARFLAGS|LDFLAGS)(_.*)?|CRATE_CC_NO_DEFAULTS|LD_PRELOAD)$'
+# Names come from the process environment, not `compgen -e`: bash cannot list a
+# name such as CFLAGS_x86_64-unknown-linux-gnu, but it still passes it to cargo.
+ENV_NAMES="$(python3 -c 'import os; print("\n".join(sorted(os.environ)))')" || fail "could not list the environment"
+OVERRIDES="$(grep -E "$BUILD_OVERRIDES" <<<"$ENV_NAMES")" || [ $? -eq 1 ] || fail "could not match the environment against the override pattern"
+[ -z "$OVERRIDES" ] || fail "build overrides are set: $(echo "$OVERRIDES" | tr '\n' ' ')"
 for cfg in /root/.cargo/config /root/.cargo/config.toml /.cargo/config /.cargo/config.toml; do
   [ ! -e "$cfg" ] || fail "$cfg exists; only the repository's .cargo/config.toml may configure the build"
 done
-# The channel is read by the same tested parser CI uses (tomllib, exact X.Y.Z).
+# Read with tools/pins_check.py's tomllib parser, the one `drift` uses; the exact
+# X.Y.Z check follows.
 PIN="$(python3 -c 'import sys; sys.path.insert(0, "tools"); import pins_check; print(pins_check.toolchain_channel(open("rust-toolchain.toml", encoding="utf-8").read()) or "")')" \
   || fail "could not read rust-toolchain.toml"
 [[ "$PIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "rust-toolchain.toml channel '$PIN' is not an exact version"
@@ -99,11 +104,12 @@ python3 tools/pins_check.py drift --rustc --cargo || fail "the active rustc or c
 RUSTC_VV="$(rustc -vV)" || fail "rustc -vV failed"
 HOST="$(sed -n 's/^host: //p' <<<"$RUSTC_VV")"
 [ -n "$HOST" ] || fail "rustc -vV reported no host"
-TOOLCHAIN_BIN="${RUSTUP_HOME:-/root/.rustup}/toolchains/$PIN-$HOST/bin"
+TOOLCHAIN_BIN="/root/.rustup/toolchains/$PIN-$HOST/bin"
 RUSTC_PATH="$(rustup which rustc)" || fail "rustup which rustc failed"
 CARGO_PATH="$(rustup which cargo)" || fail "rustup which cargo failed"
-# A toolchain added with `rustup toolchain link` reports any version it likes;
-# only an installed release lives at this path.
+# A toolchain added with `rustup toolchain link` reports any version it likes.
+# rustup refuses to link one under a release name such as `1.100.0-<host>`
+# ("invalid custom toolchain name"), so only an installed release lives here.
 [ "$RUSTC_PATH" = "$TOOLCHAIN_BIN/rustc" ] || fail "rustc is $RUSTC_PATH, not the installed $PIN-$HOST"
 [ "$CARGO_PATH" = "$TOOLCHAIN_BIN/cargo" ] || fail "cargo is $CARGO_PATH, not the installed $PIN-$HOST"
 CARGO_V="$(cargo -V)" || fail "cargo -V failed"
@@ -114,15 +120,19 @@ LD_V="$(ld --version | sed -n 1p)" || fail "ld --version failed"
 PKGS="$(dpkg-query -W gcc binutils libc6-dev)" || fail "dpkg-query failed for the C toolchain"
 LOCK_SHA="$(sha256sum Cargo.lock | cut -d' ' -f1)" || fail "no Cargo.lock"
 CFG_SHA="none"
-[ ! -e .cargo/config.toml ] || CFG_SHA="$(sha256sum .cargo/config.toml | cut -d' ' -f1)"
+if [ -e .cargo/config.toml ]; then
+  CFG_SHA="$(sha256sum .cargo/config.toml | cut -d' ' -f1)" || fail "could not hash .cargo/config.toml"
+fi
+COMMIT_ID="$(git rev-parse HEAD)" || fail "git rev-parse HEAD failed"
+RUSTC_ON_PATH="$(command -v rustc)" || fail "rustc is not on PATH"
 {
   echo "commit: $COMMIT"
-  echo "commit id: $(git rev-parse HEAD)"
+  echo "commit id: $COMMIT_ID"
   echo "rust-toolchain channel: $PIN"
   echo "rustup: $RUSTUP_V"
   echo "rustup active toolchain: $ACTIVE"
   echo "rustc path: $RUSTC_PATH"
-  echo "rustc on PATH: $(command -v rustc) (rustup proxy $RUSTUP_BIN)"
+  echo "rustc on PATH: $RUSTC_ON_PATH (rustup proxy $RUSTUP_BIN)"
   sed 's/^/rustc: /' <<<"$RUSTC_VV"
   echo "cargo: $CARGO_V"
   echo "Cargo.lock sha256: $LOCK_SHA"
@@ -130,7 +140,7 @@ CFG_SHA="none"
   echo "cc: $CC_V"
   echo "ld: $LD_V"
   sed 's/^/package: /' <<<"$PKGS"
-  echo "build overrides: none (checked before the build)"
+  echo "build overrides: none set (pattern checked before the build: $BUILD_OVERRIDES)"
 } > "$RES/environment.txt"
 
 # Two binaries. The default build is the one that ships: it runs the honest
@@ -140,14 +150,20 @@ cargo build --release -q --locked -p containment-host
 cargo build --release -q --locked -p containment-host --features sabotage --target-dir /root/vac/target-sabotage
 LAB_BIN=/root/vac/target/release/containment-lab
 SAB_BIN=/root/vac/target-sabotage/release/containment-lab
-# The build ran code from the clone (build scripts, proc macros) as root. The
-# toolchain must still be the one recorded above.
+# The build ran code from the clone (build scripts, proc macros) as root. This
+# is a tripwire, not proof: such code could also fake these answers or rewrite
+# the record (see scripts/lab/README.md). A failed command here gives an empty
+# string, which never equals the recorded value, so it stops the run.
 [ "$(rustc -vV)" = "$RUSTC_VV" ] || fail "rustc -vV changed during the build"
+[ "$(cargo -V)" = "$CARGO_V" ] || fail "cargo -V changed during the build"
 [ "$(rustup which rustc)" = "$RUSTC_PATH" ] || fail "the rustc path changed during the build"
+[ "$(rustup which cargo)" = "$CARGO_PATH" ] || fail "the cargo path changed during the build"
+LAB_SHA="$(sha256sum "$LAB_BIN" | cut -d' ' -f1)" || fail "could not hash $LAB_BIN"
+SAB_SHA="$(sha256sum "$SAB_BIN" | cut -d' ' -f1)" || fail "could not hash $SAB_BIN"
 
 {
-  echo "default binary sha256: $(sha256sum "$LAB_BIN" | cut -d' ' -f1)"
-  echo "sabotage binary sha256: $(sha256sum "$SAB_BIN" | cut -d' ' -f1)"
+  echo "default binary sha256: $LAB_SHA"
+  echo "sabotage binary sha256: $SAB_SHA"
   echo "kernel: $(uname -r)"
   echo "cgroup v2 controllers: $(cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null || echo none)"
   echo "cpus: $(nproc)"
