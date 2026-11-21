@@ -1,12 +1,16 @@
 name: check
 
-# Runs every check that does not need root: the Bend proofs, the kernel and
-# host tests and clippy for both feature sets, the Rust/Bend/WebAssembly
-# differential, the mutation check, the TLA+ model and the claims registry. The root attack and live
-# suites are not run here; they stay a lab step recorded in claims.toml.
+# Splits fast per-push verification from the merge-time lab freshness gate:
+# - `check` runs on every push (including Draft PRs): Bend proofs, Rust/WASM
+#   tests and clippy for both feature sets, differential, mutation, TLA+,
+#   tooling tests, and non-strict claims_check.py (CI-1/2/3/5/6/7 + stale warnings).
+# - `evidence-freshness` runs on Ready PRs and pushes to main: enforces
+#   claims_check.py --strict (fresh lab evidence, regenerated docs/claims.md,
+#   dual-binary stamps, and full unwaived attack-suite runs).
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [main]
 
@@ -82,5 +86,18 @@ jobs:
           done
           test -f "$TLA2TOOLS" || { echo "::error::missing $TLA2TOOLS"; exit 1; }
 
-      - name: scripts/check.sh
-        run: bash scripts/check.sh
+      - name: scripts/check.sh --no-strict
+        run: bash scripts/check.sh --no-strict
+
+  evidence-freshness:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Strict claims and evidence freshness gate
+        run: python3 tools/claims_check.py --strict
