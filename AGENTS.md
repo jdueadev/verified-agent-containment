@@ -143,6 +143,11 @@ No merge rests on a local result. The `check` workflow is the gate.
 4. **Do not commit incidental churn.** `scripts/check.sh` rewrites a few files
    under `results/`. Restore them unless refreshing them is the point of the
    change.
+5. **Merge by asking, never by overriding.** Request auto-merge
+   (`gh pr merge --auto --squash`) and let the required checks decide. Never
+   merge with `--admin` or a ruleset bypass, and never change a ruleset or the
+   `POLICY_ENFORCE` variable to get a change in. A lane C change is merged by
+   the maintainer.
 
 ## Rust
 
