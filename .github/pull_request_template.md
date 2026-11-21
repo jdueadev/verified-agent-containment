@@ -7,6 +7,15 @@ Closes #
 ## Lane
 <!-- A, B or C, from ci/lanes.toml. The policy check reports the real one. -->
 
+## Process tier
+<!-- Heavy or routine, as AGENTS.md (Workflow, step 1) defines them. Heavy needs an issue and a design review first. -->
+- [ ] Touches the rules or the gate (`AGENTS.md`, `CLAUDE.md`, `ci/`, `.github/`, `docs/decisions/`, `tools/policy_check.py`)
+- [ ] Touches what decides "passed" (`scripts/check.sh`, `tools/mutation_check.py`, kernel law tests, harness, live suite, red-team runner, lab results)
+- [ ] Crosses a trust boundary (kernel events, controller, gateway, reset, sandbox isolation, claims schema)
+- [ ] Removes, narrows or loosens a check, widens what a checker accepts, or modifies or deletes an existing test assertion
+
+Any box ticked: heavy. None ticked: say why the change does not widen what any checker accepts.
+
 ## Claims affected
 <!-- Claim ids from claims.toml. Paste the stale ids exactly as `python3 tools/claims_check.py --affected origin/main` prints them. A change that stales a claim stays a draft until the lab has run. -->
 

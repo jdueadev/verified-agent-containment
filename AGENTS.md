@@ -99,8 +99,15 @@ branch, so a change cannot reclassify itself.
 A pull request from a fork needs the maintainer whatever its lane.
 
 While agents and the maintainer push under the same GitHub account, the lanes
-are policy: the required checks are the real gate, and an agent must not merge
-a lane C change on its own.
+are policy: the required checks are the real gate, the maintainer merges lane C
+by hand, and an agent must not merge a lane C change on its own.
+
+Once agents push under their own identity (`docs/decisions/0003-lane-c-friction.md`),
+the maintainer's approval of a pull request's head commit is the gate for lane
+C: `policy` passes on it, and auto-merge does the rest. A push after the
+approval needs a new one. The agent identity has no administration rights and
+no Workflows permission, is not a code owner and is on no bypass list. A
+change under `.github/workflows/` is therefore pushed by the maintainer.
 
 ## When your change makes a claim stale
 
@@ -129,14 +136,31 @@ No merge rests on a local result. The `check` workflow is the gate.
 
 ## Workflow
 
-1. **Issue first for lane C.** Before changing the trusted base, there must be
-   an issue that states the behaviour, the claims affected and the falsifier.
-   Use the issue forms. Lanes A and B may go straight to a pull request.
-2. **Design review before lane C and before trust-boundary changes** (kernel
-   events, controller, gateway, reset, sandbox isolation, the claims schema).
-   Get the design examined from several independent angles, at least
-   correctness of the invariants, how it could be attacked, and how it will be
-   tested, and record the outcome in the issue. How you do that is up to you.
+1. **Issue first for heavy changes.** A change is heavy when it does any of:
+   - touches the rules or the gate: `AGENTS.md`, `CLAUDE.md`, `ci/`,
+     `.github/`, `docs/decisions/`, `tools/policy_check.py`;
+   - touches what decides "passed": `scripts/check.sh`,
+     `tools/mutation_check.py`, `crates/containment-kernel/tests/`, the
+     harness, live suite or red-team runner, or lab results;
+   - crosses a trust boundary: kernel events, controller, gateway, reset,
+     sandbox isolation, the claims schema;
+   - removes, narrows or loosens a check, assertion, ratchet or scenario,
+     widens what a checker accepts, or modifies or deletes an existing test
+     assertion.
+
+   Before a heavy change there must be an issue that states the behaviour, the
+   claims affected and the falsifier. Use the issue forms. Lanes A and B may
+   go straight to a pull request. So may a routine lane C change (a checker
+   made stricter, a refactor that only adds tests, a lab-script fix); its
+   description states the behaviour, the claims affected and the falsifier,
+   including why the change does not widen what any checker accepts. If in
+   doubt, it is heavy. The maintainer still reads every lane C pull request;
+   this tier only decides how much happens before it.
+2. **Design review before a heavy change.** Get the design examined from
+   several independent angles, at least correctness of the invariants, how it
+   could be attacked, and how it will be tested. Record the outcome in the
+   issue, and for a change to the rules also in its `docs/decisions/` record.
+   How you do that is up to you.
 3. **One topic branch and one pull request per issue.** Never push to `main`.
    The description says `Closes #n` and fills in the template: lane, claims
    affected, invariants touched, tier reached, checks not run.
@@ -148,8 +172,9 @@ No merge rests on a local result. The `check` workflow is the gate.
    let the required checks decide. Never request it for a fork's pull
    request: the maintainer merges those. Never
    merge with `--admin` or a ruleset bypass, and never change a ruleset or the
-   `POLICY_ENFORCE` variable to get a change in. A lane C change is merged by
-   the maintainer.
+   `POLICY_ENFORCE` variable to get a change in. A lane C change merges only
+   after the maintainer approves its head commit, or, while agents share the
+   maintainer's account, when the maintainer merges it.
 
 ## Rust
 
