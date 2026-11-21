@@ -327,7 +327,7 @@ impl Shared {
                 if self.weak.single_flag_authority {
                     self.authority_pending.store(0, Ordering::SeqCst);
                 } else {
-                    let _ = self.authority_pending.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
+                    let _ = self.authority_pending.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
                 }
                 true
             }

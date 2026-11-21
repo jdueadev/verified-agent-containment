@@ -154,7 +154,7 @@ pub(super) fn serve_gateway(listener: UnixListener, shared: Arc<Shared>) {
             u64::from(p.uid) == shared.sandbox_uid.load(Ordering::SeqCst)
                 || (shared.weak.stale_generation_authority && p.uid >= shared.uid_base && p.uid < shared.uid_base + 16)
         });
-        let reserved = shared.active_connections.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < MAX_GATEWAY_CONNECTIONS).then_some(n + 1)).is_ok();
+        let reserved = shared.active_connections.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < MAX_GATEWAY_CONNECTIONS).then_some(n + 1)).is_ok();
         if !uid_ok || !reserved {
             if reserved {
                 shared.active_connections.fetch_sub(1, Ordering::SeqCst);
@@ -255,7 +255,7 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
     // concurrent calls cannot overspend. The reservation belongs to this lease.
     let reserve = reserve + body.len() as u64 / 3;
     let lease = live.lease.load(Ordering::SeqCst);
-    let reserved = live.tokens.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| (used + reserve <= budget).then_some(used + reserve));
+    let reserved = live.tokens.try_update(Ordering::SeqCst, Ordering::SeqCst, |used| (used + reserve <= budget).then_some(used + reserve));
     if reserved.is_err() {
         shared.apply(Some("budget_tokens"), received, |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
         return denied("token budget for this lease is used up");
@@ -267,7 +267,7 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
             // A reset started a new lease; this call's charge belongs to the old one.
             return live.tokens.load(Ordering::SeqCst);
         }
-        live.tokens.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |t| Some(t.saturating_sub(reserve) + used)).map_or(0, |t| t.saturating_sub(reserve) + used)
+        live.tokens.try_update(Ordering::SeqCst, Ordering::SeqCst, |t| Some(t.saturating_sub(reserve) + used)).map_or(0, |t| t.saturating_sub(reserve) + used)
     };
     // Inference is baseline egress: allowed in Restrict, refused in Hold and above.
     let Some(slot) = admit(shared, true, true) else {

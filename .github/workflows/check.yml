@@ -19,11 +19,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Pinned so a new stable release cannot fail the gate on its own. 1.98.0 is
-  # the last release before Atomic::fetch_update was deprecated (1.99.0);
-  # controller.rs on main still calls it, so clippy -D warnings fails on
-  # 1.99 and later. Raise this pin in the change that renames those calls.
-  RUST_TOOLCHAIN: 1.98.0
+  # Pinned so a new stable release cannot fail the -D warnings gate on its
+  # own. Raise it deliberately, in a change that fixes any new lints.
+  RUST_TOOLCHAIN: 1.100.0
   BEND_COMMIT: 0e2f38f759cc830849e489307f3d256a7d148288
   TLA_VERSION: v1.7.4
   TLA_SHA256: 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
