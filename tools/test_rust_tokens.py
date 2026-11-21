@@ -174,5 +174,191 @@ class ConstArrayTests(unittest.TestCase):
                 rt.const_array_entries(src, "SABOTAGE")
 
 
+def _exact(src):
+    """Every token except plain comments, trailing commas included."""
+    return [(t.kind, t.text) for t in rt.tokenize(src) if t.kind != "comment"]
+
+
+class SpliceTests(unittest.TestCase):
+    """splice_once: the Rust mutant matcher (#61, step 3)."""
+
+    def assertSplices(self, src, old, new, expected):
+        # Exact tokens, commas included: code_tokens would let an invalid `{ x, }` pass.
+        self.assertEqual(_exact(rt.splice_once(src, old, new)), _exact(expected))
+
+    def test_reflowed_list_with_trailing_comma(self):
+        self.assertSplices("const P: &[A] = &[\n    A::X,\n    A::Y,\n];",
+                           "const P: &[A] = &[A::X, A::Y];", "const P: &[A] = &[];", "const P: &[A] = &[];")
+
+    def test_pattern_ending_inside_a_list(self):
+        self.assertSplices("const P: &[A] = &[A::X, A::Y, A::Z];", "    A::Y,\n    A::Z,\n];", "    A::Y,\n];",
+                           "const P: &[A] = &[A::X, A::Y,];")
+
+    def test_arm_body_wrapped_in_a_block(self):
+        src = "match m {\n    M::A => {\n        f(x)\n    }\n    M::B => g,\n}"
+        self.assertSplices(src, "M::A => f(x),\n    M::B => g,", "M::A | M::B => g,", "match m { M::A | M::B => g, }")
+        self.assertSplices(src, "M::B => g,", "M::B => h,", "match m { M::A => { f(x) } M::B => h, }")
+
+    def test_last_arm_wrapped_in_a_block(self):
+        src = "match m { M::A => f(x), M::B => {\n    g\n} }"
+        self.assertSplices(src, "M::A => f(x),\n    M::B => g,", "M::A | M::B => g,", "match m { M::A | M::B => g, }")
+
+    def test_a_match_inside_a_block_keeps_its_braces(self):
+        self.assertSplices("match m { M::A => {\n    a && b\n} M::B => c, }", "a && b", "b",
+                           "match m { M::A => { b } M::B => c, }")
+
+    def test_a_block_with_a_statement_is_not_unwrapped(self):
+        with self.assertRaises(rt.MatchError):
+            rt.splice_once("match m { M::A => { f(); g } }", "M::A => g,", "M::A => h,")
+
+    def test_cutting_an_arm_block_apart_is_an_error(self):
+        with self.assertRaises(rt.MatchError):
+            rt.splice_once("match m { M::A => { f(x) } M::B => y, }", "M::A => f", "M::A => g")
+
+    def test_comments_and_whitespace_are_ignored(self):
+        self.assertSplices("f(a /* note */,\n  // more\n  b)", "f(a, b)", "f(b, a)", "f(b, a)")
+
+    def test_bytes_outside_the_match_are_kept(self):
+        src = "// head\nlet a = x + 1;   // tail\n"
+        self.assertEqual(rt.splice_once(src, "x + 1", "x - 1"), "// head\nlet a = x - 1;   // tail\n")
+
+    def test_a_trailing_comma_must_end_the_matched_expression(self):
+        # `A => b,` must not match the front of `A => b.c(),`.
+        with self.assertRaises(rt.MatchError):
+            rt.splice_once("match m { A => b.c(), }", "A => b,", "A => d,")
+
+    def test_no_match_and_two_matches_are_errors(self):
+        for src in ["let a = y + 1;", "let a = x + 1; let b = x + 1;"]:
+            with self.subTest(src=src), self.assertRaises(rt.MatchError):
+                rt.splice_once(src, "x + 1", "x - 1")
+
+    def test_string_contents_are_compared_exactly(self):
+        with self.assertRaises(rt.MatchError):
+            rt.splice_once('f("a b")', 'f("a  b")', 'f("")')
+
+    def test_macro_bodies_are_not_unwrapped(self):
+        with self.assertRaises(rt.MatchError):
+            rt.splice_once("m! { (a) => { b } }", "(a) => b", "(a) => c")
+
+    def test_a_trailing_comma_needs_a_list_around_it(self):
+        # A block tail, a parenthesised expression or an index is not a list: `x,` must not
+        # match there, or a mutant could land on a lookalike (review of #66).
+        for src, old in [("fn stop() { revoke(); kill() }", "kill(),"), ("let v = (x);", "x,"),
+                         ("let v = a[x];", "x,"), ("fn f() { x }", "x, }")]:
+            with self.subTest(src=src), self.assertRaises(rt.MatchError):
+                rt.splice_once(src, old, "y,")
+
+    def test_a_trailing_comma_matches_where_rustfmt_drops_one(self):
+        self.assertSplices("f(a, kill())", "kill(),", "k(),", "f(a, k(),)")
+        self.assertSplices("g(kill())", "kill(),", "k(),", "g(k(),)")
+        self.assertSplices("let v = &[kill()];", "kill(),", "k(),", "let v = &[k(),];")
+
+    WRAPPED = "match m { M::R => {\n    a && b\n}\nM::H => c, }"
+
+    def test_taking_in_a_wrapped_arm_puts_its_comma_back(self):
+        self.assertSplices(self.WRAPPED, "M::R => a && b", "M::R => b", "match m { M::R => b, M::H => c, }")
+
+    def test_a_whole_arm_body_with_its_comma_takes_in_the_braces(self):
+        self.assertSplices(self.WRAPPED, "a && b,", "b,", "match m { M::R => b, M::H => c, }")
+
+    def test_macro_rules_bodies_are_not_unwrapped(self):
+        for src in ["macro_rules! m { (a) => { b }; }", "macro_rules! m { (a) => { b } }"]:
+            with self.subTest(src=src), self.assertRaises(rt.MatchError):
+                rt.splice_once(src, "(a) => b", "(a) => c")
+
+    def test_a_block_that_continues_into_an_expression_is_not_unwrapped(self):
+        # `{ b }.c()` is a method call on a block, not the arm body `b` (CodeRabbit on #66).
+        for tail in [".c()", "?", " as u8", " + 1"]:
+            src = f"match x {{ A => {{ b }}{tail}, B => c, }}"
+            for old in ["A => b,", "A => b"]:
+                with self.subTest(src=src, old=old), self.assertRaises(rt.MatchError):
+                    rt.splice_once(src, old, "A => d,")
+
+    def test_empty_pattern_is_an_error(self):
+        with self.assertRaises(rt.MatchError):
+            rt.splice_once("let a = 1;", "  // nothing\n", "x")
+
+
+def _token_change(before, after):
+    """The canonical tokens removed and inserted between two versions of a file."""
+    a = [(t.kind, t.text) for t in rt._canonical(rt.tokenize(before))[0]]
+    b = [(t.kind, t.text) for t in rt._canonical(rt.tokenize(after))[0]]
+    head = 0
+    while head < min(len(a), len(b)) and a[head] == b[head]:
+        head += 1
+    tail = 0
+    while tail < min(len(a), len(b)) - head and a[-1 - tail] == b[-1 - tail]:
+        tail += 1
+    return a[head:len(a) - tail], b[head:len(b) - tail]
+
+
+class KernelMutantTests(unittest.TestCase):
+    """Every Rust mutant matches the kernel once, before and after rustfmt."""
+
+    LIB = ROOT / "crates/containment-kernel/src/lib.rs"
+
+    @classmethod
+    def setUpClass(cls):
+        import kernel_mutants
+        cls.mutants = kernel_mutants.RUST_MUTANTS
+        cls.lib = cls.LIB.read_text(encoding="utf-8")
+
+    def test_every_mutant_makes_the_same_edit_as_the_byte_replacement(self):
+        self.assertTrue(self.mutants)
+        for name, old, new in self.mutants:
+            with self.subTest(mutant=name):
+                self.assertEqual(_exact(rt.splice_once(self.lib, old, new)),
+                                 _exact(self.lib.replace(old, new, 1)))
+
+    def _rustfmt(self, max_width, text=None):
+        """lib.rs (or text) formatted by the rustfmt of the toolchain rust-toolchain.toml
+        pins, with the repository's rustfmt.toml guard bypassed. A parse error fails the
+        test. Skipped locally when rustfmt is missing; in CI that is a failure, so this
+        test can never pass by not running."""
+        import os
+        import re
+        import shutil
+        import subprocess
+        import tempfile
+        if not shutil.which("rustfmt"):
+            if os.environ.get("CI") == "true":
+                self.fail("rustfmt is missing in CI")
+            self.skipTest("rustfmt is not installed")
+        edition = re.search(r'^edition = "(\d+)"', (ROOT / "Cargo.toml").read_text(encoding="utf-8"), re.M).group(1)
+        channel = re.search(r'^channel = "([^"]+)"', (ROOT / "rust-toolchain.toml").read_text(encoding="utf-8"), re.M).group(1)
+        with tempfile.TemporaryDirectory() as tmp:
+            config, target = Path(tmp) / "rustfmt.toml", Path(tmp) / "lib.rs"
+            config.write_text(f'edition = "{edition}"\n' + (f"max_width = {max_width}\n" if max_width else ""))
+            target.write_bytes((self.lib if text is None else text).encode("utf-8"))
+            run = subprocess.run(["rustfmt", f"+{channel}", "--config-path", str(config), str(target)],
+                                 cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr[-2000:])
+            return target.read_text(encoding="utf-8")
+
+    def test_every_mutant_survives_rustfmt(self):
+        for max_width in (None, 40):
+            formatted = self._rustfmt(max_width)
+            # Not vacuous: rustfmt really rewrote the file.
+            self.assertNotEqual(formatted, self.lib)
+            for name, old, new in self.mutants:
+                with self.subTest(max_width=max_width, mutant=name):
+                    mutated = rt.splice_once(formatted, old, new)
+                    self.assertEqual(_token_change(formatted, mutated),
+                                     _token_change(self.lib, self.lib.replace(old, new, 1)))
+                    self._rustfmt(max_width, mutated)  # the mutant still parses
+
+
+class MutationCheckTests(unittest.TestCase):
+    def test_importing_does_not_run_the_check(self):
+        import mutation_check
+        self.assertTrue(callable(mutation_check.main))
+
+    def test_a_missing_target_names_the_mutant(self):
+        import mutation_check
+        with self.assertRaises(SystemExit) as ctx:
+            mutation_check.rust_mutant("fn f() {}", "lost", "x + 1", "x - 1")
+        self.assertIn("lost", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
