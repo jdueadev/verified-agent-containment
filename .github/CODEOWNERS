@@ -6,6 +6,7 @@
 /ci/ @jdueadev
 /scripts/ @jdueadev
 /.gitattributes @jdueadev
+/.coderabbit.yaml @jdueadev
 /AGENTS.md @jdueadev
 /CLAUDE.md @jdueadev
 /docs/decisions/ @jdueadev
