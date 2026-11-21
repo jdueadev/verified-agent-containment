@@ -176,7 +176,7 @@ PASS    reset_races_kill
 PASS    double_reset
 sabotage controls skipped: this build does not contain the defects
 runs 176/176 passed; sabotage 0/0 detected; admitted after commit 0; written after cut 0
-honest runs: 176 taken from /mnt/h/containment-lab/results/20261120-214517/attack-suite-honest.json
+honest runs: 176 taken from /mnt/h/containment-lab/results/20261120-220135/attack-suite-honest.json
 CAUGHT  sabotage ignore_expiry via monitor_crash
 CAUGHT  sabotage shared_network via direct_egress
 CAUGHT  sabotage gateway_bypass via denied_hosts

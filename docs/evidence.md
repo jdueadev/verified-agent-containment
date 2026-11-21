@@ -30,7 +30,7 @@ On Linux 6.18 in a 2-core VM, p50 / p95 / max:
 - Committed to cgroup frozen: 0.44 / 2.39 / 7.51 ms.
 - Committed to cgroup killed: 1.25 / 2.64 / 3.30 ms.
 
-These figures are from the Linux VM run at commit d81a32e, kept as `results/linux-vm/attack-suite-d81a32e.json`. That VM has not been re-run since the controller split, so `docs/claims.md` marks its platform entries as predating later changes. `results/attack-suite.json` is now the WSL2 run at b76abe4 (`results/wsl2/lab-b76abe4/`); its own timing figures are in that file under `metrics`.
+These figures are from the Linux VM run at commit d81a32e, kept as `results/linux-vm/attack-suite-d81a32e.json`. That VM has not been re-run since the controller split, so `docs/claims.md` marks its platform entries as predating later changes. `results/attack-suite.json` is now the WSL2 run at ab9a061 (`results/wsl2/lab-ab9a061/`); its own timing figures are in that file under `metrics`.
 
 Maxima vary between runs on this shared VM because the enforcer thread can be descheduled; one run of an earlier build of this change had a `gateway_flood` stop at 93 ms. Every measured stop, including that one, recorded 0 bytes admitted after commit and 0 written after the cut.
 
@@ -42,7 +42,7 @@ Monitor loss to containment is bounded by lease expiry: p50 189 ms, p95 198 ms, 
 
 | Run | Files | Status |
 |---|---|---|
-| b76abe4, Windows lab | `results/wsl2/lab-b76abe4/` | **Latest.** Suites only, after the controller split and hardening. Attack suite 176/176 and 29/29, live suite 11/11 and 8/8, limits enforced. The first run where the honest scenarios ran on the default build and the sabotage controls on a separate build that contains the defects; both binary hashes are in the results. No red team in this run. The WSL2 platform record in `claims.toml` cites it, and `results/attack-suite.json` and `results/live-suite.json` are copies of it. |
+| ab9a061, Windows lab | `results/wsl2/lab-ab9a061/` | **Latest.** Suites only, after the controller split and hardening. Attack suite 176/176 and 29/29, live suite 11/11 and 8/8, limits enforced. The first run where the honest scenarios ran on the default build and the sabotage controls on a separate build that contains the defects; both binary hashes are in the results. No red team in this run. The WSL2 platform record in `claims.toml` cites it, and `results/attack-suite.json` and `results/live-suite.json` are copies of it. |
 | f88aeef, Windows lab | `results/wsl2/lab-f88aeef/` | Attack suite 176/176 and 29/29, live suite 11/11 and 8/8, limits enforced, red team 0 leaks. Cited by `claims.toml`. |
 | 9ffd69a, Windows lab | `results/wsl2/lab-9ffd69a/` | Same suite results. Its red-team run found the lag-clock bug and recorded the 241 B allowed-host send. Cited by `claims.toml`. |
 | 870142c, first WSL2 run | `results/wsl2/attack-suite-space-heater-870142c.*` | Historical. 167/168: the memfd interop escape described below. Kept because `claims.toml` records this failure. |
