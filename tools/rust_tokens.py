@@ -323,23 +323,28 @@ def _in_macro(toks, partner):
     return inside
 
 
-def _separates(toks, partner, close):
+def _separates(toks, partner, close, macro):
     """Whether a comma before the closing delimiter toks[close] would be a list
     separator rustfmt may add or drop: the group holds a top-level `,` or `=>` (a list,
     a struct literal, a match), or it is a call's argument list, or an array literal. A
-    plain block `{ a; b }`, a parenthesised expression `(x)` and an index `a[i]` do not
-    qualify, so `x,` never matches the tail of one of them."""
+    plain block `{ a; b }`, a parenthesised expression `(x)`, an index `a[i]` and a
+    repeat array `[x; n]` do not qualify, so `x,` never matches the tail of one of
+    them. Nor does any group in a macro's token tree (macro is the set _in_macro
+    gives): a matcher sees every comma, so a comma there is never optional."""
     opener = next((j for j, k in partner.items() if k == close), None)
-    if opener is None:
+    if opener is None or opener in macro or (opener + 1 < close and opener + 1 in macro):
         return False
-    k = opener + 1
+    k, separated = opener + 1, False
     while k < close:
         if k in partner:
             k = partner[k] + 1
             continue
-        if toks[k].kind == "punct" and toks[k].text in (",", "=>"):
-            return True
+        if toks[k].kind == "punct" and toks[k].text == ";" and toks[opener].text == "[":
+            return False
+        separated = separated or (toks[k].kind == "punct" and toks[k].text in (",", "=>"))
         k += 1
+    if separated:
+        return True
     before = toks[opener - 1] if opener > 0 else None
     after_value = before is not None and (
         (before.kind == "ident" and before.text not in _KEYWORDS)
@@ -474,6 +479,7 @@ def splice_once(src, old, new):
     needle = [(t.kind, t.text) for t in canon]
     raw = [t for t in tokenize(src) if t.kind != "comment"]
     partner = _partners(raw)
+    macro = _in_macro(raw, partner)
     index = {t.start: k for k, t in enumerate(raw)}
     hay, blocks, _ = _canonical(raw)
     keys = [(t.kind, t.text) for t in hay]
@@ -483,7 +489,7 @@ def splice_once(src, old, new):
         tok = raw[k] if k < len(raw) else None
         if tok is None or tok.kind != "punct":
             return False
-        return tok.text == "," or (tok.text in _CLOSE and _separates(raw, partner, k))
+        return tok.text == "," or (tok.text in _CLOSE and _separates(raw, partner, k, macro))
 
     def separated(k):
         """raw[k] is a comma or a closer, so no separator is missing before it."""

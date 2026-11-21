@@ -248,6 +248,15 @@ class SpliceTests(unittest.TestCase):
             with self.subTest(src=src), self.assertRaises(rt.MatchError):
                 rt.splice_once(src, old, "y,")
 
+    def test_no_optional_comma_in_repeat_arrays_or_macros(self):
+        # `[0; 8,]` is not Rust, and a macro matcher sees every comma (CodeRabbit on #66).
+        for src, old in [("let v = [0; 4];", "4,"), ("m!(a, kill())", "kill(),"),
+                         ("m!(f(a, kill()))", "kill(),"), ("v![a, kill()]", "kill(),")]:
+            with self.subTest(src=src), self.assertRaises(rt.MatchError):
+                rt.splice_once(src, old, "k(),")
+        # A comma that is really there still matches.
+        self.assertSplices("m!(a, kill(),)", "kill(),", "k(),", "m!(a, k(),)")
+
     def test_a_trailing_comma_matches_where_rustfmt_drops_one(self):
         self.assertSplices("f(a, kill())", "kill(),", "k(),", "f(a, k(),)")
         self.assertSplices("g(kill())", "kill(),", "k(),", "g(k(),)")
