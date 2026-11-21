@@ -304,8 +304,6 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
 /// Removes exact credential values from anything returned to the agent, in
 /// case an upstream echoes request headers or puts a token in an error.
 const REDACTED: &str = "[redacted]";
-/// How many times a text is swept before it is replaced whole.
-const MAX_REDACTION_PASSES: usize = 8;
 /// How many suffixes are tried to keep a redacted object key unique.
 const MAX_KEY_SUFFIXES: usize = 64;
 
@@ -314,29 +312,38 @@ pub(super) fn redact(live: &LiveState, value: Value) -> Value {
 }
 
 /// Replaces every secret inside `text`, or returns `None` if there is none.
-/// `secrets` is ordered longest first, so a secret that contains a shorter one
-/// is replaced whole.
 ///
-/// A replacement can itself complete a secret, for example one that contains
-/// the marker. So the passes repeat until the text holds no secret. If it
-/// still does after `MAX_REDACTION_PASSES`, the whole text becomes the marker.
+/// The text is scanned once, left to right, and at each position the longest
+/// secret that starts there is replaced. Markers already written are never
+/// scanned again, so the result is at most `REDACTED.len()` times the input
+/// however the secrets relate to the marker.
+///
+/// A replacement can still leave a secret in the result: one that spans a
+/// marker and its neighbours, or one that is part of the marker itself. Such a
+/// text cannot be cleaned piece by piece, so it is replaced whole.
 fn redact_text(secrets: &[String], text: &str) -> Option<String> {
-    let holds_secret = |text: &str| secrets.iter().any(|secret| !secret.is_empty() && text.contains(secret.as_str()));
-    if !holds_secret(text) {
-        return None;
-    }
-    let mut clean = text.to_owned();
-    for _ in 0..MAX_REDACTION_PASSES {
-        for secret in secrets.iter().filter(|s| !s.is_empty()) {
-            if clean.contains(secret.as_str()) {
-                clean = clean.replace(secret.as_str(), REDACTED);
+    let mut clean = String::new();
+    let mut found = false;
+    let mut rest = text;
+    while let Some(first) = rest.chars().next() {
+        // `secrets` is ordered longest first.
+        match secrets.iter().find(|secret| !secret.is_empty() && rest.starts_with(secret.as_str())) {
+            Some(secret) => {
+                clean.push_str(REDACTED);
+                rest = &rest[secret.len()..];
+                found = true;
+            }
+            None => {
+                clean.push(first);
+                rest = &rest[first.len_utf8()..];
             }
         }
-        if !holds_secret(&clean) {
-            return Some(clean);
-        }
     }
-    Some(REDACTED.to_owned())
+    if !found {
+        return None;
+    }
+    let holds_secret = secrets.iter().any(|secret| !secret.is_empty() && clean.contains(secret.as_str()));
+    Some(if holds_secret { REDACTED.to_owned() } else { clean })
 }
 
 /// Removes secrets from a JSON value by walking it. Strings and object keys
@@ -507,8 +514,30 @@ mod tests {
         }
     }
 
-    /// When the marker itself is a secret no sweep can end clean, so the text
-    /// is replaced whole instead of looping.
+    /// Secrets that are part of the marker must not make the output grow: the
+    /// scan never revisits a marker it wrote, and the text is replaced whole.
+    #[test]
+    fn secrets_inside_the_marker_do_not_expand_the_output() {
+        let all = secrets(&["d", "e"]);
+        assert_eq!(redact_value(&all, json!("d".repeat(64))), json!("[redacted]"));
+        assert_eq!(redact_value(&all, json!("x".repeat(64))), json!("x".repeat(64)));
+        let big = "de".repeat(1 << 16);
+        assert_eq!(redact_value(&all, json!(big)), json!("[redacted]"));
+    }
+
+    #[test]
+    fn output_is_bounded_by_the_marker_length() {
+        let clean = redact_value(&secrets(&["k"]), json!("k".repeat(1000)));
+        assert_eq!(clean.as_str().map(str::len), Some(1000 * REDACTED.len()));
+    }
+
+    #[test]
+    fn multibyte_text_around_a_secret_is_kept() {
+        assert_eq!(redact_value(&secrets(&["cl\u{00e9}"]), json!("\u{00e9}t\u{00e9} cl\u{00e9} \u{1f511}")), json!("\u{00e9}t\u{00e9} [redacted] \u{1f511}"));
+    }
+
+    /// When the marker itself is a secret no scan can end clean, so the text
+    /// is replaced whole.
     #[test]
     fn a_text_that_cannot_be_cleaned_is_replaced_whole() {
         assert_eq!(redact_value(&secrets(&["[redacted]", "abc"]), json!("abc and more")), json!("[redacted]"));
