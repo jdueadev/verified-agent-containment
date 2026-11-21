@@ -174,11 +174,17 @@ class ConstArrayTests(unittest.TestCase):
                 rt.const_array_entries(src, "SABOTAGE")
 
 
+def _exact(src):
+    """Every token except plain comments, trailing commas included."""
+    return [(t.kind, t.text) for t in rt.tokenize(src) if t.kind != "comment"]
+
+
 class SpliceTests(unittest.TestCase):
     """splice_once: the Rust mutant matcher (#61, step 3)."""
 
     def assertSplices(self, src, old, new, expected):
-        self.assertEqual(rt.code_tokens(rt.splice_once(src, old, new)), rt.code_tokens(expected))
+        # Exact tokens, commas included: code_tokens would let an invalid `{ x, }` pass.
+        self.assertEqual(_exact(rt.splice_once(src, old, new)), _exact(expected))
 
     def test_reflowed_list_with_trailing_comma(self):
         self.assertSplices("const P: &[A] = &[\n    A::X,\n    A::Y,\n];",
@@ -186,7 +192,7 @@ class SpliceTests(unittest.TestCase):
 
     def test_pattern_ending_inside_a_list(self):
         self.assertSplices("const P: &[A] = &[A::X, A::Y, A::Z];", "    A::Y,\n    A::Z,\n];", "    A::Y,\n];",
-                           "const P: &[A] = &[A::X, A::Y];")
+                           "const P: &[A] = &[A::X, A::Y,];")
 
     def test_arm_body_wrapped_in_a_block(self):
         src = "match m {\n    M::A => {\n        f(x)\n    }\n    M::B => g,\n}"
@@ -234,6 +240,31 @@ class SpliceTests(unittest.TestCase):
         with self.assertRaises(rt.MatchError):
             rt.splice_once("m! { (a) => { b } }", "(a) => b", "(a) => c")
 
+    def test_a_trailing_comma_needs_a_list_around_it(self):
+        # A block tail, a parenthesised expression or an index is not a list: `x,` must not
+        # match there, or a mutant could land on a lookalike (review of #66).
+        for src, old in [("fn stop() { revoke(); kill() }", "kill(),"), ("let v = (x);", "x,"),
+                         ("let v = a[x];", "x,"), ("fn f() { x }", "x, }")]:
+            with self.subTest(src=src), self.assertRaises(rt.MatchError):
+                rt.splice_once(src, old, "y,")
+
+    def test_a_trailing_comma_matches_where_rustfmt_drops_one(self):
+        self.assertSplices("f(a, kill())", "kill(),", "k(),", "f(a, k(),)")
+        self.assertSplices("g(kill())", "kill(),", "k(),", "g(k(),)")
+        self.assertSplices("let v = &[kill()];", "kill(),", "k(),", "let v = &[k(),];")
+
+    WRAPPED = "match m { M::R => {\n    a && b\n}\nM::H => c, }"
+
+    def test_taking_in_a_wrapped_arm_puts_its_comma_back(self):
+        self.assertSplices(self.WRAPPED, "M::R => a && b", "M::R => b", "match m { M::R => b, M::H => c, }")
+
+    def test_a_whole_arm_body_with_its_comma_takes_in_the_braces(self):
+        self.assertSplices(self.WRAPPED, "a && b,", "b,", "match m { M::R => b, M::H => c, }")
+
+    def test_macro_rules_bodies_are_not_unwrapped(self):
+        with self.assertRaises(rt.MatchError):
+            rt.splice_once("macro_rules! m { (a) => { b }; }", "(a) => b", "(a) => c")
+
     def test_empty_pattern_is_an_error(self):
         with self.assertRaises(rt.MatchError):
             rt.splice_once("let a = 1;", "  // nothing\n", "x")
@@ -267,13 +298,14 @@ class KernelMutantTests(unittest.TestCase):
         self.assertTrue(self.mutants)
         for name, old, new in self.mutants:
             with self.subTest(mutant=name):
-                self.assertEqual(rt.code_tokens(rt.splice_once(self.lib, old, new)),
-                                 rt.code_tokens(self.lib.replace(old, new, 1)))
+                self.assertEqual(_exact(rt.splice_once(self.lib, old, new)),
+                                 _exact(self.lib.replace(old, new, 1)))
 
-    def _rustfmt(self, max_width):
-        """lib.rs formatted by the pinned toolchain's rustfmt, with the repository's
-        rustfmt.toml guard bypassed. Skipped locally when rustfmt is missing; in CI that
-        is a failure, so this test can never pass by not running."""
+    def _rustfmt(self, max_width, text=None):
+        """lib.rs (or text) formatted by the rustfmt of the toolchain rust-toolchain.toml
+        pins, with the repository's rustfmt.toml guard bypassed. A parse error fails the
+        test. Skipped locally when rustfmt is missing; in CI that is a failure, so this
+        test can never pass by not running."""
         import os
         import re
         import shutil
@@ -284,12 +316,14 @@ class KernelMutantTests(unittest.TestCase):
                 self.fail("rustfmt is missing in CI")
             self.skipTest("rustfmt is not installed")
         edition = re.search(r'^edition = "(\d+)"', (ROOT / "Cargo.toml").read_text(encoding="utf-8"), re.M).group(1)
+        channel = re.search(r'^channel = "([^"]+)"', (ROOT / "rust-toolchain.toml").read_text(encoding="utf-8"), re.M).group(1)
         with tempfile.TemporaryDirectory() as tmp:
             config, target = Path(tmp) / "rustfmt.toml", Path(tmp) / "lib.rs"
             config.write_text(f'edition = "{edition}"\n' + (f"max_width = {max_width}\n" if max_width else ""))
-            shutil.copyfile(self.LIB, target)
-            # From the repository root, so rustup picks the toolchain rust-toolchain.toml pins.
-            subprocess.run(["rustfmt", "--config-path", str(config), str(target)], cwd=ROOT, check=True)
+            target.write_bytes((self.lib if text is None else text).encode("utf-8"))
+            run = subprocess.run(["rustfmt", f"+{channel}", "--config-path", str(config), str(target)],
+                                 cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr[-2000:])
             return target.read_text(encoding="utf-8")
 
     def test_every_mutant_survives_rustfmt(self):
@@ -299,8 +333,10 @@ class KernelMutantTests(unittest.TestCase):
             self.assertNotEqual(formatted, self.lib)
             for name, old, new in self.mutants:
                 with self.subTest(max_width=max_width, mutant=name):
-                    self.assertEqual(_token_change(formatted, rt.splice_once(formatted, old, new)),
+                    mutated = rt.splice_once(formatted, old, new)
+                    self.assertEqual(_token_change(formatted, mutated),
                                      _token_change(self.lib, self.lib.replace(old, new, 1)))
+                    self._rustfmt(max_width, mutated)  # the mutant still parses
 
 
 class MutationCheckTests(unittest.TestCase):

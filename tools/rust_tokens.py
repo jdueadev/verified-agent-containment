@@ -311,12 +311,40 @@ def _partners(toks):
 
 
 def _in_macro(toks, partner):
-    """The set of token indexes inside a macro invocation's token tree."""
+    """The set of token indexes inside a macro invocation's token tree, or inside the
+    body of a `macro_rules! name { ... }` definition."""
     inside = set()
     for j, k in partner.items():
-        if j > 0 and toks[j - 1].kind == "punct" and toks[j - 1].text == "!":
+        bang = j > 0 and toks[j - 1].kind == "punct" and toks[j - 1].text == "!"
+        rules = (j > 1 and toks[j - 1].kind == "ident" and toks[j - 2].kind == "punct"
+                 and toks[j - 2].text == "!")
+        if bang or rules:
             inside.update(range(j + 1, k))
     return inside
+
+
+def _separates(toks, partner, close):
+    """Whether a comma before the closing delimiter toks[close] would be a list
+    separator rustfmt may add or drop: the group holds a top-level `,` or `=>` (a list,
+    a struct literal, a match), or it is a call's argument list, or an array literal. A
+    plain block `{ a; b }`, a parenthesised expression `(x)` and an index `a[i]` do not
+    qualify, so `x,` never matches the tail of one of them."""
+    opener = next((j for j, k in partner.items() if k == close), None)
+    if opener is None:
+        return False
+    k = opener + 1
+    while k < close:
+        if k in partner:
+            k = partner[k] + 1
+            continue
+        if toks[k].kind == "punct" and toks[k].text in (",", "=>"):
+            return True
+        k += 1
+    before = toks[opener - 1] if opener > 0 else None
+    after_value = before is not None and (
+        (before.kind == "ident" and before.text not in _KEYWORDS)
+        or (before.kind == "punct" and before.text in (")", "]")))
+    return {"(": after_value, "[": not after_value, "{": False}[toks[opener].text]
 
 
 def _arm_blocks(toks, partner, macro):
@@ -355,7 +383,9 @@ def _canonical(tokens):
     undone: the braces of an arm body wrapped in `{ }` are dropped (a zero-width comma
     takes their place when another arm follows), and trailing commas are dropped as in
     drop_layout_commas. A pattern is a fragment, so a comma before a closing `]` or `}`
-    whose opening delimiter lies outside it is dropped too, and so is a final comma."""
+    whose opening delimiter lies outside it is dropped too, and so is a final comma.
+    Returns (canonical tokens, arm blocks, indexes of the canonical closers that lost
+    such a fragment comma)."""
     toks = [t for t in tokens if t.kind != "comment"]
     partner = _partners(toks)
     pairs = _arm_blocks(toks, partner, _in_macro(toks, partner))
@@ -373,18 +403,19 @@ def _canonical(tokens):
             spanned.append(tok)
         if k in separator:
             spanned.append(Token("punct", ",", tok.end, tok.end))
-    out, depth = [], 0
+    out, depth, lost_comma = [], 0, set()
     for tok in drop_layout_commas(spanned):
         if tok.kind == "punct" and tok.text in _OPEN:
             depth += 1
         elif tok.kind == "punct" and tok.text in _CLOSE:
             if depth == 0 and tok.text in "]}" and out and out[-1].kind == "punct" and out[-1].text == ",":
                 out.pop()
+                lost_comma.add(len(out))
             depth = max(depth - 1, 0)
         out.append(tok)
     if out and out[-1].kind == "punct" and out[-1].text == ",":
         out.pop()
-    return out, blocks
+    return out, blocks, lost_comma
 
 
 def _absorb_blocks(lo, hi, blocks):
@@ -394,8 +425,8 @@ def _absorb_blocks(lo, hi, blocks):
     inner edge (it starts at the first inner token or ends at the last); otherwise the
     splice would leave a brace unbalanced, which is a MatchError."""
     for block in blocks:
-        crosses_open = lo < block.open.start < hi
-        crosses_close = lo < block.close.start < hi
+        crosses_open = lo <= block.open.start < hi
+        crosses_close = lo <= block.close.start < hi
         if crosses_open == crosses_close:
             continue
         if crosses_open and hi == block.last.end:
@@ -413,36 +444,63 @@ def splice_once(src, old, new):
     Matching is by canonical tokens (see _canonical), so it survives rustfmt: changed
     whitespace and line breaks, comments, added or removed trailing commas, and an arm
     body wrapped in braces. The replacement is spliced into the original bytes, from the
-    first matched token to the last, so nothing outside the match changes. When old ends
-    with a comma, the match must be followed by a comma (which new then replaces), by a
-    closing delimiter, or by the end of an arm block it took in. Raises MatchError unless
-    there is exactly one match, or when the match would split an arm block's braces;
-    LexError when either side cannot be read."""
+    first matched token to the last, so nothing outside the match changes.
+
+    A comma the pattern has but the source may lack (a final comma, or one before a
+    closer the pattern does not open) must stand where the source has a comma or where a
+    list separator could go (see _separates), or at the edge of an arm block: a match of
+    a whole arm body takes in its braces. When a match takes in an arm block's closing
+    brace and another arm follows, the separator comma is put back. Raises MatchError
+    unless there is exactly one match, or when the match would split an arm block's
+    braces; LexError when either side cannot be read."""
     pattern = [t for t in tokenize(old) if t.kind != "comment"]
     if not pattern:
         raise MatchError("empty mutant pattern")
     ends_with_comma = pattern[-1].kind == "punct" and pattern[-1].text == ","
-    needle = [(t.kind, t.text) for t in _canonical(pattern)[0]]
+    canon, _, lost_comma = _canonical(pattern)
+    needle = [(t.kind, t.text) for t in canon]
     raw = [t for t in tokenize(src) if t.kind != "comment"]
-    hay, blocks = _canonical(raw)
+    partner = _partners(raw)
+    index = {t.start: k for k, t in enumerate(raw)}
+    hay, blocks, _ = _canonical(raw)
     keys = [(t.kind, t.text) for t in hay]
+
+    def comma_or_separator(k):
+        """raw[k] is a comma, or a closer before which a list separator could stand."""
+        tok = raw[k] if k < len(raw) else None
+        if tok is None or tok.kind != "punct":
+            return False
+        return tok.text == "," or (tok.text in _CLOSE and _separates(raw, partner, k))
+
+    def separated(k):
+        """raw[k] is a comma or a closer, so no separator is missing before it."""
+        return k < len(raw) and raw[k].kind == "punct" and (raw[k].text == "," or raw[k].text in _CLOSE)
+
     hits = []
     for i in range(len(keys) - len(needle) + 1):
         if keys[i:i + len(needle)] != needle:
             continue
-        lo, hi = _absorb_blocks(hay[i].start, max(t.end for t in hay[i:i + len(needle)]), blocks)
+        closers = [index[hay[i + c].start] for c in lost_comma]
+        if not all(raw[k - 1].text == "," or comma_or_separator(k) for k in closers):
+            continue
+        lo, hi = hay[i].start, max(t.end for t in hay[i:i + len(needle)])
+        whole_body = next((b for b in blocks if lo == b.first.start and hi == b.last.end), None)
+        if ends_with_comma and whole_body is not None:
+            lo, hi = whole_body.open.start, whole_body.close.end  # `X,` stands for `{ X }`
+        lo, hi = _absorb_blocks(lo, hi, blocks)
+        after = next((k for k, t in enumerate(raw) if t.start >= hi), len(raw))
+        took_close = any(hi == b.close.end for b in blocks)
         if ends_with_comma:
-            after = next((t for t in raw if t.start >= hi), None)
-            if after is not None and after.kind == "punct" and after.text == ",":
-                hi = after.end
-            elif not (after is None or (after.kind == "punct" and after.text in _CLOSE)
-                      or any(hi == b.close.end for b in blocks)):
+            if after < len(raw) and raw[after].kind == "punct" and raw[after].text == ",":
+                hi = raw[after].end
+            elif not (took_close or comma_or_separator(after)):
                 continue
-        hits.append((lo, hi))
+        hits.append((lo, hi, took_close and not ends_with_comma and after < len(raw) and not separated(after)))
     if len(hits) != 1:
         raise MatchError(f"mutant pattern matches {len(hits)} times, expected exactly once")
-    lo, hi = hits[0]
-    return src[:lo] + new + src[hi:]
+    lo, hi, comma = hits[0]
+    # The arm's own comma was in the source before rustfmt wrapped the arm; put it back.
+    return src[:lo] + new + ("," if comma else "") + src[hi:]
 
 
 def macro_idents(src, name):
