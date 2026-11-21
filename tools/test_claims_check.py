@@ -241,6 +241,20 @@ const SABOTAGE: &[(&str, &str, &str, &[&str])] = &[
         src = '// const SABOTAGE lists the controls\n' + self.ONE_LINE
         self.assertEqual(self.names(src), self.NAMES)
 
+    def test_comment_markers_inside_strings_are_string_contents(self):
+        src = 'const SABOTAGE: &[(&str, &str)] = &[\n    ("first", "https://example.test"),\n    ("second", "a /* b"),\n];\n'
+        self.assertEqual(self.names(src), ["first", "second"])
+
+    def test_nested_block_comment_before_an_entry(self):
+        src = 'const SABOTAGE: &[(&str, &str)] = &[\n    /* outer /* inner */ tail */ ("first", "x"),\n];\n'
+        self.assertEqual(self.names(src), ["first"])
+
+    def test_a_declaration_inside_a_block_comment_does_not_count(self):
+        commented = '/*\nconst SABOTAGE: &[(&str, &str)] = &[\n    ("ghost", "x"),\n];\n*/\n'
+        with self.assertRaises(cc.InventoryError):
+            self.names(commented)
+        self.assertEqual(self.names(commented + self.ONE_LINE), self.NAMES)
+
     def test_empty_block_is_an_error(self):
         with self.assertRaises(cc.InventoryError):
             self.names("const SABOTAGE: &[(&str, &str)] = &[];\n")

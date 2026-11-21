@@ -151,12 +151,36 @@ def _skip_literal_or_comment(src, i):
     return None
 
 
+def _blank(src, comments=True, strings=False):
+    """src with comments (and optionally string contents) replaced by spaces. Offsets
+    and newlines are kept, so positions and line starts still line up with src."""
+    out, i = [], 0
+    while i < len(src):
+        after = _skip_literal_or_comment(src, i)
+        if after is None:
+            out.append(src[i])
+            i += 1
+            continue
+        piece = src[i:after]
+        is_string = piece.startswith('"')
+        if (comments and not is_string) or (strings and is_string):
+            keep = '""' if is_string else ""
+            body = re.sub(r"[^\n]", " ", piece[1:-1] if is_string else piece)
+            piece = keep[:1] + body + keep[1:]
+        out.append(piece)
+        i = after
+    return "".join(out)
+
+
 def const_array_names(src, const, where):
     """Names in `const <const>: ... = &[ ... ];`, one per top-level entry, whatever the
     line layout. An entry is a string literal or a tuple whose first field is one.
-    Raises InventoryError when the block is missing, repeated, unclosed or empty, or
-    when any entry yields no name: an inventory is either complete or an error."""
-    decls = [m for m in re.finditer(rf"(?m)^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?const[ \t]+{const}[ \t]*:", src)]
+    Comments are ignored, including a commented-out declaration. Raises InventoryError
+    when the block is missing, repeated, unclosed or empty, or when any entry yields
+    no name: an inventory is either complete or an error."""
+    src = _blank(src)
+    code_only = _blank(src, comments=False, strings=True)
+    decls = [m for m in re.finditer(rf"(?m)^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?const[ \t]+{const}[ \t]*:", code_only)]
     if len(decls) != 1:
         raise InventoryError(f"{where}: expected one `const {const}:` declaration, found {len(decls)}")
     eq = src.find("=", decls[0].end())
@@ -184,7 +208,7 @@ def const_array_names(src, const, where):
         i += 1
     names = []
     for raw in entries:
-        entry = re.sub(r"//[^\n]*|/\*.*?\*/", " ", raw, flags=re.S).strip()
+        entry = raw.strip()  # comments were already blanked by the scanner
         if not entry:
             continue  # trailing comma, or a comment between entries
         match = re.fullmatch(r'\(\s*"([a-z_]+)"\s*(?:,.*)?\)|"([a-z_]+)"', entry, re.S)
