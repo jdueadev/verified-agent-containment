@@ -284,6 +284,40 @@ const SABOTAGE: &[(&str, &str, &str, &[&str])] = &[
         with self.assertRaises(cc.InventoryError):
             self.names('const SABOTAGE: &[(&str, &str)] = &[\n    ("a", "b"),\n')
 
+    def test_registry_and_controls_must_match_both_ways(self):
+        self.assertEqual(cc.registry_errors(["a", "b"], ["b", "a"]), [])
+        missing = cc.registry_errors(["a", "b"], ["a"])
+        self.assertTrue(len(missing) == 1 and "no sabotage control: b" in missing[0], missing)
+        unknown = cc.registry_errors(["a"], ["a", "ghost"])
+        self.assertTrue(len(unknown) == 1 and "ghost" in unknown[0], unknown)
+
+    BASE_MUTANTS = '"""Docstring."""\nBEND_MUTANTS = [("b1", "x", "y")]\nRUST_MUTANTS = [("r1", "x", "y")]\n'
+
+    def test_mutants_are_read_as_data(self):
+        self.assertEqual(cc.mutant_names(self.BASE_MUTANTS), (["b1"], ["r1"]))
+        # Other literal data, such as the web demo's SHOWCASE table, is allowed.
+        self.assertEqual(cc.mutant_names(self.BASE_MUTANTS + 'SHOWCASE = [("b1", "t", "e", "law")]\n'), (["b1"], ["r1"]))
+        with self.assertRaises(cc.InventoryError):
+            cc.mutant_names('BEND_MUTANTS = []\nRUST_MUTANTS = [("r1", "x", "y")]\n')
+
+    def test_anything_but_literal_assignments_is_an_error(self):
+        # The mutation runner imports the module, so any statement could change what it
+        # runs without this reader seeing it, through an alias as easily as directly.
+        for extra in ['BEND_MUTANTS += [("b2", "x", "y")]', 'RUST_MUTANTS.append(("r2", "x", "y"))',
+                      'alias = BEND_MUTANTS\nalias.append(("b2", "x", "y"))',
+                      'BEND_MUTANTS = BEND_MUTANTS + [("b2", "x", "y")]', 'RUST_MUTANTS[0] = ("r9", "x", "y")',
+                      'RUST_MUTANTS: list = []', 'for RUST_MUTANTS in [[]]:\n    pass',
+                      'def f():\n    global BEND_MUTANTS\n    BEND_MUTANTS = []', 'import os',
+                      'ALL = BEND_MUTANTS + RUST_MUTANTS', 'BEND_MUTANTS = [("b1", "x", "y")]']:
+            with self.subTest(extra=extra), self.assertRaises(cc.InventoryError):
+                cc.mutant_names(self.BASE_MUTANTS + extra + "\n")
+
+    def test_repository_mutants_match_the_imported_module(self):
+        import kernel_mutants
+        bend, rust = cc.mutant_names((cc.ROOT / "tools/kernel_mutants.py").read_text(encoding="utf-8"))
+        self.assertEqual(bend, [m[0] for m in kernel_mutants.BEND_MUTANTS])
+        self.assertEqual(rust, [m[0] for m in kernel_mutants.RUST_MUTANTS])
+
     def test_repository_inventory_is_complete(self):
         # Counts at the time this check was written; growing them is fine.
         _laws, _bend, _rust, sabotage, scenarios, live_scenarios, live_sabotage = cc.load_inventory()
