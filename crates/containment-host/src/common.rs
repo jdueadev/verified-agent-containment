@@ -221,3 +221,56 @@ mod cli_tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+/// True when this binary contains the deliberate defects (`sabotage` feature).
+pub const SABOTAGE_BUILD: bool = cfg!(feature = "sabotage");
+
+/// Identifies the binary that produced a result: its feature set and SHA-256.
+pub fn build_stamp() -> io::Result<Value> {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(std::fs::read(std::env::current_exe()?)?);
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(json!({"sabotage": SABOTAGE_BUILD, "binary_sha256": hex}))
+}
+
+/// Reads the honest runs a default build wrote, so a sabotage build can add
+/// its controls to them without re-running them on the wrong binary.
+pub fn honest_results(path: &Path) -> Result<(Vec<Value>, Value), Box<dyn std::error::Error>> {
+    let results: Value = serde_json::from_slice(&std::fs::read(path)?)?;
+    honest_part(&results).map_err(|reason| format!("{}: {reason}", path.display()).into())
+}
+
+fn honest_part(results: &Value) -> Result<(Vec<Value>, Value), &'static str> {
+    let build = &results["build"]["honest"];
+    if build["sabotage"] != false || !build["binary_sha256"].is_string() {
+        return Err("the honest runs were not written by a default build");
+    }
+    match results["runs"].as_array() {
+        Some(runs) if !runs.is_empty() => Ok((runs.clone(), build.clone())),
+        _ => Err("there are no honest runs"),
+    }
+}
+
+#[cfg(test)]
+mod build_tests {
+    use super::*;
+
+    #[test]
+    fn honest_runs_are_taken_only_from_a_default_build() {
+        let stamp = |sabotage: bool| json!({"sabotage": sabotage, "binary_sha256": "00"});
+        let good = json!({"build": {"honest": stamp(false)}, "runs": [{"scenario": "a", "passed": true}]});
+        let (runs, build) = honest_part(&good).expect("default build");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(build["sabotage"], false);
+        assert!(honest_part(&json!({"build": {"honest": stamp(true)}, "runs": [{}]})).is_err());
+        assert!(honest_part(&json!({"runs": [{}]})).is_err());
+        assert!(honest_part(&json!({"build": {"honest": stamp(false)}, "runs": []})).is_err());
+    }
+
+    #[test]
+    fn the_stamp_names_this_build() {
+        let stamp = build_stamp().expect("stamp");
+        assert_eq!(stamp["sabotage"], SABOTAGE_BUILD);
+        assert_eq!(stamp["binary_sha256"].as_str().map(str::len), Some(64));
+    }
+}

@@ -325,10 +325,17 @@ struct Args {
     /// Allow running without cgroup limits for System One (recorded in the results)
     #[arg(long)]
     allow_missing_limits: bool,
+    /// Take the honest runs from this results file, written by a default build,
+    /// and run only the sabotage controls (sabotage build only)
+    #[arg(long)]
+    honest_results: Option<PathBuf>,
 }
 
 pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
-    let Some(Args { out, only, allow_missing_limits }) = parse_args::<Args>("live-suite", args)? else { return Ok(()) };
+    let Some(Args { out, only, allow_missing_limits, honest_results: honest_from }) = parse_args::<Args>("live-suite", args)? else { return Ok(()) };
+    if honest_from.is_some() && !SABOTAGE_BUILD {
+        return Err("--honest-results is for a build with the sabotage feature".into());
+    }
     if allow_missing_limits {
         // SAFETY: set before any controller is started.
         unsafe { std::env::set_var(LIMITS_WAIVER_ENV, "1") };
@@ -344,7 +351,19 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     let _work = RemoveDir(work.clone());
     let mut runs = Vec::new();
-    for scenario in SCENARIOS.iter().filter(|s| only.as_deref().is_none_or(|o| o == **s)) {
+    // The honest runs describe the default build. A sabotage build may reuse
+    // the ones a default build wrote instead of producing its own.
+    let honest_build = match &honest_from {
+        Some(path) => {
+            let (taken, build) = honest_results(path)?;
+            println!("honest runs: {} taken from {}", taken.len(), path.display());
+            runs = taken;
+            build
+        }
+        None => build_stamp()?,
+    };
+    let honest_scenarios: &[&str] = if honest_from.is_some() { &[] } else { SCENARIOS };
+    for scenario in honest_scenarios.iter().filter(|s| only.as_deref().is_none_or(|o| o == **s)) {
         let value = execute(scenario, "none", &work)?;
         println!("{:<7} {scenario}", if value["passed"] == true { "PASS" } else { "FAIL" });
         if value["passed"] != true {
@@ -354,7 +373,13 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         runs.push(value);
     }
     let mut sabotage = Vec::new();
-    for (weakness, scenario, target, prerequisites) in SABOTAGE.iter().filter(|(_, s, _, _)| only.as_deref().is_none_or(|o| o == *s)) {
+    // The defects exist only in a sabotage build; a default build has no controls to run.
+    let controls: &[(&str, &str, &str, &[&str])] = if SABOTAGE_BUILD { SABOTAGE } else { &[] };
+    if !SABOTAGE_BUILD {
+        println!("sabotage controls skipped: this build does not contain the defects");
+    }
+    let sabotage_build = if SABOTAGE_BUILD { build_stamp()? } else { Value::Null };
+    for (weakness, scenario, target, prerequisites) in controls.iter().filter(|(_, s, _, _)| only.as_deref().is_none_or(|o| o == *s)) {
         let value = execute(scenario, weakness, &work)?;
         let check = |name: &str| value["checks"].as_array().into_iter().flatten().find(|c| c["name"] == name).map(|c| c["passed"] == true);
         let detected = check(target) == Some(false) && prerequisites.iter().all(|p| check(p) == Some(true));
@@ -366,7 +391,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let detected = sabotage.iter().filter(|s| s["detected"] == true).count();
     let output = json!({"kernel": fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default().trim(),
         "runs_passed": passed, "runs_total": runs.len(), "sabotage_detected": detected, "sabotage_total": sabotage.len(),
-        "runs": runs, "sabotage": sabotage});
+        "runs": runs, "sabotage": sabotage, "build": {"honest": honest_build, "sabotage": sabotage_build}});
     if let Some(parent) = out.parent() {
         fs::create_dir_all(parent)?;
     }
