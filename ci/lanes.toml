@@ -23,6 +23,8 @@ C = [
   "ci/**",
   "scripts/**",
   ".gitattributes",
+  # Steers what the automated reviewer looks at, and how closely.
+  ".coderabbit.yaml",
   "AGENTS.md",
   "CLAUDE.md",
   "docs/decisions/**",
