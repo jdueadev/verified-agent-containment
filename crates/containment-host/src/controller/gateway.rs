@@ -304,6 +304,8 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
 /// Removes exact credential values from anything returned to the agent, in
 /// case an upstream echoes request headers or puts a token in an error.
 const REDACTED: &str = "[redacted]";
+/// How many times a text is swept before it is replaced whole.
+const MAX_REDACTION_PASSES: usize = 8;
 /// How many suffixes are tried to keep a redacted object key unique.
 const MAX_KEY_SUFFIXES: usize = 64;
 
@@ -311,17 +313,30 @@ pub(super) fn redact(live: &LiveState, value: Value) -> Value {
     redact_value(&live.secret_values, value)
 }
 
-/// Replaces every secret inside `text`. `secrets` is ordered longest first, so
-/// a secret that contains a shorter one is replaced whole.
+/// Replaces every secret inside `text`, or returns `None` if there is none.
+/// `secrets` is ordered longest first, so a secret that contains a shorter one
+/// is replaced whole.
+///
+/// A replacement can itself complete a secret, for example one that contains
+/// the marker. So the passes repeat until the text holds no secret. If it
+/// still does after `MAX_REDACTION_PASSES`, the whole text becomes the marker.
 fn redact_text(secrets: &[String], text: &str) -> Option<String> {
-    let mut clean = None;
-    for secret in secrets.iter().filter(|s| !s.is_empty()) {
-        let current = clean.as_deref().unwrap_or(text);
-        if current.contains(secret.as_str()) {
-            clean = Some(current.replace(secret.as_str(), REDACTED));
+    let holds_secret = |text: &str| secrets.iter().any(|secret| !secret.is_empty() && text.contains(secret.as_str()));
+    if !holds_secret(text) {
+        return None;
+    }
+    let mut clean = text.to_owned();
+    for _ in 0..MAX_REDACTION_PASSES {
+        for secret in secrets.iter().filter(|s| !s.is_empty()) {
+            if clean.contains(secret.as_str()) {
+                clean = clean.replace(secret.as_str(), REDACTED);
+            }
+        }
+        if !holds_secret(&clean) {
+            return Some(clean);
         }
     }
-    clean
+    Some(REDACTED.to_owned())
 }
 
 /// Removes secrets from a JSON value by walking it. Strings and object keys
@@ -476,6 +491,27 @@ mod tests {
         let fields = clean.as_object().expect("object");
         assert_eq!(fields.len(), 2);
         assert!(fields.keys().all(|key| all.iter().all(|secret| !key.contains(secret.as_str()))), "{fields:?}");
+    }
+
+    /// A replacement can complete a secret that an earlier pass had already
+    /// looked for. No key or value may leave holding one.
+    #[test]
+    fn a_secret_completed_by_a_replacement_is_redacted_too() {
+        let all = secrets(&["[redacted]_[redacted]", "aa", "bb", "2"]);
+        let clean = redact_value(&all, json!({"aa": "x", "bb": "y", "note": "aa_bb"}));
+        let fields = clean.as_object().expect("object");
+        let holds = |text: &str| all.iter().any(|secret| text.contains(secret.as_str()));
+        for (key, value) in fields {
+            assert!(!holds(key), "key {key:?} holds a secret");
+            assert!(!holds(value.as_str().expect("string")), "value {value:?} holds a secret");
+        }
+    }
+
+    /// When the marker itself is a secret no sweep can end clean, so the text
+    /// is replaced whole instead of looping.
+    #[test]
+    fn a_text_that_cannot_be_cleaned_is_replaced_whole() {
+        assert_eq!(redact_value(&secrets(&["[redacted]", "abc"]), json!("abc and more")), json!("[redacted]"));
     }
 
     #[test]

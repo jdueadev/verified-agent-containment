@@ -142,7 +142,8 @@ def build_errors():
             out.append(f"CI-8 results/{name}: the honest runs are not stamped as coming from a default build")
         elif controls.get("sabotage") is not True:
             out.append(f"CI-8 results/{name}: the sabotage controls are not stamped as coming from a sabotage build")
-        elif not all(re.fullmatch(r"[0-9a-f]{64}", str(part.get("binary_sha256"))) for part in (honest, controls)):
+        elif not all(isinstance(part.get("binary_sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", part["binary_sha256"])
+                     for part in (honest, controls)):
             out.append(f"CI-8 results/{name}: a build stamp has no SHA-256 of its binary")
         elif honest.get("binary_sha256") == controls.get("binary_sha256"):
             out.append(f"CI-8 results/{name}: the honest runs and the controls came from the same binary")
