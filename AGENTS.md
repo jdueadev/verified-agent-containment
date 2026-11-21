@@ -35,8 +35,10 @@ the maintainer decides which.
 change to lane C.
 
 **INV-3. A checker is part of the proof.** Workflows, `scripts/`, the checker
-and verifier tools, `ci/` and this file are the trusted base. Change them only
-on purpose, in a change that says so.
+and verifier tools, the attack harness and suites, the kernel law tests, `ci/`
+and this file are the trusted base. Change them only on purpose, in a change
+that says so. Loosening an assertion in a scenario weakens evidence exactly as
+deleting the scenario would.
 *Enforced by:* lane C in `ci/lanes.toml` and `.github/CODEOWNERS`.
 
 **INV-4. The classifier stops at Hold.** Nothing that originates from System

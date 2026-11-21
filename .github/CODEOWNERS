@@ -19,6 +19,10 @@
 /tools/law_audit.mjs @jdueadev
 /tools/tla_check.sh @jdueadev
 /tools/generate_proof.py @jdueadev
+/crates/containment-host/src/harness.rs @jdueadev
+/crates/containment-host/src/live_suite.rs @jdueadev
+/crates/containment-host/src/redteam.rs @jdueadev
+/crates/containment-kernel/tests/ @jdueadev
 /results/attack-suite* @jdueadev
 /results/live-suite* @jdueadev
 /results/linux-vm/ @jdueadev

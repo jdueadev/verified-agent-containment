@@ -23,6 +23,7 @@ class DriftTests(unittest.TestCase):
 
     def test_workflow_with_a_literal_version_fails(self):
         for bad in ("      bun-version: 1.4.5\n", "      node-version: 22\n", "      java-version: '21'\n",
+                    "      bun-version: latest\n", "      node-version: lts/*\n", "      java-version: ${{ env.OTHER }}\n",
                     "env:\n  RUST_TOOLCHAIN: 1.100.0\n", "env:\n  BEND_COMMIT: 0e2f38f759cc830849e4\n",
                     "run: rustup toolchain install 1.100.0\n", "run: echo 936a262061c914694dfd\n"):
             self.assertTrue(self.errors(GOOD + bad), bad)
@@ -36,10 +37,25 @@ class DriftTests(unittest.TestCase):
         self.assertTrue(self.errors(rustc="rustc 1.99.1 (abc 2026-01-01)\n"))
 
     def test_repository_configuration_passes(self):
-        workflows = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / ".github/workflows").glob("*.yml")}
+        workflows = pk.load_workflows()
+        self.assertIn("check.yml", workflows)
         pins = pk.parse_pins((ROOT / "ci/pins.env").read_text(encoding="utf-8"))
         channel = pk.toolchain_channel((ROOT / "rust-toolchain.toml").read_text(encoding="utf-8"))
         self.assertEqual(pk.drift_errors(pins, channel, workflows), [])
+
+
+class DiscoveryTests(unittest.TestCase):
+    def test_yaml_and_yml_workflows_are_both_read(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            folder = Path(td) / ".github/workflows"
+            folder.mkdir(parents=True)
+            (folder / "a.yml").write_text("x", encoding="utf-8")
+            (folder / "b.yaml").write_text("      bun-version: 1.4.5\n", encoding="utf-8")
+            (folder / "notes.txt").write_text("ignored", encoding="utf-8")
+            workflows = pk.load_workflows(Path(td))
+            self.assertEqual(sorted(workflows), ["a.yml", "b.yaml"])
+            self.assertTrue(pk.drift_errors(PINS, "1.100.0", workflows))
 
 
 class RequireTests(unittest.TestCase):

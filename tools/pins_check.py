@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PINS = ("BUN_VERSION", "NODE_VERSION", "JAVA_VERSION", "BEND_COMMIT", "TLA_VERSION", "TLA_SHA256")
 # A workflow may read a pin, never state one.
 LITERALS = [
-    (r"\b(bun|node|java)-version:\s*['\"]?[0-9v]", "a literal tool version"),
+    (r"\b(bun|node|java)-version:(?!\s*\$\{\{\s*env\.[A-Z_]+_VERSION\s*\}\}\s*$)", "a tool version that is not read from ci/pins.env"),
     (r"\bRUST_TOOLCHAIN\b", "its own Rust toolchain variable"),
     (r"\b(BEND_COMMIT|TLA_VERSION|TLA_SHA256|BUN_VERSION|NODE_VERSION|JAVA_VERSION):\s*\S", "its own copy of a pin"),
     (r"rustup\s+(toolchain\s+install|default)\s+[0-9]", "a literal Rust version"),
@@ -51,7 +51,7 @@ def drift_errors(pins, channel, workflows, rustc_version=None):
         errors.append("rust-toolchain.toml: channel must be an exact version")
     for name, text in sorted(workflows.items()):
         for pattern, what in LITERALS:
-            if re.search(pattern, text):
+            if re.search(pattern, text, re.M):
                 errors.append(f"{name}: carries {what}; read it from ci/pins.env or rust-toolchain.toml")
         for key, value in pins.items():
             if len(value) >= 8 and value in text:
@@ -75,10 +75,16 @@ def require(tools, files, ci, which=shutil.which, exists=os.path.exists):
     return 0, "SKIPPED (not the full gate): missing " + ", ".join(absent)
 
 
+def load_workflows(root=None):
+    """Every workflow GitHub would run: both .yml and .yaml."""
+    folder = (root or ROOT) / ".github/workflows"
+    return {p.name: p.read_text(encoding="utf-8")
+            for p in sorted(folder.glob("*")) if p.suffix in (".yml", ".yaml")}
+
+
 def main(argv):
     if argv[:1] == ["drift"]:
-        workflows = {str(p.relative_to(ROOT)).replace("\\", "/"): p.read_text(encoding="utf-8")
-                     for p in sorted((ROOT / ".github/workflows").glob("*.yml"))}
+        workflows = load_workflows()
         rustc = None
         if "--rustc" in argv:
             rustc = subprocess.run(["rustc", "--version"], capture_output=True, text=True, cwd=ROOT).stdout

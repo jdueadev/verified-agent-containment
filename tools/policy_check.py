@@ -2,7 +2,7 @@
 """Decide which merge lane a change is in, and check the rules that never bend.
 
 Usage:
-  policy_check.py classify --base REF [--head REF] [--reviews FILE --head-sha SHA]
+  policy_check.py classify --base REF [--head REF] [--map-ref REF] [--reviews FILE --head-sha SHA]
                            [--fork] [--enforce]
   policy_check.py codeowners [--write]
   policy_check.py invariants
@@ -30,7 +30,7 @@ import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from claims_check import RANK, path_matches  # noqa: E402
+from claims_check import RANK  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 LANES_FILE = "ci/lanes.toml"
@@ -51,16 +51,30 @@ def load_lanes(text):
         raise ValueError(f"{LANES_FILE}: needs owner = \"@name\" and only lanes A, B, C (found {sorted(lanes)})")
     for lane, patterns in lanes.items():
         for pattern in patterns:
-            if "**" in pattern.removesuffix("/**") or pattern.startswith("/") or "?" in pattern or "[" in pattern:
+            if "*" in pattern.removesuffix("/**").replace("*", "", 1) or pattern.startswith(("/", "./")) \
+                    or "?" in pattern or "[" in pattern:
                 raise ValueError(f"{LANES_FILE}: {pattern!r} is not an exact file, dir/** or a single-* name")
     return data["owner"], {lane: list(lanes.get(lane, [])) for lane in ORDER}
+
+
+def lane_match(path, pattern):
+    """Match one repository path against a lane pattern. Paths are compared as
+    written: a leading dot is part of the name, so `.x` never matches `x`."""
+    if pattern.endswith("/**"):
+        return path.startswith(pattern[:-2])
+    if "*" in pattern:
+        head, _, tail = pattern.partition("*")
+        middle = path[len(head):len(path) - len(tail)] if tail else path[len(head):]
+        return (path.startswith(head) and path.endswith(tail) and len(path) >= len(head) + len(tail)
+                and "/" not in middle)
+    return path == pattern
 
 
 def lane_of(path, lanes, doc_cited=()):
     """First match wins, checking C, then B, then A. Nothing matched is lane C."""
     for lane in ("C", "B", "A"):
         for pattern in lanes[lane]:
-            if path_matches(path, pattern):
+            if lane_match(path, pattern):
                 if lane == "A" and path in doc_cited:
                     return "B", "cited as doc: evidence in claims.toml"
                 return lane, pattern
@@ -192,7 +206,8 @@ def classify(paths, base_get, head_get, lanes):
 def approved(reviews, owner, head_sha):
     """True when the owner's latest review approves exactly this head commit."""
     latest = None
-    for review in reviews:
+    flat = [r for page in reviews for r in (page if isinstance(page, list) else [page])]
+    for review in flat:
         if (review.get("user") or {}).get("login", "").lower() == owner.lstrip("@").lower() \
                 and review.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
             latest = review
@@ -247,6 +262,7 @@ def main(argv=None):
     c = sub.add_parser("classify")
     c.add_argument("--base", required=True)
     c.add_argument("--head", default="HEAD")
+    c.add_argument("--map-ref", help="commit to read ci/lanes.toml from (default: --base)")
     c.add_argument("--reviews")
     c.add_argument("--head-sha")
     c.add_argument("--fork", action="store_true")
@@ -258,8 +274,11 @@ def main(argv=None):
 
     if args.command == "classify":
         base_get, head_get = reader(args.base), reader(args.head)
-        # The lane map comes from the base: a change cannot reclassify itself.
-        owner, lanes = load_lanes(base_get(LANES_FILE) or read(LANES_FILE))
+        # The lane map comes from the target branch, never from the change: a
+        # change cannot reclassify itself, and a path the target has since
+        # promoted is judged by the newer rule. The diff and the ratchets still
+        # compare against --base, the point the change started from.
+        owner, lanes = load_lanes(reader(args.map_ref or args.base)(LANES_FILE) or read(LANES_FILE))
         paths = [p for p in git("diff", "--name-only", "--no-renames", args.base, args.head).splitlines() if p]
         result = classify(paths, base_get, head_get, lanes)
         needs_owner = result["lane"] == "C" or args.fork

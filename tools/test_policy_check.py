@@ -47,6 +47,26 @@ class LaneTests(unittest.TestCase):
         self.assertEqual(pc.lane_of("brand/new/file.txt", LANES), ("C", "unclassified path"))
         self.assertEqual(self.lane("LICENSE-MIT"), "C")
 
+    def test_leading_dot_is_part_of_the_name(self):
+        self.assertEqual(self.lane("CONTRIBUTING.md"), "A")
+        self.assertEqual(pc.lane_of(".CONTRIBUTING.md", LANES), ("C", "unclassified path"))
+        self.assertEqual(pc.lane_of("./CONTRIBUTING.md", LANES), ("C", "unclassified path"))
+        self.assertEqual(self.lane(".github/workflows/x.yaml"), "C")
+        self.assertEqual(pc.lane_of("github/workflows/x.yml", LANES), ("C", "unclassified path"))
+
+    def test_single_star_stays_in_one_file_name(self):
+        self.assertTrue(pc.lane_match("tools/test_x.py", "tools/test_*.py"))
+        self.assertFalse(pc.lane_match("tools/test_a/b.py", "tools/test_*.py"))
+        self.assertFalse(pc.lane_match("tools/test_.pyc", "tools/test_*.py"))
+        self.assertTrue(pc.lane_match("results/attack-suite.json", "results/attack-suite*"))
+        self.assertFalse(pc.lane_match("results/attack-suite/x", "results/attack-suite*"))
+        self.assertFalse(pc.lane_match("scripts", "scripts/**"))
+
+    def test_the_attack_harness_is_a_verifier(self):
+        for path in ("crates/containment-host/src/harness.rs", "crates/containment-host/src/live_suite.rs",
+                     "crates/containment-host/src/redteam.rs", "crates/containment-kernel/tests/laws.rs"):
+            self.assertEqual(self.lane(path), "C", path)
+
     def test_rules_and_verifiers_are_lane_c(self):
         for path in (".github/workflows/check.yml", "ci/lanes.toml", "scripts/check.sh", "tools/claims_check.py",
                      "tools/policy_check.py", "tools/test_policy_check.py", "AGENTS.md", ".github/CODEOWNERS",
@@ -73,7 +93,8 @@ class LaneTests(unittest.TestCase):
 
     def test_bad_lane_map_is_rejected(self):
         for text in ('owner = "x"\n[lanes]\nC = []\n', 'owner = "@x"\n[lanes]\nD = []\n',
-                     'owner = "@x"\n[lanes]\nC = ["a/**/b"]\n', 'owner = "@x"\n[lanes]\nC = ["/abs"]\n'):
+                     'owner = "@x"\n[lanes]\nC = ["a/**/b"]\n', 'owner = "@x"\n[lanes]\nC = ["/abs"]\n',
+                     'owner = "@x"\n[lanes]\nC = ["a*/b*"]\n', 'owner = "@x"\n[lanes]\nC = ["./a"]\n'):
             with self.assertRaises(ValueError):
                 pc.load_lanes(text)
 
@@ -153,6 +174,11 @@ class ApprovalTests(unittest.TestCase):
         self.assertFalse(pc.approved([self.review("jdueadev", "APPROVED", "old")], "@jdueadev", "h1"))
         self.assertFalse(pc.approved([self.review("jdueadev", "APPROVED"), self.review("jdueadev", "CHANGES_REQUESTED")], "@jdueadev", "h1"))
         self.assertTrue(pc.approved([self.review("jdueadev", "APPROVED"), self.review("jdueadev", "COMMENTED")], "@jdueadev", "h1"))
+
+    def test_paginated_reviews_are_read_in_order(self):
+        pages = [[self.review("jdueadev", "APPROVED")], [self.review("jdueadev", "CHANGES_REQUESTED")]]
+        self.assertFalse(pc.approved(pages, "@jdueadev", "h1"))
+        self.assertTrue(pc.approved(list(reversed(pages)), "@jdueadev", "h1"))
 
 
 class CodeownersAndInvariantTests(unittest.TestCase):
