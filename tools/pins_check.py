@@ -2,13 +2,15 @@
 """Keep tool versions in one place, and refuse to pass with a tool missing.
 
 Usage:
-  pins_check.py drift [--rustc]
+  pins_check.py drift [--rustc] [--cargo]
   pins_check.py require TOOL... [--file PATH]...
 
 drift    The Rust version lives only in rust-toolchain.toml and every other
          tool pin only in ci/pins.env. Fails if a workflow carries its own
-         copy, if a pin is missing, or (--rustc) if the active rustc is not
-         the pinned one.
+         copy, if a pin is missing, or (--rustc, --cargo) if the active rustc
+         or cargo is not the pinned one. scripts/lab/lab-inside.sh runs it with
+         --rustc --cargo before building; a tool that exits non-zero counts as
+         not the pinned one.
 require  Fails when CI=true and a tool or file is missing. Outside CI it lists
          what is missing as SKIPPED and succeeds, so a partial local run is
          visible but is never mistaken for the full gate.
@@ -77,7 +79,27 @@ def toolchain_channel(text):
     return tomllib.loads(text).get("toolchain", {}).get("channel")
 
 
-def drift_errors(pins, channel, workflows, rustc_version=None):
+def reports_version(output, tool, channel):
+    """True when the first line of `<tool> --version` output is exactly the pinned
+    release: `rustc 1.100.0 (hash date)`. A pre-release, a longer version, or the
+    version appearing anywhere else in the output does not count."""
+    first = (output or "").splitlines()[0].strip() if (output or "").strip() else ""
+    return re.fullmatch(rf"{tool} {re.escape(channel)}( \([^()]*\))?", first) is not None
+
+
+def tool_version(command):
+    """stdout of `command`. When it cannot run or exits non-zero, a note that says
+    why instead; the note starts with `(`, so it never reads as a version."""
+    try:
+        done = subprocess.run(command, capture_output=True, text=True, cwd=ROOT)
+    except OSError as exc:
+        return f"(could not run {command[0]}: {exc})"
+    if done.returncode != 0:
+        return f"(exit {done.returncode}: {done.stderr.strip()[:200]})"
+    return done.stdout
+
+
+def drift_errors(pins, channel, workflows, rustc_version=None, cargo_version=None):
     errors = [f"ci/pins.env: {key} is missing" for key in PINS if not pins.get(key)]
     if not channel or not re.fullmatch(r"\d+\.\d+\.\d+", channel):
         errors.append("rust-toolchain.toml: channel must be an exact version")
@@ -89,8 +111,10 @@ def drift_errors(pins, channel, workflows, rustc_version=None):
         for key, value in pins.items():
             if len(value) >= 8 and value in text:
                 errors.append(f"{name}: repeats the value of {key}")
-    if rustc_version is not None and channel and f"rustc {channel} " not in rustc_version + " ":
+    if rustc_version is not None and channel and not reports_version(rustc_version, "rustc", channel):
         errors.append(f"active rustc is `{rustc_version.strip()}`, not the pinned {channel}")
+    if cargo_version is not None and channel and not reports_version(cargo_version, "cargo", channel):
+        errors.append(f"active cargo is `{cargo_version.strip()}`, not the pinned {channel}")
     return errors
 
 
@@ -118,11 +142,13 @@ def load_workflows(root=None):
 def main(argv):
     if argv[:1] == ["drift"]:
         workflows = load_workflows()
-        rustc = None
+        rustc = cargo = None
         if "--rustc" in argv:
-            rustc = subprocess.run(["rustc", "--version"], capture_output=True, text=True, cwd=ROOT).stdout
+            rustc = tool_version(["rustc", "--version"])
+        if "--cargo" in argv:
+            cargo = tool_version(["cargo", "--version"])
         errors = drift_errors(parse_pins((ROOT / "ci/pins.env").read_text(encoding="utf-8")),
-                              toolchain_channel((ROOT / "rust-toolchain.toml").read_text(encoding="utf-8")), workflows, rustc)
+                              toolchain_channel((ROOT / "rust-toolchain.toml").read_text(encoding="utf-8")), workflows, rustc, cargo)
         for error in errors:
             print(error, file=sys.stderr)
         return 1 if errors else 0

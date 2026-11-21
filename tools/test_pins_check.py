@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Unit tests for tools/pins_check.py. Each rule has a case that makes it fire."""
 import sys
+import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pins_check as pk
@@ -14,8 +16,8 @@ GOOD = "steps:\n  - uses: oven-sh/setup-bun@abc\n    with:\n      bun-version: $
 
 
 class DriftTests(unittest.TestCase):
-    def errors(self, workflow=GOOD, pins=PINS, channel="1.100.0", rustc=None):
-        return pk.drift_errors(pins, channel, {"check.yml": workflow}, rustc)
+    def errors(self, workflow=GOOD, pins=PINS, channel="1.100.0", rustc=None, cargo=None):
+        return pk.drift_errors(pins, channel, {"check.yml": workflow}, rustc, cargo)
 
     def test_clean_configuration_passes(self):
         self.assertEqual(self.errors(), [])
@@ -53,6 +55,18 @@ class DriftTests(unittest.TestCase):
 
     def test_wrong_rustc_fails(self):
         self.assertTrue(self.errors(rustc="rustc 1.99.1 (abc 2026-01-01)\n"))
+        # Whole fields only: a pre-release or a longer version is not the pin.
+        for bad in ("rustc 1.100.0-beta.1 (abc 2026-01-01)\n", "rustc 1.100.01 (abc 2026-01-01)\n",
+                    "rustc 11.100.0 (abc)\n", ""):
+            self.assertTrue(self.errors(rustc=bad), bad)
+
+    def test_cargo_must_be_the_pinned_one(self):
+        self.assertEqual(self.errors(cargo="cargo 1.100.0 (abc 2026-01-01)\n"), [])
+        for bad in ("cargo 1.99.0 (abc 2026-01-01)\n", "cargo 1.100.0-nightly (abc 2026-01-01)\n",
+                    "cargo 1.100.01 (abc)\n", "rustc 1.100.0 (abc)\n", ""):
+            self.assertTrue(self.errors(cargo=bad), bad)
+        # The rustc and cargo checks are independent: a right rustc does not excuse a wrong cargo.
+        self.assertTrue(self.errors(rustc="rustc 1.100.0 (abc)\n", cargo="cargo 1.99.0 (abc)\n"))
 
     def test_repository_configuration_passes(self):
         workflows = pk.load_workflows()
@@ -60,6 +74,49 @@ class DriftTests(unittest.TestCase):
         pins = pk.parse_pins((ROOT / "ci/pins.env").read_text(encoding="utf-8"))
         channel = pk.toolchain_channel((ROOT / "rust-toolchain.toml").read_text(encoding="utf-8"))
         self.assertEqual(pk.drift_errors(pins, channel, workflows), [])
+
+
+class ToolVersionTests(unittest.TestCase):
+    """The rustc and cargo checks as `main` runs them: through the subprocess."""
+
+    def run_main(self, args, outputs):
+        def fake(command, **kwargs):
+            stdout, code = outputs[command[0]]
+            return subprocess.CompletedProcess(command, code, stdout, "")
+        with mock.patch.object(pk.subprocess, "run", side_effect=fake), mock.patch("sys.stderr"):
+            return pk.main(args)
+
+    def test_main_checks_cargo_when_asked(self):
+        good = {"rustc": ("rustc 1.100.0 (abc 2026-01-01)\n", 0), "cargo": ("cargo 1.100.0 (abc 2026-01-01)\n", 0)}
+        bad_cargo = dict(good, cargo=("cargo 1.99.0 (abc 2026-01-01)\n", 0))
+        channel = pk.toolchain_channel((ROOT / "rust-toolchain.toml").read_text(encoding="utf-8"))
+        good = {k: (v.replace("1.100.0", channel), c) for k, (v, c) in good.items()}
+        self.assertEqual(self.run_main(["drift", "--rustc", "--cargo"], good), 0)
+        self.assertEqual(self.run_main(["drift", "--rustc", "--cargo"], bad_cargo), 1)
+        self.assertEqual(self.run_main(["drift", "--cargo"], bad_cargo), 1)
+
+    def test_a_tool_that_fails_is_not_the_pinned_one(self):
+        channel = pk.toolchain_channel((ROOT / "rust-toolchain.toml").read_text(encoding="utf-8"))
+        right = f"rustc {channel} (abc 2026-01-01)\n"
+        self.assertEqual(self.run_main(["drift", "--rustc"], {"rustc": (right, 101)}), 1)
+        with mock.patch.object(pk.subprocess, "run",
+                               return_value=subprocess.CompletedProcess([], 101, right, "boom\n")):
+            note = pk.tool_version(["rustc", "--version"])
+        self.assertIn("exit 101", note)
+        self.assertIn("boom", note)
+        self.assertFalse(pk.reports_version(note, "rustc", channel))
+        with mock.patch.object(pk.subprocess, "run", side_effect=FileNotFoundError("no rustc")):
+            note = pk.tool_version(["rustc", "--version"])
+        self.assertIn("could not run rustc", note)
+        self.assertFalse(pk.reports_version(note, "rustc", channel))
+
+    def test_only_the_first_line_counts(self):
+        self.assertTrue(pk.reports_version("rustc 1.100.0 (abc 2026-01-01)\n", "rustc", "1.100.0"))
+        self.assertTrue(pk.reports_version("cargo 1.100.0\n", "cargo", "1.100.0"))
+        for bad in ("warning: not rustc 1.100.0 really\n", "boom\nrustc 1.100.0 (abc)\n",
+                    " rustc 1.100.0x (abc)\n", "rustc 1.100.0 junk\n", "rustc 1.100.0(abc)\n", "", "\n",
+                    "rustc 1.100.0 (x) junk (y)\n"):
+            self.assertFalse(pk.reports_version(bad, "rustc", "1.100.0"), bad)
 
 
 class DiscoveryTests(unittest.TestCase):
