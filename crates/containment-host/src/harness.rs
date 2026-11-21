@@ -758,10 +758,17 @@ struct Args {
     /// Allow running without cgroup limits for System One (recorded in the results)
     #[arg(long)]
     allow_missing_limits: bool,
+    /// Take the honest runs from this results file, written by a default build,
+    /// and run only the sabotage controls (sabotage build only)
+    #[arg(long)]
+    honest_results: Option<PathBuf>,
 }
 
 pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
-    let Some(Args { repeat, out, only, allow_missing_limits: waive_limits }) = parse_args::<Args>("attack-suite", args)? else { return Ok(()) };
+    let Some(Args { repeat, out, only, allow_missing_limits: waive_limits, honest_results: honest_from }) = parse_args::<Args>("attack-suite", args)? else { return Ok(()) };
+    if honest_from.is_some() && !SABOTAGE_BUILD {
+        return Err("--honest-results is for a build with the sabotage feature".into());
+    }
     if waive_limits {
         ALLOW_MISSING_LIMITS.store(true, std::sync::atomic::Ordering::Relaxed);
         // The controller refuses to start System One without limits unless waived.
@@ -770,7 +777,22 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     let mut sequence = 0;
     let mut runs = Vec::new();
-    for scenario in SCENARIOS.iter().filter(|s| only.as_deref().is_none_or(|o| o == **s)) {
+    // The honest runs describe the default build. A sabotage build may reuse
+    // the ones a default build wrote instead of producing its own.
+    let mut honest_settings = None;
+    let honest_build = match &honest_from {
+        Some(path) => {
+            let honest = honest_results(path, "attack")?;
+            println!("honest runs: {} taken from {}", honest.runs.len(), path.display());
+            runs = honest.runs;
+            // The honest runs keep the settings they actually ran with.
+            honest_settings = Some((honest.results["timed_repeat"].clone(), honest.results["cgroup_limits_waived"].clone()));
+            honest.build
+        }
+        None => build_stamp()?,
+    };
+    let honest_scenarios: &[&str] = if honest_from.is_some() { &[] } else { SCENARIOS };
+    for scenario in honest_scenarios.iter().filter(|s| only.as_deref().is_none_or(|o| o == **s)) {
         let count = if TIMED.contains(scenario) { repeat } else { 1 };
         for _ in 0..count {
             sequence += 1;
@@ -784,7 +806,13 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         }
     }
     let mut sabotage = Vec::new();
-    for (weakness, scenario) in SABOTAGE.iter().filter(|(_, s)| only.as_deref().is_none_or(|o| o == *s)) {
+    // The defects exist only in a sabotage build; a default build has no controls to run.
+    let controls: &[(&str, &str)] = if SABOTAGE_BUILD { SABOTAGE } else { &[] };
+    if !SABOTAGE_BUILD {
+        println!("sabotage controls skipped: this build does not contain the defects");
+    }
+    let sabotage_build = if SABOTAGE_BUILD { build_stamp()? } else { Value::Null };
+    for (weakness, scenario) in controls.iter().filter(|(_, s)| only.as_deref().is_none_or(|o| o == *s)) {
         sequence += 1;
         let value = execute(scenario, weakness, sequence)?;
         let detected = value["passed"] == false;
@@ -801,15 +829,18 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let passed = runs.iter().filter(|r| r["passed"] == true).count();
     let detected = sabotage.iter().filter(|r| r["detected"] == true).count();
     let timed_runs = runs.iter().filter(|r| r["scenario"].as_str().is_some_and(|s| TIMED.contains(&s))).count();
+    let (timed_repeat, limits_waived) = honest_settings.unwrap_or((json!(repeat), json!(allow_missing_limits())));
     let output = json!({
+        "suite": "attack",
         "kernel": fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default().trim(),
         "cgroup_root": cgroup_root()?,
         "wsl_interop_handler": fs::read_to_string("/proc/sys/fs/binfmt_misc/WSLInterop").ok().map(|t| t.trim().to_owned()), "runs_total": runs.len(), "runs_passed": passed,
-        "scenarios": SCENARIOS.len(), "timed_scenarios": TIMED.len(), "timed_repeat": repeat, "timed_runs": timed_runs,
-        "contained_runs_measured": contained_runs.len(), "cgroup_limits_waived": allow_missing_limits(),
+        "scenarios": SCENARIOS.len(), "timed_scenarios": TIMED.len(), "timed_repeat": timed_repeat, "timed_runs": timed_runs,
+        "contained_runs_measured": contained_runs.len(), "cgroup_limits_waived": limits_waived, "controls_cgroup_limits_waived": allow_missing_limits(),
         "bytes_admitted_after_commit_total": sum("bytes_admitted_after_commit"), "bytes_written_after_cut_total": sum("bytes_written_after_cut"),
         "bytes_arrived_commit_to_cut_total": sum("bytes_arrived_commit_to_cut"),
-        "sabotage_total": sabotage.len(), "sabotage_detected": detected, "metrics": metrics, "sabotage": sabotage, "runs": runs
+        "sabotage_total": sabotage.len(), "sabotage_detected": detected, "metrics": metrics, "sabotage": sabotage, "runs": runs,
+        "build": {"honest": honest_build, "sabotage": sabotage_build}
     });
     if let Some(parent) = out.parent() { fs::create_dir_all(parent)?; }
     write_replace(&out, &serde_json::to_vec_pretty(&output)?)?;

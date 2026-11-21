@@ -2,17 +2,22 @@
 """Check claims.toml against the repository's evidence and generate docs/claims.md.
 
 Usage: claims_check.py [--write] [--strict]
-(without --write, fails if docs/claims.md is out of date; --strict also fails on stale rows)
+(without --write, fails if docs/claims.md is out of date; --strict also fails on stale rows
+and on suite results whose build stamps are missing or wrong)
 
 CI-1  every law: in a non-planned row exists in formal/LAWS.bend, and results/formal-verdict.json
       hashes match the formal/ files at HEAD
 CI-2  every law, Bend mutant, Rust mutant and sabotage in the repository is cited by some row
 CI-3  proved needs a law:; checked-bounded needs a tla: that passed in results/tla-check.json for the current spec; tested needs a falsifier that was caught
       (cited mutants/sabotages detected, cited scenarios passed in every recorded run, doc: text present)
-CI-4  a row is stale when a path in its files changed after its first passing platform commit
-      (reported as a warning and shown as stale; an error with --strict)
+CI-4  a row is stale when a path in its files changed after the commit of every passing platform
+      (reported as a warning and shown as stale; an error with --strict). A module root such as
+      controller.rs also covers controller/. A platform whose commit predates a change is marked.
 CI-5  no row is stronger than its weakest depends_on
 CI-6  every claim id cited in docs/design-spec.md exists
+CI-7  every tracked file under crates/containment-host/src is in the files of some row
+CI-8  (--strict) results/attack-suite.json and results/live-suite.json record that the honest runs
+      came from a default build and the sabotage controls from a different, sabotage build
 """
 import hashlib
 import importlib.util
@@ -100,7 +105,53 @@ def tla_passed(spec, prop):
     return data["sha256"] == current and prop in data["passed"] and all(r["as_expected"] for r in data["runs"])
 
 
+def expand(paths):
+    """A Rust module root covers its submodules: `x.rs` also means `x/`."""
+    out = list(paths)
+    for path in paths:
+        if path.endswith(".rs") and (ROOT / path[:-3]).is_dir():
+            out.append(path[:-3])
+    return out
+
+
+def uncovered_sources(claims, root="crates/containment-host/src"):
+    """Tracked host sources that no claim lists in `files` (CI-7). An inventory
+    that cannot be taken, or is empty, is reported: it is not full coverage."""
+    try:
+        tracked = subprocess.run(["git", "-C", str(ROOT), "ls-files", root],
+                                 capture_output=True, text=True, check=True).stdout.splitlines()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        tracked = []
+    if not tracked:
+        return [f"{root} (git could not list its tracked files, so coverage was not checked)"]
+    listed = {path.rstrip("/") for claim in claims for path in expand(claim.get("files", []))}
+    return [f for f in tracked if not any(f == path or f.startswith(path + "/") for path in listed)]
+
+
+def build_errors():
+    """The honest runs must come from a default build and the controls from a
+    sabotage build, and the two must be different binaries (CI-8)."""
+    out = []
+    for name in ["attack-suite.json", "live-suite.json"]:
+        path = ROOT / "results" / name
+        if not path.exists():
+            continue
+        build = json.loads(path.read_text()).get("build") or {}
+        honest, controls = build.get("honest") or {}, build.get("sabotage") or {}
+        if honest.get("sabotage") is not False:
+            out.append(f"CI-8 results/{name}: the honest runs are not stamped as coming from a default build")
+        elif controls.get("sabotage") is not True:
+            out.append(f"CI-8 results/{name}: the sabotage controls are not stamped as coming from a sabotage build")
+        elif not all(isinstance(part.get("binary_sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", part["binary_sha256"])
+                     for part in (honest, controls)):
+            out.append(f"CI-8 results/{name}: a build stamp has no SHA-256 of its binary")
+        elif honest.get("binary_sha256") == controls.get("binary_sha256"):
+            out.append(f"CI-8 results/{name}: the honest runs and the controls came from the same binary")
+    return out
+
+
 def changed_since(commit, paths):
+    paths = expand(paths)
     if not paths:
         return []
     try:
@@ -196,10 +247,16 @@ def main():
             for ref in evidence:
                 if ref.partition(":")[0] == "tla" and not caught(cid, ref):
                     errors.append(f"CI-3 {cid}: {ref} has no passing TLC result for the current spec (run tools/tla_check.sh)")
+        # Each passing platform is evidence for the code as it was at that
+        # platform's commit. The claim is stale only when every one of them
+        # predates a change to its files; a platform that does is marked in
+        # docs/claims.md either way.
         stale_files = []
         passing = [p for p in claim.get("platforms", []) if p["result"].startswith("pass")]
-        if passing:
-            stale_files = changed_since(passing[0]["commit"], claim.get("files", []))
+        for platform in passing:
+            platform["_changed"] = changed_since(platform["commit"], claim.get("files", []))
+        if passing and all(p["_changed"] for p in passing):
+            stale_files = min((p["_changed"] for p in passing), key=len)
         effective[cid] = "stale" if stale_files else status
         claim["_stale"] = stale_files
 
@@ -224,6 +281,9 @@ def main():
     for sid in sorted(spec_ids - set(by_id)):
         errors.append(f"CI-6 docs/design-spec.md cites {sid}, which is not in claims.toml")
 
+    for path in uncovered_sources(claims):
+        errors.append(f"CI-7 {path} is not covered by the files of any claim")
+
     markdown = render(claims, effective, verdict_ok, len(laws), len(bend), len(rust), len(sabotage))
     target = ROOT / "docs/claims.md"
     if write:
@@ -237,8 +297,9 @@ def main():
     stale = {c["id"]: c["_stale"] for c in claims if c["_stale"]}
     warnings = [f"CI-4 {cid}: stale, {', '.join(files)} changed after its platform commit; rerun and update platforms"
                 for cid, files in stale.items()]
-    if "--strict" in sys.argv[1:]:
+    if strict:
         errors.extend(warnings)
+        errors.extend(build_errors())
     print(json.dumps({"claims": len(claims), "status": counts, "errors": errors, "stale": warnings}, indent=2))
     return 1 if errors else 0
 
@@ -266,7 +327,8 @@ def render(claims, effective, verdict_ok, n_laws, n_bend, n_rust, n_sab):
     for claim in claims:
         evidence = claim.get("evidence", [])
         shown = ", ".join(f"`{e}`" for e in evidence[:6]) + (f", +{len(evidence) - 6} more" if len(evidence) > 6 else "")
-        platforms = "; ".join(f"{p['name']} @{p['commit']}: {p['result']}" for p in claim.get("platforms", []))
+        platforms = "; ".join(f"{p['name']} @{p['commit']}: {p['result']}" + (" (predates later changes)" if p.get("_changed") else "")
+                              for p in claim.get("platforms", []))
         status = effective[claim["id"]]
         if claim.get("depends_on"):
             status += " (needs " + ", ".join(claim["depends_on"]) + ")"

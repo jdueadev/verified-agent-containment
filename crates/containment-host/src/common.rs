@@ -221,3 +221,105 @@ mod cli_tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+/// What a secret is replaced with in anything the agent or the HUD sees.
+pub const REDACTED: &str = "[redacted]";
+
+/// Refuses secrets that redaction cannot hide. Whatever redaction does, its
+/// output can contain the marker, so a secret that is part of the marker
+/// (`redacted`, `d`, `[`) would appear in redacted text. Such a value is
+/// rejected when the policy is loaded, which is what makes "redacted output
+/// holds no secret" true for every policy that loads. The message does not
+/// repeat the value.
+pub fn check_redactable(secrets: &[String]) -> Result<(), String> {
+    match secrets.iter().any(|secret| !secret.is_empty() && REDACTED.contains(secret.as_str())) {
+        true => Err(format!("a credential value is part of the redaction marker {REDACTED:?} and so cannot be hidden; use a different value")),
+        false => Ok(()),
+    }
+}
+
+/// True when this binary contains the deliberate defects (`sabotage` feature).
+pub const SABOTAGE_BUILD: bool = cfg!(feature = "sabotage");
+
+/// Identifies the binary that produced a result: its feature set and SHA-256.
+pub fn build_stamp() -> io::Result<Value> {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(std::fs::read(std::env::current_exe()?)?);
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(json!({"sabotage": SABOTAGE_BUILD, "binary_sha256": hex}))
+}
+
+/// The honest part of a results file: its runs, the stamp of the build that
+/// produced them, and the whole file for the settings they ran with.
+pub struct Honest {
+    pub runs: Vec<Value>,
+    pub build: Value,
+    pub results: Value,
+}
+
+/// Reads the honest runs a default build wrote for `suite`, so a sabotage
+/// build can add its controls to them without re-running them on the wrong
+/// binary.
+pub fn honest_results(path: &Path, suite: &str) -> Result<Honest, Box<dyn std::error::Error>> {
+    let results: Value = serde_json::from_slice(&std::fs::read(path)?)?;
+    honest_part(results, suite).map_err(|reason| format!("{}: {reason}", path.display()).into())
+}
+
+fn honest_part(results: Value, suite: &str) -> Result<Honest, &'static str> {
+    if results["suite"] != suite {
+        return Err("the results are from a different suite");
+    }
+    let build = &results["build"]["honest"];
+    if build["sabotage"] != false || !build["binary_sha256"].is_string() {
+        return Err("the honest runs were not written by a default build");
+    }
+    match results["runs"].as_array() {
+        Some(runs) if !runs.is_empty() => Ok(Honest { runs: runs.clone(), build: build.clone(), results }),
+        _ => Err("there are no honest runs"),
+    }
+}
+
+#[cfg(test)]
+mod build_tests {
+    use super::*;
+
+    #[test]
+    fn honest_runs_are_taken_only_from_a_default_build() {
+        let stamp = |sabotage: bool| json!({"sabotage": sabotage, "binary_sha256": "00"});
+        let good = json!({"suite": "attack", "timed_repeat": 1, "build": {"honest": stamp(false)}, "runs": [{"scenario": "a", "passed": true}]});
+        let Ok(honest) = honest_part(good, "attack") else { panic!("a default build was refused") };
+        assert_eq!(honest.runs.len(), 1);
+        assert_eq!(honest.build["sabotage"], false);
+        assert_eq!(honest.results["timed_repeat"], 1);
+        assert!(honest_part(json!({"suite": "attack", "build": {"honest": stamp(true)}, "runs": [{}]}), "attack").is_err());
+        assert!(honest_part(json!({"suite": "attack", "runs": [{}]}), "attack").is_err());
+        assert!(honest_part(json!({"suite": "attack", "build": {"honest": stamp(false)}, "runs": []}), "attack").is_err());
+    }
+
+    #[test]
+    fn honest_runs_from_another_suite_are_refused() {
+        let stamp = json!({"sabotage": false, "binary_sha256": "00"});
+        let attack = json!({"suite": "attack", "build": {"honest": stamp}, "runs": [{"scenario": "a", "passed": true}]});
+        assert!(honest_part(attack.clone(), "live").is_err());
+        let mut unnamed = attack;
+        unnamed.as_object_mut().expect("object").remove("suite");
+        assert!(honest_part(unnamed, "attack").is_err());
+    }
+
+    #[test]
+    fn credentials_inside_the_redaction_marker_are_refused() {
+        let list = |values: &[&str]| values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+        for hidden_by_nothing in ["redacted", "d", "[", "[redacted]", "act"] {
+            let error = check_redactable(&list(&["sk-live-123", hidden_by_nothing])).expect_err(hidden_by_nothing);
+            assert!(!error.contains(&format!("{hidden_by_nothing:?}")) || hidden_by_nothing == "[redacted]", "{error}");
+        }
+        assert!(check_redactable(&list(&["sk-live-123", "", "Bearer sk-live-123", "redacted!", "[redacted]_"])).is_ok());
+    }
+
+    #[test]
+    fn the_stamp_names_this_build() {
+        let stamp = build_stamp().expect("stamp");
+        assert_eq!(stamp["sabotage"], SABOTAGE_BUILD);
+        assert_eq!(stamp["binary_sha256"].as_str().map(str::len), Some(64));
+    }
+}

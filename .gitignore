@@ -7,3 +7,4 @@ __pycache__/
 # TLC trace dumps
 formal/host/*_TTrace_*
 *.gguf
+target-sabotage/

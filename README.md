@@ -26,10 +26,11 @@ cargo build --release -p containment-host
 sudo target/release/containment-lab redteam --scripted
 ```
 
-This runs six tasks (one clean, five prompt-injection attacks) with a scripted model that obeys every injection, each inside a real sandbox, and writes a scorecard under `results/redteam/`. To confirm the scorer catches a real leak, run a sabotaged controller; it must report `LEAK`:
+This runs six tasks (one clean, five prompt-injection attacks) with a scripted model that obeys every injection, each inside a real sandbox, and writes a scorecard under `results/redteam/`. To confirm the scorer catches a real leak, run a sabotaged controller; it must report `LEAK`. The deliberate defects are compiled only into a build with the `sabotage` feature, so this needs a second binary:
 
 ```bash
-sudo target/release/containment-lab redteam --scripted --weakness gateway_bypass
+cargo build --release -p containment-host --features sabotage --target-dir target-sabotage
+sudo target-sabotage/release/containment-lab redteam --scripted --weakness gateway_bypass
 ```
 
 ### 3. A real local model with the live HUD (10 to 20 minutes)

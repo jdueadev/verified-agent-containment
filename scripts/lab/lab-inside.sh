@@ -59,11 +59,18 @@ rm -rf /root/vac
 git clone -q "$REPO" /root/vac
 cd /root/vac
 COMMIT="$(git rev-parse --short HEAD)"
+# Two binaries. The default build is the one that ships: it runs the honest
+# suites and, later, the model. The sabotage build contains the deliberate
+# defects and runs only the controls that prove the suites can see them.
 cargo build --release -q --locked -p containment-host
+cargo build --release -q --locked -p containment-host --features sabotage --target-dir /root/vac/target-sabotage
 LAB_BIN=/root/vac/target/release/containment-lab
+SAB_BIN=/root/vac/target-sabotage/release/containment-lab
 
 {
   echo "commit: $COMMIT"
+  echo "default binary sha256: $(sha256sum "$LAB_BIN" | cut -d' ' -f1)"
+  echo "sabotage binary sha256: $(sha256sum "$SAB_BIN" | cut -d' ' -f1)"
   echo "kernel: $(uname -r)"
   echo "cgroup v2 controllers: $(cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null || echo none)"
   echo "cpus: $(nproc)"
@@ -79,13 +86,17 @@ say "  built $COMMIT; environment in results/$STAMP/environment.txt"
 # ---- 5. suites, no waivers ----------------------------------------------------
 SUITES_OK=1
 say "STEP 5/6 attack suite (repeat 30, cgroup limits enforced)"
-if "$LAB_BIN" attack-suite --repeat 30 --out "$RES/attack-suite.json" > "$RES/attack-suite.log" 2>&1; then
+# Honest runs on the default build, then the controls on the sabotage build,
+# which copies the honest runs into the final file with both build stamps.
+if "$LAB_BIN" attack-suite --repeat 30 --out "$RES/attack-suite-honest.json" > "$RES/attack-suite.log" 2>&1 \
+  && "$SAB_BIN" attack-suite --honest-results "$RES/attack-suite-honest.json" --out "$RES/attack-suite.json" >> "$RES/attack-suite.log" 2>&1; then
   say "  $(tail -1 "$RES/attack-suite.log")"
 else
   SUITES_OK=0; say "  attack suite FAILED: $(tail -1 "$RES/attack-suite.log")"
 fi
 say "  live suite"
-if "$LAB_BIN" live-suite --out "$RES/live-suite.json" > "$RES/live-suite.log" 2>&1; then
+if "$LAB_BIN" live-suite --out "$RES/live-suite-honest.json" > "$RES/live-suite.log" 2>&1 \
+  && "$SAB_BIN" live-suite --honest-results "$RES/live-suite-honest.json" --out "$RES/live-suite.json" >> "$RES/live-suite.log" 2>&1; then
   say "  $(tail -1 "$RES/live-suite.log")"
 else
   SUITES_OK=0; say "  live suite FAILED: $(tail -1 "$RES/live-suite.log")"
