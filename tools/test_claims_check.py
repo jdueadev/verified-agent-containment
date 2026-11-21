@@ -255,6 +255,14 @@ const SABOTAGE: &[(&str, &str, &str, &[&str])] = &[
             self.names(commented)
         self.assertEqual(self.names(commented + self.ONE_LINE), self.NAMES)
 
+    def test_char_literals_raw_strings_and_lifetimes_elsewhere_in_the_file(self):
+        rest = ("const QUOTE: char = '\"';\n"
+                "const ESCAPED: char = '\\'';\n"
+                "const SLASHES: &str = r#\"a \"b\" // not a comment\"#;\n"
+                "const BYTES: &[u8] = br\"x\\\";\n"
+                "fn borrow<'a>(s: &'a str) -> &'a str { s }\n")
+        self.assertEqual(self.names(rest + self.ONE_LINE + rest), self.NAMES)
+
     def test_empty_block_is_an_error(self):
         with self.assertRaises(cc.InventoryError):
             self.names("const SABOTAGE: &[(&str, &str)] = &[];\n")

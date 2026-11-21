@@ -123,12 +123,17 @@ class InventoryError(Exception):
     """An inventory could not be taken completely. Never treated as an empty one."""
 
 
+_RAW_STRING = re.compile(r'b?r(#*)"')
+
+
 def _skip_literal_or_comment(src, i):
-    """If a string, char literal or comment starts at i, return the index after it, else None.
-    Enough for the plain literals the suite tables use; a full Rust lexer is #61 step 2."""
+    """If a comment, string or char literal starts at i, return (index after it, kind),
+    else None. Covers line and nested block comments, plain, byte and raw strings,
+    and char literals as distinct from lifetimes. Enough to find the suite tables
+    reliably; a full Rust lexer is #61 step 2."""
     if src.startswith("//", i):
         end = src.find("\n", i)
-        return len(src) if end < 0 else end
+        return (len(src) if end < 0 else end), "comment"
     if src.startswith("/*", i):
         depth, j = 1, i + 2
         while depth:
@@ -140,33 +145,50 @@ def _skip_literal_or_comment(src, i):
                 depth, j = depth - 1, j + 2
             else:
                 j += 1
-        return j
+        return j, "comment"
+    raw = _RAW_STRING.match(src, i)
+    if raw and (i == 0 or not (src[i - 1].isalnum() or src[i - 1] == "_")):
+        close = '"' + raw.group(1)
+        end = src.find(close, raw.end())
+        if end < 0:
+            raise InventoryError("unterminated raw string")
+        return end + len(close), "string"
     if src[i] == '"':
         j = i + 1
         while j < len(src) and src[j] != '"':
             j += 2 if src[j] == "\\" else 1
         if j >= len(src):
             raise InventoryError("unterminated string")
-        return j + 1
+        return j + 1, "string"
+    if src[i] == "'":
+        # A char literal is one char or one escape between quotes; anything else
+        # starting with an apostrophe (`'a`, `'static`) is a lifetime or label.
+        if src.startswith("\\", i + 1):
+            end = src.find("'", i + 3)
+            if end < 0 or end > i + 12:
+                raise InventoryError("unterminated char literal")
+            return end + 1, "char"
+        if i + 2 < len(src) and src[i + 2] == "'" and src[i + 1] not in "'\n":
+            return i + 3, "char"
     return None
 
 
 def _blank(src, comments=True, strings=False):
-    """src with comments (and optionally string contents) replaced by spaces. Offsets
-    and newlines are kept, so positions and line starts still line up with src."""
+    """src with comments (and optionally string and char contents) replaced by spaces.
+    Offsets and newlines are kept, so positions and line starts still line up with src."""
     out, i = [], 0
     while i < len(src):
-        after = _skip_literal_or_comment(src, i)
-        if after is None:
+        found = _skip_literal_or_comment(src, i)
+        if found is None:
             out.append(src[i])
             i += 1
             continue
+        after, kind = found
         piece = src[i:after]
-        is_string = piece.startswith('"')
-        if (comments and not is_string) or (strings and is_string):
-            keep = '""' if is_string else ""
-            body = re.sub(r"[^\n]", " ", piece[1:-1] if is_string else piece)
-            piece = keep[:1] + body + keep[1:]
+        if kind == "comment" and comments:
+            piece = re.sub(r"[^\n]", " ", piece)
+        elif kind != "comment" and strings:
+            piece = piece[0] + re.sub(r"[^\n]", " ", piece[1:-1]) + piece[-1]
         out.append(piece)
         i = after
     return "".join(out)
@@ -191,9 +213,9 @@ def const_array_names(src, const, where):
     while True:
         if i >= len(src):
             raise InventoryError(f"{where}: `const {const}` is not closed")
-        after = _skip_literal_or_comment(src, i)
-        if after is not None:
-            i = after
+        found = _skip_literal_or_comment(src, i)
+        if found is not None:
+            i = found[0]
             continue
         ch = src[i]
         if ch in "([{":
