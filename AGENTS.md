@@ -169,3 +169,5 @@ No merge rests on a local result. The `check` workflow is the gate.
   rerun every check. `docs/decisions/`: why the rules are what they are.
 - `tools/claims_check.py`, `tools/policy_check.py`, `tools/pins_check.py`:
   what the checks do, in their headers.
+
+<!-- throwaway lane C test for #52; this PR must not merge -->
