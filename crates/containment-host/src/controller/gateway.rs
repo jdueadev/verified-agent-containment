@@ -58,18 +58,18 @@ pub(super) fn gateway_handler(shared: &Arc<Shared>, message: Value) -> Value {
     // sabotage traces only logs, which lets an agent act unseen while blind.
     let decision = if reply["ok"] == true { "allowed" } else { "denied" };
     match message["op"].as_str() {
-        Some("egress") if !shared.weak.untraced_decisions_ignored => {
+        Some("egress") if !shared.weak.untraced_decisions_ignored() => {
             let data = message["data"].as_str().unwrap_or("");
             shared.trace(received, "egress", message["host"].as_str().unwrap_or(""), decision, data.len(), "");
         }
-        Some("secret") if !shared.weak.untraced_decisions_ignored => {
+        Some("secret") if !shared.weak.untraced_decisions_ignored() => {
             shared.trace(received, "secret", &clip_field(message["name"].as_str().unwrap_or(""), 64), decision, 0, "");
         }
         Some("log") => {
             let text = message["text"].as_str().unwrap_or("");
             shared.trace(received, "log", "", "", text.len(), text);
         }
-        Some("http") if !shared.weak.untraced_decisions_ignored => {
+        Some("http") if !shared.weak.untraced_decisions_ignored() => {
             let url = message["url"].as_str().unwrap_or("");
             let origin = clip_field(&crate::http::Url::parse(url).map_or_else(|| "invalid".to_owned(), |u| u.origin()), 255);
             let method = clip_field(&message["method"].as_str().unwrap_or("GET").to_ascii_uppercase(), 8);
@@ -77,11 +77,11 @@ pub(super) fn gateway_handler(shared: &Arc<Shared>, message: Value) -> Value {
             let body = message["body"].as_str().unwrap_or("");
             let record = json!({"kind": "http", "host": origin, "method": method, "access": access, "decision": decision, "bytes": body.len(),
                 "untrusted_excerpt": body.chars().take(crate::system_one::EXCERPT_CHARS).collect::<String>()});
-            if shared.trace_event(received, record) && !shared.weak.drop_overflow {
+            if shared.trace_event(received, record) && !shared.weak.drop_overflow() {
                 apply_classifier(shared, Some("classifier_overflow"), received, Level::Restrict);
             }
         }
-        Some("infer") if !shared.weak.untraced_decisions_ignored => {
+        Some("infer") if !shared.weak.untraced_decisions_ignored() => {
             shared.trace(received, "infer", "model", decision, message.to_string().len(), "");
         }
         _ => {}
@@ -90,7 +90,7 @@ pub(super) fn gateway_handler(shared: &Arc<Shared>, message: Value) -> Value {
 }
 
 pub(super) fn gateway_decide(shared: &Arc<Shared>, message: &Value, received: u64) -> Value {
-    if !shared.weak.ignore_expiry {
+    if !shared.weak.ignore_expiry() {
         shared.apply(None, received, |now_ms| Event::AgentRequest { now_ms });
     }
     match message["op"].as_str() {
@@ -152,7 +152,7 @@ pub(super) fn serve_gateway(listener: UnixListener, shared: Arc<Shared>) {
         // Only the current generation may connect. Old processes keep an old uid.
         let uid_ok = peer_credentials(&stream).is_some_and(|p| {
             u64::from(p.uid) == shared.sandbox_uid.load(Ordering::SeqCst)
-                || (shared.weak.stale_generation_authority && p.uid >= shared.uid_base && p.uid < shared.uid_base + 16)
+                || (shared.weak.stale_generation_authority() && p.uid >= shared.uid_base && p.uid < shared.uid_base + 16)
         });
         let reserved = shared.active_connections.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < MAX_GATEWAY_CONNECTIONS).then_some(n + 1)).is_ok();
         if !uid_ok || !reserved {
@@ -181,7 +181,7 @@ pub(super) fn serve_gateway(listener: UnixListener, shared: Arc<Shared>) {
                     }
                 }
             }
-            if !shared.weak.leak_streams {
+            if !shared.weak.leak_streams() {
                 lock(&shared.gateway_streams).remove(&id);
             }
             shared.active_connections.fetch_sub(1, Ordering::SeqCst);
@@ -243,7 +243,7 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
     });
     let body = request.to_string();
     // The model endpoint is an upstream too: the canary must not reach it.
-    if !shared.weak.live_canary_unchecked && !live.canary.is_empty() && body.contains(&live.canary) {
+    if !shared.weak.live_canary_unchecked() && !live.canary.is_empty() && body.contains(&live.canary) {
         // The call is refused either way. A model on this host only restricts the
         // agent; a remote one means the canary was about to leave, so freeze.
         let local = crate::http::is_loopback_literal(&live.model_url.host);
@@ -358,7 +358,7 @@ pub(super) fn live_http(shared: &Shared, live: &LiveState, message: &Value, rece
     let url_text = message["url"].as_str().unwrap_or("");
     let body = message["body"].as_str().unwrap_or("");
     // The canary only exists in the agent's workspace. Seeing it leave is a hard rule.
-    if !shared.weak.live_canary_unchecked && !live.canary.is_empty() && (url_text.contains(&live.canary) || body.contains(&live.canary)) {
+    if !shared.weak.live_canary_unchecked() && !live.canary.is_empty() && (url_text.contains(&live.canary) || body.contains(&live.canary)) {
         shared.apply(Some("canary_exfil"), received, |now_ms| Event::HardRule { now_ms, level: Level::Freeze });
         return denied("denied");
     }
@@ -368,7 +368,7 @@ pub(super) fn live_http(shared: &Shared, live: &LiveState, message: &Value, rece
         return denied("GET and HEAD requests cannot carry a body");
     }
     let rule = live.hosts.get(&url.origin());
-    let granted = rule.is_some_and(|(r, _)| !writes || r.access == crate::live::Access::Write || shared.weak.live_write_unchecked);
+    let granted = rule.is_some_and(|(r, _)| !writes || r.access == crate::live::Access::Write || shared.weak.live_write_unchecked());
     let Some(slot) = admit(shared, granted, false) else {
         if !granted && shared.denied.fetch_add(1, Ordering::SeqCst) + 1 >= 3 {
             shared.apply(Some("denied_requests"), received, |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
@@ -380,7 +380,7 @@ pub(super) fn live_http(shared: &Shared, live: &LiveState, message: &Value, rece
         let sent = (body.len() + url.path.len()) as u64;
         let mut used = lock(&live.used);
         let entry = used.entry(url.origin()).or_default();
-        let over = !shared.weak.live_budget_unchecked
+        let over = !shared.weak.live_budget_unchecked()
             && (r.budget_requests.is_some_and(|b| entry.requests + 1 > b) || r.budget_bytes.is_some_and(|b| entry.bytes + sent > b));
         if over {
             drop(used);
@@ -396,7 +396,7 @@ pub(super) fn live_http(shared: &Shared, live: &LiveState, message: &Value, rece
     let mut headers = Vec::new();
     if let Some((_, Some(credential))) = rule {
         headers.push(credential.clone());
-    } else if shared.weak.live_credential_everywhere {
+    } else if shared.weak.live_credential_everywhere() {
         // Sabotage: the first configured credential is sent to any host.
         if let Some((_, Some(credential))) = live.hosts.values().find(|(_, c)| c.is_some()) {
             headers.push(credential.clone());

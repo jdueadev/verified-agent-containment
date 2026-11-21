@@ -41,7 +41,7 @@ impl Lag {
 }
 
 pub(super) fn apply_classifier(shared: &Shared, label: Option<&'static str>, received: u64, level: Level) {
-    let uncapped = shared.weak.classifier_uncapped;
+    let uncapped = shared.weak.classifier_uncapped();
     shared.emit("classifier", json!({"label": label.unwrap_or("classifier"), "level": format!("{level:?}").to_lowercase()}));
     shared.bounded_push(&shared.classifier_signals, json!({"ns": received, "label": label.unwrap_or("classifier"), "level": format!("{level:?}").to_lowercase()}));
     shared.apply(label, received, |now_ms| if uncapped { Event::HardRule { now_ms, level } } else { Event::Classifier { now_ms, level } });
@@ -173,11 +173,11 @@ pub(super) fn read_verdicts(shared: &Shared, socket: &UnixDatagram, epoch: u64, 
         let excerpt_only = !codes.is_empty() && codes.iter().all(|c| crate::system_one::EXCERPT_CODES.contains(c));
         shared.emit("verdict", json!({"level": v["level"], "score": v["score"], "codes": codes, "model": v["model_id"]}));
         let mut label = "system_one";
-        if excerpt_only && level != Level::Restrict && !shared.weak.excerpt_uncapped {
+        if excerpt_only && level != Level::Restrict && !shared.weak.excerpt_uncapped() {
             level = Level::Restrict;
             label = "system_one_excerpt_capped";
         }
-        if shared.weak.shared_control_socket && v["op"] == "hard" {
+        if shared.weak.shared_control_socket() && v["op"] == "hard" {
             // Sabotage: the message body picks the constructor.
             shared.apply(Some("system_one_hard"), now, |now_ms| Event::HardRule { now_ms, level });
         } else {

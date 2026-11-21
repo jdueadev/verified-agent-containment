@@ -128,7 +128,7 @@ pub(super) fn monitor_handler(shared: &Arc<Shared>, message: Value, peer: Option
         return status_error("unknown monitor request");
     }
     let is_monitor = peer.is_some_and(|p| p.pid as u64 == shared.monitor_pid.load(Ordering::SeqCst));
-    if !is_monitor && !shared.weak.unauthenticated_monitor {
+    if !is_monitor && !shared.weak.unauthenticated_monitor() {
         shared.peer_rejected.fetch_add(1, Ordering::Relaxed);
         return status_error("renewal is accepted only from the monitor process");
     }
@@ -187,7 +187,7 @@ pub(super) fn status_reply(shared: &Shared) -> Value {
 /// Each socket picks the constructors it can produce; there is no classifier op
 /// here, and resets have their own socket.
 pub(super) fn control_handler(shared: &Arc<Shared>, message: Value, peer: Option<libc::ucred>) -> Value {
-    if !operator_peer(shared.weak.control_peer_unchecked, &shared.control_rejected, peer) {
+    if !operator_peer(shared.weak.control_peer_unchecked(), &shared.control_rejected, peer) {
         return status_error("control is accepted only from the operator");
     }
     let received = boot_ns();
@@ -208,7 +208,7 @@ pub(super) fn control_handler(shared: &Arc<Shared>, message: Value, peer: Option
 
 /// Reset channel. It can only produce Event::Reset, and only from the operator.
 pub(super) fn reset_handler(shared: &Arc<Shared>, message: Value, peer: Option<libc::ucred>) -> Value {
-    if !operator_peer(shared.weak.reset_peer_unchecked, &shared.reset_rejected, peer) {
+    if !operator_peer(shared.weak.reset_peer_unchecked(), &shared.reset_rejected, peer) {
         return status_error("resets are accepted only from the operator");
     }
     if message["op"] != "reset" {
