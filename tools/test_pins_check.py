@@ -26,6 +26,8 @@ class DriftTests(unittest.TestCase):
                     "      bun-version: latest\n", "      node-version: lts/*\n", "      java-version: ${{ env.OTHER }}\n",
                     "      bun-version: ${{ env.OTHER_VERSION }}\n", "      node-version: ${{ env.BUN_VERSION }}\n",
                     "      java-version: '${{ env.JAVA_VERSION }}-ea'\n", "      bun-version: ${{ env.BUN_VERSION }}x\n",
+                    "      bun-version: ${{ env.BUN_VERSION }}#suffix\n", "      bun-version: ${{ env.BUN_VERSION }},x\n",
+                    "      node-version: '${{ env.NODE_VERSION }}'#x\n", "      java-version: ${{ env.JAVA_VERSION }} }\n",
                     "    with: {bun-version: latest}\n", "    with: { node-version: 22, cache: npm }\n",
                     "    with: {java-version: ${{ env.BUN_VERSION }}}\n", "      bun-version:\n        latest\n",
                     "env:\n  RUST_TOOLCHAIN: 1.100.0\n", "env:\n  BEND_COMMIT: 0e2f38f759cc830849e4\n",

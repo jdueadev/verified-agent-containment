@@ -38,8 +38,15 @@ def version_input_errors(name, text):
     out = []
     for match in re.finditer(r"\b(bun|node|java)-version\b", text):
         pin = match.group(1).upper() + "_VERSION"
-        allowed = r"\s*:[ \t]*(['\"]?)\$\{\{\s*env\." + pin + r"\s*\}\}\1[ \t]*(?=[,}\r\n]|#|\Z)"
-        if not re.match(allowed, text[match.end():]):
+        value = re.match(r"\s*:[ \t]*(['\"]?)\$\{\{\s*env\." + pin + r"\s*\}\}\1", text[match.end():])
+        # What follows the value on its line must not be part of the scalar:
+        # nothing, a comment set off by whitespace, or, inside a flow mapping
+        # only, the `,` or `}` that ends the entry. `}}#x` and a block-style
+        # `}},x` are longer scalars, not the pin.
+        rest = text[match.end() + value.end():].split("\n", 1)[0].rstrip("\r") if value else ""
+        in_flow = "{" in text[text.rfind("\n", 0, match.start()) + 1:match.start()]
+        ended = re.fullmatch(r"[ \t]*([ \t]#.*)?", rest) or (in_flow and re.match(r"[ \t]*[,}]", rest))
+        if not value or not ended:
             line = text.count("\n", 0, match.start()) + 1
             out.append(f"{name}:{line}: {match.group(1)}-version must be ${{{{ env.{pin} }}}}, read from ci/pins.env")
     return out
