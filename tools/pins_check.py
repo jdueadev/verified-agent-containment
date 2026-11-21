@@ -43,9 +43,21 @@ def version_input_errors(name, text):
         # nothing, a comment set off by whitespace, or, inside a flow mapping
         # only, the `,` or `}` that ends the entry. `}}#x` and a block-style
         # `}},x` are longer scalars, not the pin.
-        rest = text[match.end() + value.end():].split("\n", 1)[0].rstrip("\r") if value else ""
-        in_flow = "{" in text[text.rfind("\n", 0, match.start()) + 1:match.start()]
-        ended = re.fullmatch(r"[ \t]*([ \t]#.*)?", rest) or (in_flow and re.match(r"[ \t]*[,}]", rest))
+        after = text[match.end() + value.end():] if value else ""
+        rest, _, below = after.partition("\n")
+        rest = rest.rstrip("\r")
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        if "{" in text[line_start:match.start()]:
+            # Flow mapping: the entry must end on this line.
+            ended = re.match(r"[ \t]*[,}]", rest)
+        else:
+            # Block mapping: a following line indented deeper than the key
+            # continues the scalar (`}}` then an indented `suffix`), so the
+            # next line with content must not be.
+            key_column = match.start() - line_start
+            following = next((ln for ln in below.split("\n") if ln.strip() and not ln.lstrip().startswith("#")), "")
+            continued = len(following) - len(following.lstrip(" \t")) > key_column
+            ended = re.fullmatch(r"[ \t]*([ \t]#.*)?", rest) and not continued
         if not value or not ended:
             line = text.count("\n", 0, match.start()) + 1
             out.append(f"{name}:{line}: {match.group(1)}-version must be ${{{{ env.{pin} }}}}, read from ci/pins.env")
