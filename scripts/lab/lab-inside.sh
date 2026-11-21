@@ -73,7 +73,7 @@ say "  Rust toolchain (pinned in rust-toolchain.toml)"
 # here; one that is set, even to an empty value, stops the run. Only names are
 # reported, never values. The paths below assume HOME=/root (lab.ps1 runs as root).
 [ "$HOME" = /root ] || fail "HOME is '$HOME', not /root; the cargo config and toolchain paths checked here assume it"
-BUILD_OVERRIDES='^(RUSTC|RUSTC_.*|RUSTFLAGS|RUSTDOCFLAGS|CARGO_ENCODED_.*|RUSTUP_.*|CARGO_HOME|CARGO_(BUILD|TARGET|PROFILE|UNSTABLE|SOURCE|REGISTRIES|REGISTRY)_.*|(HOST_|TARGET_)?(CC|CXX|AR|CFLAGS|CXXFLAGS|ARFLAGS|LDFLAGS|RANLIB|RANLIBFLAGS|CXXSTDLIB)(_.*)?|CRATE_CC_NO_DEFAULTS|COMPILER_PATH|GCC_EXEC_PREFIX|LIBRARY_PATH|CPATH|C_INCLUDE_PATH|CPLUS_INCLUDE_PATH|LD_.*)$'
+BUILD_OVERRIDES='^(RUSTC|RUSTC_.*|RUSTFLAGS|RUSTDOCFLAGS|CARGO_ENCODED_.*|RUSTUP_.*|CARGO_HOME|CARGO_INCREMENTAL|CARGO_(BUILD|TARGET|PROFILE|UNSTABLE|SOURCE|REGISTRIES|REGISTRY)_.*|(HOST_|TARGET_)?(CC|CXX|AR|CFLAGS|CXXFLAGS|ARFLAGS|LDFLAGS|RANLIB|RANLIBFLAGS|CXXSTDLIB)(_.*)?|CRATE_CC_NO_DEFAULTS|COMPILER_PATH|GCC_EXEC_PREFIX|LIBRARY_PATH|CPATH|C_INCLUDE_PATH|CPLUS_INCLUDE_PATH|LD_.*)$'
 # Names come from the process environment, not `compgen -e`: bash cannot list a
 # name such as CFLAGS_x86_64-unknown-linux-gnu, but it still passes it to cargo.
 ENV_NAMES="$(python3 -c 'import os; print("\n".join(sorted(os.environ)))')" || fail "could not list the environment"
@@ -153,12 +153,16 @@ LAB_BIN=/root/vac/target/release/containment-lab
 SAB_BIN=/root/vac/target-sabotage/release/containment-lab
 # The build ran code from the clone (build scripts, proc macros) as root. This
 # is a tripwire, not proof: such code could also fake these answers or rewrite
-# the record (see scripts/lab/README.md). A failed command here gives an empty
-# string, which never equals the recorded value, so it stops the run.
-[ "$(rustc -vV)" = "$RUSTC_VV" ] || fail "rustc -vV changed during the build"
-[ "$(cargo -V)" = "$CARGO_V" ] || fail "cargo -V changed during the build"
-[ "$(rustup which rustc)" = "$RUSTC_PATH" ] || fail "the rustc path changed during the build"
-[ "$(rustup which cargo)" = "$CARGO_PATH" ] || fail "the cargo path changed during the build"
+# the record (see scripts/lab/README.md). Each query must also succeed: matching
+# output from a command that then fails is not a confirmation.
+NOW="$(rustc -vV)" || fail "rustc -vV failed after the build"
+[ "$NOW" = "$RUSTC_VV" ] || fail "rustc -vV changed during the build"
+NOW="$(cargo -V)" || fail "cargo -V failed after the build"
+[ "$NOW" = "$CARGO_V" ] || fail "cargo -V changed during the build"
+NOW="$(rustup which rustc)" || fail "rustup which rustc failed after the build"
+[ "$NOW" = "$RUSTC_PATH" ] || fail "the rustc path changed during the build"
+NOW="$(rustup which cargo)" || fail "rustup which cargo failed after the build"
+[ "$NOW" = "$CARGO_PATH" ] || fail "the cargo path changed during the build"
 LAB_SHA="$(sha256sum "$LAB_BIN" | cut -d' ' -f1)" || fail "could not hash $LAB_BIN"
 SAB_SHA="$(sha256sum "$SAB_BIN" | cut -d' ' -f1)" || fail "could not hash $SAB_BIN"
 
