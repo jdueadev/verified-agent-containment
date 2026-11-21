@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 """Check claims.toml against the repository's evidence and generate docs/claims.md.
 
-Usage: claims_check.py [--write] [--strict]
-(without --write, fails if docs/claims.md is out of date; --strict also fails on stale rows
-and on suite results whose build stamps are missing or wrong)
+Usage:
+  claims_check.py [--write] [--strict]
+  claims_check.py --affected [GIT_REF]
+
+Without --write, fails if docs/claims.md is out of date (in non-strict mode,
+staleness-only doc drift is reported as a warning so Draft PRs can iterate
+without committing throwaway stale tables). --strict also fails on stale rows
+and on suite results whose build stamps or run settings are missing or wrong.
+
+--affected [GIT_REF] prints a local summary of which claims are invalidated by
+uncommitted edits (default: vs HEAD) or branch edits (e.g. --affected origin/main).
 
 CI-1  every law: in a non-planned row exists in formal/LAWS.bend, and results/formal-verdict.json
       hashes match the formal/ files at HEAD
@@ -11,13 +19,15 @@ CI-2  every law, Bend mutant, Rust mutant and sabotage in the repository is cite
 CI-3  proved needs a law:; checked-bounded needs a tla: that passed in results/tla-check.json for the current spec; tested needs a falsifier that was caught
       (cited mutants/sabotages detected, cited scenarios passed in every recorded run, doc: text present)
 CI-4  a row is stale when a path in its files changed after the commit of every passing platform
-      (reported as a warning and shown as stale; an error with --strict). A module root such as
-      controller.rs also covers controller/. A platform whose commit predates a change is marked.
+      (reported as a warning and shown as stale; an error with --strict). A platform whose commit
+      predates a change is marked in docs/claims.md.
 CI-5  no row is stronger than its weakest depends_on
 CI-6  every claim id cited in docs/design-spec.md exists
-CI-7  every tracked file under crates/containment-host/src is in the files of some row
+CI-7  every tracked file under crates/containment-host/src is matched by the files (path, directory
+      prefix, or glob pathspec) of some row
 CI-8  (--strict) results/attack-suite.json and results/live-suite.json record that the honest runs
-      came from a default build and the sabotage controls from a different, sabotage build
+      came from a default build and the sabotage controls from a different, sabotage build, and
+      results/attack-suite.json is a full unwaived run (timed_repeat >= 30, no limits waiver)
 """
 import hashlib
 import importlib.util
@@ -32,29 +42,102 @@ ROOT = Path(__file__).resolve().parent.parent
 RANK = {"proved": 5, "checked-bounded": 4, "tested": 3, "assumed": 2, "planned": 1, "stale": 0}
 LAYERS = {"bend-kernel", "rust-kernel", "host", "os", "env"}
 KINDS = {"law", "mutant", "rust-mutant", "scenario", "sabotage", "diff", "tla", "doc", "live", "live-sabotage"}
+GLOB_META = set("*?[")
+MIN_ATTACK_TIMED_REPEAT = 30
+
+
+def is_glob(pattern: str) -> bool:
+    return any(ch in pattern for ch in GLOB_META)
+
+
+def glob_to_regex(pattern: str) -> re.Pattern[str]:
+    """Translate a git-style glob pattern (*, **, ?, [...]) to a full-match regex."""
+    out = ["^"]
+    i, n = 0, len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == "*":
+            if i + 1 < n and pattern[i + 1] == "*":
+                j = i + 2
+                while j < n and pattern[j] == "*":
+                    j += 1
+                if j < n and pattern[j] == "/":
+                    out.append("(?:.*/)?")
+                    i = j + 1
+                else:
+                    out.append(".*")
+                    i = j
+            else:
+                out.append("[^/]*")
+                i += 1
+        elif ch == "?":
+            out.append("[^/]")
+            i += 1
+        elif ch == "[":
+            j = i + 1
+            if j < n and pattern[j] in ("!", "^"):
+                j += 1
+            if j < n and pattern[j] == "]":
+                j += 1
+            while j < n and pattern[j] != "]":
+                j += 1
+            if j >= n:
+                out.append(re.escape("["))
+                i += 1
+            else:
+                body = pattern[i + 1 : j]
+                if body.startswith("!"):
+                    body = "^" + body[1:]
+                body = body.replace("\\", "\\\\")
+                if body.startswith("^"):
+                    out.append(f"[{body}/]")
+                else:
+                    out.append(f"[{body}]")
+                i = j + 1
+        else:
+            out.append(re.escape(ch))
+            i += 1
+    out.append("$")
+    return re.compile("".join(out))
+
+
+def path_matches(path: str, pattern: str) -> bool:
+    """Match a repo-relative POSIX path against an exact file, directory prefix, or glob."""
+    norm_path = path.replace("\\", "/").lstrip("./")
+    norm_pat = pattern.replace("\\", "/").lstrip("./").rstrip("/")
+    if not norm_pat:
+        return False
+    if is_glob(norm_pat):
+        return bool(glob_to_regex(norm_pat).match(norm_path))
+    return norm_path == norm_pat or norm_path.startswith(norm_pat + "/")
+
+
+def git_pathspec(pattern: str) -> str:
+    norm = pattern.replace("\\", "/")
+    return f":(glob){norm}" if is_glob(norm) else norm
 
 
 def load_inventory():
-    laws = re.findall(r"^law ([a-z_0-9]+):", (ROOT / "formal/LAWS.bend").read_text(), re.M)
+    laws = re.findall(r"^law ([a-z_0-9]+):", (ROOT / "formal/LAWS.bend").read_text(encoding="utf-8"), re.M)
     spec = importlib.util.spec_from_file_location("kernel_mutants", ROOT / "tools/kernel_mutants.py")
     mutants = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mutants)
     bend = [m[0] for m in mutants.BEND_MUTANTS]
     rust = [m[0] for m in mutants.RUST_MUTANTS]
-    harness = (ROOT / "crates/containment-host/src/harness.rs").read_text()
+    harness = (ROOT / "crates/containment-host/src/harness.rs").read_text(encoding="utf-8")
     sabotage_block = harness.split("const SABOTAGE")[1].split("];")[0]
     sabotage = re.findall(r'\("([a-z_]+)",\s*"[a-z_]+"\)', sabotage_block)
     scenario_block = harness.split("const SCENARIOS")[1].split("];")[0]
     scenarios = re.findall(r'"([a-z_]+)"', scenario_block)
-    live_src = (ROOT / "crates/containment-host/src/live_suite.rs").read_text()
+    live_src = (ROOT / "crates/containment-host/src/live_suite.rs").read_text(encoding="utf-8")
     live_sabotage = re.findall(r'\("([a-z_]+)",\s*"[a-z_]+",', live_src.split("const SABOTAGE")[1].split("];")[0])
     live_scenarios = re.findall(r'"([a-z_]+)"', live_src.split("const SCENARIOS")[1].split("];")[0])
     return laws, bend, rust, sabotage, scenarios, live_scenarios, live_sabotage
 
 
 def load_results():
-    mutation = json.loads((ROOT / "results/mutation-check.json").read_text())
-    suites = [json.loads(p.read_text()) for p in [ROOT / "results/attack-suite.json", ROOT / "results/attack-suite-under-cpu-load.json"] if p.exists()]
+    mutation = json.loads((ROOT / "results/mutation-check.json").read_text(encoding="utf-8"))
+    suites = [json.loads(p.read_text(encoding="utf-8")) for p in [ROOT / "results/attack-suite.json", ROOT / "results/attack-suite-under-cpu-load.json"] if p.exists()]
     scenario_ok = {}
     sabotage_ok = {}
     for suite in suites:
@@ -69,12 +152,12 @@ def load_results():
     for name, file in [("rust-bend", "differential.json"), ("rust-wasm", "wasm-differential.json")]:
         path = ROOT / "results" / file
         if path.exists():
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
             diffs[name] = data.get("mismatches", 1) == 0
     live_ok, live_sab_ok = {}, {}
     live_path = ROOT / "results/live-suite.json"
     if live_path.exists():
-        live = json.loads(live_path.read_text())
+        live = json.loads(live_path.read_text(encoding="utf-8"))
         for run in live["runs"]:
             live_ok[run["scenario"]] = live_ok.get(run["scenario"], True) and bool(run["passed"])
         for item in live["sabotage"]:
@@ -82,10 +165,15 @@ def load_results():
     return bend_ok, rust_ok, scenario_ok, sabotage_ok, diffs, live_ok, live_sab_ok
 
 
+def canonical_bytes(path: Path) -> bytes:
+    """Read spec bytes with LF line endings so Windows autocrlf checkouts match Linux digests."""
+    return path.read_bytes().replace(b"\r\n", b"\n")
+
+
 def verdict_matches_head():
-    verdict = json.loads((ROOT / "results/formal-verdict.json").read_text())
+    verdict = json.loads((ROOT / "results/formal-verdict.json").read_text(encoding="utf-8"))
     for path, digest in verdict["sha256"].items():
-        if hashlib.sha256((ROOT / path).read_bytes()).hexdigest() != digest:
+        if hashlib.sha256(canonical_bytes(ROOT / path)).hexdigest() != digest:
             return False, f"{path} differs from the hash in results/formal-verdict.json"
     return verdict["result"] == "ALL PROOFS CHECK", verdict["result"]
 
@@ -96,47 +184,42 @@ def tla_passed(spec, prop):
     path = ROOT / "results/tla-check.json"
     if not path.exists() or spec != "host":
         return False
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     # The recorded digest covers the spec and every configuration TLC ran.
     inputs = data.get("inputs") or [data["spec"]]
     if data["spec"] not in inputs:
         return False
-    current = hashlib.sha256(b"".join((ROOT / p).read_bytes() for p in inputs)).hexdigest()
+    current = hashlib.sha256(b"".join(canonical_bytes(ROOT / p) for p in inputs)).hexdigest()
     return data["sha256"] == current and prop in data["passed"] and all(r["as_expected"] for r in data["runs"])
 
 
-def expand(paths):
-    """A Rust module root covers its submodules: `x.rs` also means `x/`."""
-    out = list(paths)
-    for path in paths:
-        if path.endswith(".rs") and (ROOT / path[:-3]).is_dir():
-            out.append(path[:-3])
-    return out
-
-
-def uncovered_sources(claims, root="crates/containment-host/src"):
-    """Tracked host sources that no claim lists in `files` (CI-7). An inventory
+def uncovered_sources(claims, root="crates/containment-host/src", tracked=None):
+    """Tracked host sources that no claim matches in `files` (CI-7). An inventory
     that cannot be taken, or is empty, is reported: it is not full coverage."""
-    try:
-        tracked = subprocess.run(["git", "-C", str(ROOT), "ls-files", root],
-                                 capture_output=True, text=True, check=True).stdout.splitlines()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        tracked = []
+    if tracked is None:
+        try:
+            tracked = subprocess.run(["git", "-C", str(ROOT), "ls-files", root],
+                                     capture_output=True, text=True, check=True).stdout.splitlines()
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            tracked = []
     if not tracked:
         return [f"{root} (git could not list its tracked files, so coverage was not checked)"]
-    listed = {path.rstrip("/") for claim in claims for path in expand(claim.get("files", []))}
-    return [f for f in tracked if not any(f == path or f.startswith(path + "/") for path in listed)]
+    patterns = [pattern for claim in claims for pattern in claim.get("files", [])]
+    return [f for f in tracked if not any(path_matches(f, pattern) for pattern in patterns)]
 
 
-def build_errors():
+def build_errors(results_dir=None):
     """The honest runs must come from a default build and the controls from a
-    sabotage build, and the two must be different binaries (CI-8)."""
+    sabotage build, the two must be different binaries, and attack-suite.json
+    must be a full unwaived run (CI-8)."""
+    results_dir = ROOT / "results" if results_dir is None else Path(results_dir)
     out = []
     for name in ["attack-suite.json", "live-suite.json"]:
-        path = ROOT / "results" / name
+        path = results_dir / name
         if not path.exists():
             continue
-        build = json.loads(path.read_text()).get("build") or {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        build = data.get("build") or {}
         honest, controls = build.get("honest") or {}, build.get("sabotage") or {}
         if honest.get("sabotage") is not False:
             out.append(f"CI-8 results/{name}: the honest runs are not stamped as coming from a default build")
@@ -147,25 +230,92 @@ def build_errors():
             out.append(f"CI-8 results/{name}: a build stamp has no SHA-256 of its binary")
         elif honest.get("binary_sha256") == controls.get("binary_sha256"):
             out.append(f"CI-8 results/{name}: the honest runs and the controls came from the same binary")
+        if name == "attack-suite.json":
+            repeat = data.get("timed_repeat")
+            if isinstance(repeat, bool) or not isinstance(repeat, int) or repeat < MIN_ATTACK_TIMED_REPEAT:
+                out.append(f"CI-8 results/{name}: timed_repeat is {repeat!r}, need at least {MIN_ATTACK_TIMED_REPEAT} for merged evidence")
+            if data.get("cgroup_limits_waived") is not False:
+                out.append(f"CI-8 results/{name}: honest runs must have cgroup_limits_waived=false (got {data.get('cgroup_limits_waived')!r})")
+            if data.get("controls_cgroup_limits_waived") is not False:
+                out.append(f"CI-8 results/{name}: sabotage controls must have controls_cgroup_limits_waived=false (got {data.get('controls_cgroup_limits_waived')!r})")
     return out
 
 
 def changed_since(commit, paths):
-    paths = expand(paths)
     if not paths:
         return []
+    specs = [git_pathspec(p) for p in paths]
     try:
-        out = subprocess.run(["git", "-C", str(ROOT), "diff", "--name-only", commit, "--", *paths],
+        out = subprocess.run(["git", "-C", str(ROOT), "diff", "--name-only", commit, "--", *specs],
                              capture_output=True, text=True, check=True).stdout
     except (subprocess.CalledProcessError, FileNotFoundError):
         return [f"(cannot diff against {commit})"]
     return [line for line in out.splitlines() if line]
 
 
-def main():
-    strict = "--strict" in sys.argv[1:]
-    write = "--write" in sys.argv[1:]
-    claims = tomllib.loads((ROOT / "claims.toml").read_text())["claim"]
+def affected_claims(claims, changed_files):
+    """Map each affected claim id to the changed files that matched its `files`."""
+    out = []
+    for claim in claims:
+        patterns = claim.get("files", [])
+        hits = [f for f in changed_files if any(path_matches(f, pat) for pat in patterns)]
+        if hits:
+            has_lab = any(p["result"].startswith("pass") for p in claim.get("platforms", []))
+            out.append({
+                "id": claim["id"],
+                "layer": claim["layer"],
+                "status": claim["status"],
+                "needs_lab": has_lab,
+                "files": hits,
+            })
+    return out
+
+
+def run_affected(claims, base_ref):
+    try:
+        diff_out = subprocess.run(["git", "-C", str(ROOT), "diff", "--name-only", base_ref],
+                                  capture_output=True, text=True, check=True).stdout.splitlines()
+        untracked = subprocess.run(["git", "-C", str(ROOT), "ls-files", "--others", "--exclude-standard"],
+                                   capture_output=True, text=True, check=True).stdout.splitlines()
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        print(f"error: could not compute changed files against {base_ref}: {exc}", file=sys.stderr)
+        return 1
+    changed = sorted({p.replace("\\", "/") for p in diff_out + untracked if p})
+    if not changed:
+        print(f"No changed files relative to {base_ref}. No claims affected.")
+        return 0
+    hits = affected_claims(claims, changed)
+    lab_hits = [h for h in hits if h["needs_lab"]]
+    fast_hits = [h for h in hits if not h["needs_lab"]]
+    print(f"Changed files vs {base_ref} ({len(changed)}):")
+    for f in changed:
+        print(f"  - {f}")
+    if not hits:
+        print("\nAffected claims: none (no root lab run needed).")
+        return 0
+    if lab_hits:
+        print(f"\nHost claims requiring root lab refresh before merge ({len(lab_hits)}):")
+        for h in lab_hits:
+            print(f"  - {h['id']} ({h['layer']}/{h['status']}): {', '.join(h['files'])}")
+    else:
+        print("\nNo host lab claims affected (fast CI only; no root lab run needed).")
+    if fast_hits:
+        print(f"\nNon-lab claims checked by fast CI ({len(fast_hits)}):")
+        for h in fast_hits:
+            print(f"  - {h['id']} ({h['layer']}/{h['status']}): {', '.join(h['files'])}")
+    return 0
+
+
+def main(argv=None):
+    args = list(sys.argv[1:] if argv is None else argv)
+    claims = tomllib.loads((ROOT / "claims.toml").read_text(encoding="utf-8"))["claim"]
+    if "--affected" in args:
+        idx = args.index("--affected")
+        base_ref = args[idx + 1] if idx + 1 < len(args) and not args[idx + 1].startswith("-") else "HEAD"
+        return run_affected(claims, base_ref)
+
+    strict = "--strict" in args
+    write = "--write" in args
     laws, bend, rust, sabotage, scenarios, live_scenarios, live_sabotage = load_inventory()
     bend_ok, rust_ok, scenario_ok, sabotage_ok, diffs, live_ok, live_sab_ok = load_results()
     errors = []
@@ -210,7 +360,7 @@ def main():
         if kind == "doc":
             file, _, text = name.partition("#")
             path = ROOT / file
-            return path.exists() and text in path.read_text()
+            return path.exists() and text in path.read_text(encoding="utf-8")
         if kind == "law":
             return name in laws and verdict_ok
         if kind == "tla":
@@ -277,26 +427,30 @@ def main():
             if name not in cited[kind]:
                 errors.append(f"CI-2 {kind}:{name} is not cited by any claim")
 
-    spec_ids = set(re.findall(r"\b([CLAKRH]-[A-Z0-9]+-[A-Z0-9]+|C-SYS-1|C-DOC-1)\b", (ROOT / "docs/design-spec.md").read_text()))
+    spec_ids = set(re.findall(r"\b([CLAKRH]-[A-Z0-9]+-[A-Z0-9]+|C-SYS-1|C-DOC-1)\b", (ROOT / "docs/design-spec.md").read_text(encoding="utf-8")))
     for sid in sorted(spec_ids - set(by_id)):
         errors.append(f"CI-6 docs/design-spec.md cites {sid}, which is not in claims.toml")
 
     for path in uncovered_sources(claims):
         errors.append(f"CI-7 {path} is not covered by the files of any claim")
 
+    stale = {c["id"]: c["_stale"] for c in claims if c["_stale"]}
+    warnings = [f"CI-4 {cid}: stale, {', '.join(files)} changed after its platform commit; rerun and update platforms"
+                for cid, files in stale.items()]
+
     markdown = render(claims, effective, verdict_ok, len(laws), len(bend), len(rust), len(sabotage))
     target = ROOT / "docs/claims.md"
     if write:
-        target.write_text(markdown)
-    elif not target.exists() or target.read_text() != markdown:
-        errors.append("docs/claims.md is out of date; run tools/claims_check.py --write")
+        target.write_text(markdown, encoding="utf-8", newline="\n")
+    elif not target.exists() or target.read_text(encoding="utf-8") != markdown:
+        if strict or not stale:
+            errors.append("docs/claims.md is out of date; run tools/claims_check.py --write")
+        else:
+            warnings.append("docs/claims.md will need regeneration after refreshing stale lab evidence")
 
     counts = {}
     for status in effective.values():
         counts[status] = counts.get(status, 0) + 1
-    stale = {c["id"]: c["_stale"] for c in claims if c["_stale"]}
-    warnings = [f"CI-4 {cid}: stale, {', '.join(files)} changed after its platform commit; rerun and update platforms"
-                for cid, files in stale.items()]
     if strict:
         errors.extend(warnings)
         errors.extend(build_errors())
