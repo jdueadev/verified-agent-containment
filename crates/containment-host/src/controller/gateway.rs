@@ -303,15 +303,51 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
 
 /// Removes exact credential values from anything returned to the agent, in
 /// case an upstream echoes request headers or puts a token in an error.
+const REDACTED: &str = "[redacted]";
+
 pub(super) fn redact(live: &LiveState, value: Value) -> Value {
-    let text = value.to_string();
-    let mut clean = text.clone();
-    for secret in &live.secret_values {
-        if !secret.is_empty() {
-            clean = clean.replace(secret.as_str(), "[redacted]");
+    redact_value(&live.secret_values, value)
+}
+
+/// Replaces every secret inside `text`. `secrets` is ordered longest first, so
+/// a secret that contains a shorter one is replaced whole.
+fn redact_text(secrets: &[String], text: &str) -> Option<String> {
+    let mut clean = None;
+    for secret in secrets.iter().filter(|s| !s.is_empty()) {
+        let current = clean.as_deref().unwrap_or(text);
+        if current.contains(secret.as_str()) {
+            clean = Some(current.replace(secret.as_str(), REDACTED));
         }
     }
-    if clean == text { value } else { serde_json::from_str(&clean).unwrap_or(Value::Null) }
+    clean
+}
+
+/// Removes secrets from a JSON value by walking it. Strings and object keys
+/// are searched as decoded text, so a secret that the serialized form would
+/// escape (a quote, a backslash, a non-ASCII character) is still found. A
+/// number whose digits contain a secret cannot be partly replaced, so the
+/// whole number is replaced: redaction fails closed for that leaf only.
+fn redact_value(secrets: &[String], value: Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(redact_text(secrets, &text).unwrap_or(text)),
+        Value::Number(number) => {
+            if redact_text(secrets, &number.to_string()).is_some() { Value::String(REDACTED.into()) } else { Value::Number(number) }
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(|item| redact_value(secrets, item)).collect()),
+        Value::Object(fields) => {
+            let mut clean = serde_json::Map::with_capacity(fields.len());
+            for (key, field) in fields {
+                let mut key = redact_text(secrets, &key).unwrap_or(key);
+                // Two keys can become equal once redacted; keep both fields.
+                while clean.contains_key(&key) {
+                    key.push('_');
+                }
+                clean.insert(key, redact_value(secrets, field));
+            }
+            Value::Object(clean)
+        }
+        other => other,
+    }
 }
 
 pub(super) fn live_http(shared: &Shared, live: &LiveState, message: &Value, received: u64) -> Value {
@@ -373,5 +409,59 @@ pub(super) fn live_http(shared: &Shared, live: &LiveState, message: &Value, rece
         Ok(r) => redact(live, json!({"ok": true, "status": r.status, "truncated": r.truncated,
             "body": String::from_utf8_lossy(&r.body[..r.body.len().min(64 * 1024)])})),
         Err(e) => redact(live, denied(&format!("upstream: {e}"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn secrets(values: &[&str]) -> Vec<String> {
+        let mut out: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+        out.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+        out
+    }
+
+    #[test]
+    fn redacts_strings_at_any_depth_and_keeps_the_rest() {
+        let value = json!({"a": ["x sk-123 y", {"b": "sk-123"}], "n": 7, "ok": true, "none": null});
+        let clean = redact_value(&secrets(&["sk-123"]), value);
+        assert_eq!(clean, json!({"a": ["x [redacted] y", {"b": "[redacted]"}], "n": 7, "ok": true, "none": null}));
+    }
+
+    #[test]
+    fn finds_a_secret_that_json_would_escape() {
+        let secret = "p\"a\\ss\nw\u{00e9}";
+        let clean = redact_value(&secrets(&[secret]), json!({"body": format!("token={secret};")}));
+        assert_eq!(clean, json!({"body": "token=[redacted];"}));
+    }
+
+    #[test]
+    fn redacts_numeric_secret_or_fails_closed() {
+        let clean = redact_value(&secrets(&["424242"]), json!({"pin": 424242, "wide": 1042424299u64, "other": 5}));
+        assert_eq!(clean, json!({"pin": "[redacted]", "wide": "[redacted]", "other": 5}));
+    }
+
+    #[test]
+    fn redacts_object_keys_without_dropping_fields() {
+        let clean = redact_value(&secrets(&["s1", "s2"]), json!({"s1": 1, "s2": 2, "[redacted]": 3}));
+        let fields = clean.as_object().expect("object");
+        assert_eq!(fields.len(), 3);
+        assert!(fields.keys().all(|k| k.starts_with("[redacted]")));
+        let mut values: Vec<u64> = fields.values().filter_map(Value::as_u64).collect();
+        values.sort_unstable();
+        assert_eq!(values, [1, 2, 3]);
+    }
+
+    #[test]
+    fn replaces_the_longer_secret_whole() {
+        let clean = redact_value(&secrets(&["abc", "abcdef"]), json!("abcdef abc"));
+        assert_eq!(clean, json!("[redacted] [redacted]"));
+    }
+
+    #[test]
+    fn empty_secrets_change_nothing() {
+        let value = json!({"a": "b"});
+        assert_eq!(redact_value(&secrets(&[""]), value.clone()), value);
     }
 }
