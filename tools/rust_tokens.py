@@ -365,9 +365,22 @@ def _arm_blocks(toks, partner, macro):
                 continue
             statement = statement or toks[k].text == ";"
             k += 1
-        if not statement:
+        if not statement and _ends_arm(toks, partner[j] + 1):
             out.append((j, partner[j]))
     return out
+
+
+def _ends_arm(toks, k):
+    """Whether toks[k] can only follow a complete arm body: a comma, a closer, the end,
+    or the start of the next arm's pattern written as a path or a literal. Anything
+    else (`.`, `?`, `as`, an operator, `(`, `[`) may continue the block into a larger
+    expression, as in `{ b }.c()`, so that block is not an arm body to unwrap."""
+    if k >= len(toks):
+        return True
+    tok = toks[k]
+    if tok.kind == "punct":
+        return tok.text == "," or tok.text in _CLOSE
+    return tok.kind in ("ident", "number", "str", "char") and tok.text != "as"
 
 
 class _ArmBlock(NamedTuple):

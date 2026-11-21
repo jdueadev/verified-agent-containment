@@ -262,8 +262,17 @@ class SpliceTests(unittest.TestCase):
         self.assertSplices(self.WRAPPED, "a && b,", "b,", "match m { M::R => b, M::H => c, }")
 
     def test_macro_rules_bodies_are_not_unwrapped(self):
-        with self.assertRaises(rt.MatchError):
-            rt.splice_once("macro_rules! m { (a) => { b }; }", "(a) => b", "(a) => c")
+        for src in ["macro_rules! m { (a) => { b }; }", "macro_rules! m { (a) => { b } }"]:
+            with self.subTest(src=src), self.assertRaises(rt.MatchError):
+                rt.splice_once(src, "(a) => b", "(a) => c")
+
+    def test_a_block_that_continues_into_an_expression_is_not_unwrapped(self):
+        # `{ b }.c()` is a method call on a block, not the arm body `b` (CodeRabbit on #66).
+        for tail in [".c()", "?", " as u8", " + 1"]:
+            src = f"match x {{ A => {{ b }}{tail}, B => c, }}"
+            for old in ["A => b,", "A => b"]:
+                with self.subTest(src=src, old=old), self.assertRaises(rt.MatchError):
+                    rt.splice_once(src, old, "A => d,")
 
     def test_empty_pattern_is_an_error(self):
         with self.assertRaises(rt.MatchError):
