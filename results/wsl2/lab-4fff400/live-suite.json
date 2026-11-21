@@ -1,11 +1,11 @@
 {
   "build": {
     "honest": {
-      "binary_sha256": "c433b21d2a006c926b3620b7f3c647956e16bc5b4745c8dfb47359a817922496",
+      "binary_sha256": "cca267c57fe0737f8363f27a9067c462f022265bb7bc7d9cbab5c4e2fddddb7e",
       "sabotage": false
     },
     "sabotage": {
-      "binary_sha256": "d5a8b129646f7f68aa5a64b879fa89ecb9cde6e500ed3d051b2667ffb0b69547",
+      "binary_sha256": "181c877d240ce27b26a7a82923963087cb08b785a1092c61e03d18c681090b3c",
       "sabotage": true
     }
   },
@@ -33,7 +33,7 @@
             {
               "body": "{\"summary\":\"two notes\"}",
               "headers": {
-                "authorization": "Bearer fixture-131711719593752",
+                "authorization": "Bearer fixture-133095061925615",
                 "connection": "close",
                 "content-length": "23",
                 "content-type": "application/json",
@@ -41,7 +41,7 @@
                 "user-agent": "containment-gateway/0.1"
               },
               "method": "POST",
-              "ns": 131711769352370,
+              "ns": 133095101205492,
               "path": "/notes"
             }
           ],
@@ -63,7 +63,7 @@
       "live": {
         "tokens": 720,
         "used": {
-          "http://127.0.0.1:41457": {
+          "http://127.0.0.1:33395": {
             "bytes": 40,
             "requests": 2
           }
@@ -76,7 +76,7 @@
     {
       "checks": [
         {
-          "detail": "cnry_16ed38c54b555312899d79dd",
+          "detail": "cnry_b82a004e8989cf3022754089",
           "name": "canary_found_in_workspace",
           "passed": true
         },
@@ -85,7 +85,7 @@
             [
               "canary_to_local_model",
               "restrict",
-              131711898118768
+              133095226778725
             ]
           ],
           "name": "exfil_attempt_contained",
@@ -128,7 +128,7 @@
             [
               "denied_requests",
               "restrict",
-              131712037839380
+              133095364655129
             ]
           ],
           "name": "repeated_denials_restrict",
@@ -193,7 +193,7 @@
             [
               "budget_exhausted",
               "restrict",
-              131712372602224
+              133095646089506
             ]
           ],
           "name": "budget_exhaustion_restricts",
@@ -209,7 +209,7 @@
       "live": {
         "tokens": 960,
         "used": {
-          "http://127.0.0.1:35301": {
+          "http://127.0.0.1:33637": {
             "bytes": 60,
             "requests": 5
           }
@@ -241,7 +241,7 @@
             [
               "budget_tokens",
               "restrict",
-              131712520073053
+              133095798730079
             ]
           ],
           "name": "token_exhaustion_restricts",
@@ -262,7 +262,7 @@
       "live": {
         "tokens": 1080,
         "used": {
-          "http://127.0.0.1:39271": {
+          "http://127.0.0.1:41011": {
             "bytes": 88,
             "requests": 8
           }
@@ -276,8 +276,8 @@
       "checks": [
         {
           "detail": {
-            "commit": 131713339599881,
-            "marker": 131713339358617
+            "commit": 133096631739591,
+            "marker": 133096631484590
           },
           "name": "stop_committed",
           "passed": true
@@ -298,7 +298,7 @@
           "passed": true
         },
         {
-          "detail": 17446,
+          "detail": 17456,
           "name": "hud_log_has_no_secrets",
           "passed": true
         }
@@ -307,7 +307,7 @@
       "live": {
         "tokens": 3000,
         "used": {
-          "http://127.0.0.1:44071": {
+          "http://127.0.0.1:44625": {
             "bytes": 55,
             "requests": 5
           }
@@ -320,7 +320,7 @@
     {
       "checks": [
         {
-          "detail": "/run/verified-agent-containment/live-136964-753259/work/g1/taint.txt",
+          "detail": "/run/verified-agent-containment/live-139483-864262/work/g1/taint.txt",
           "name": "taint_written_in_first_generation",
           "passed": true
         },
@@ -349,14 +349,14 @@
           "passed": true
         },
         {
-          "detail": 6412,
+          "detail": 5155,
           "name": "hud_log_has_no_secrets",
           "passed": true
         }
       ],
       "final_mode": "run",
       "live": {
-        "tokens": 1080,
+        "tokens": 720,
         "used": {}
       },
       "passed": true,
@@ -380,7 +380,7 @@
                 "user-agent": "containment-gateway/0.1"
               },
               "method": "GET",
-              "ns": 131715035312304,
+              "ns": 133098234441165,
               "path": "/index.html"
             }
           ],
@@ -409,13 +409,13 @@
       "live": {
         "tokens": 480,
         "used": {
-          "http://127.0.0.1:34465": {
-            "bytes": 16,
-            "requests": 2
-          },
-          "http://127.0.0.1:44441": {
+          "http://127.0.0.1:40665": {
             "bytes": 11,
             "requests": 1
+          },
+          "http://127.0.0.1:40695": {
+            "bytes": 16,
+            "requests": 2
           }
         }
       },
@@ -440,12 +440,12 @@
             [
               "canary_exfil",
               "freeze",
-              131715175561333
+              133098379272685
             ],
             [
               "lease_clock",
               "kill",
-              131715777233810
+              133098983959701
             ]
           ],
           "name": "canary_url_refused",
@@ -486,7 +486,7 @@
       "live": {
         "tokens": 360,
         "used": {
-          "http://127.0.0.1:41161": {
+          "http://127.0.0.1:36863": {
             "bytes": 11,
             "requests": 1
           }
@@ -578,5 +578,6 @@
     }
   ],
   "sabotage_detected": 8,
-  "sabotage_total": 8
+  "sabotage_total": 8,
+  "suite": "live"
 }
