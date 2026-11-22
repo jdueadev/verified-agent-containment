@@ -8,6 +8,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 TOOLS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS))
@@ -198,6 +199,24 @@ class SpecRatchetTests(unittest.TestCase):
         result = pc.classify(["tools/test_thing.py"], base.get, head.get, lanes)
         self.assertEqual(result["lane"], "C")
         self.assertIn("spec tools/test_thing.py was edited", result["escalations"])
+
+
+class UnusualNameTests(unittest.TestCase):
+    def test_a_kernel_file_with_an_unusual_name_is_still_read_at_a_ref(self):
+        names = "crates/containment-kernel/src/lib.rs\0crates/containment-kernel/src/caf\u00e9.rs\0"
+        with mock.patch.object(pc, "git", lambda *a: names), mock.patch.object(pc, "reader", lambda ref: {}.get):
+            self.assertEqual(sorted(pc.kernel_sources("HEAD")),
+                             ["crates/containment-kernel/src/caf\u00e9.rs", "crates/containment-kernel/src/lib.rs"])
+
+    def test_classify_refuses_a_quoted_path(self):
+        lanes_text = (ROOT / "ci/lanes.toml").read_text(encoding="utf-8")
+
+        def fake_git(*args):
+            return "h1\n" if args[0] == "rev-parse" else '"tools/test_caf\\303\\251.py"\nREADME.md\n'
+        with mock.patch.object(pc, "reader", lambda ref: {"ci/lanes.toml": lanes_text}.get), \
+                mock.patch.object(pc, "git", fake_git), self.assertRaises(SystemExit) as stop:
+            pc.main(["classify", "--base", "b", "--head", "h"])
+        self.assertIn("unusual characters", str(stop.exception))
 
 
 if __name__ == "__main__":

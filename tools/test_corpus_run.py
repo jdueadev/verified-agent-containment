@@ -93,6 +93,23 @@ class WeakenedGateTests(unittest.TestCase):
         failed = self.failures([("                if list(attr) not in leading:", "                if False:")])
         self.assertIn("invariants/forbid-in-nested-module", failed)
 
+    def test_a_gate_that_lets_a_mutant_change_fails(self):
+        failed = self.failures([('            out.append(f"mutant {name} was changed")\n', "            pass\n")])
+        self.assertIn("classify/mutant-changed", failed)
+
+    def test_a_gate_that_allows_path_fails(self):
+        failed = self.failures([('    "path": "loads source from elsewhere (`#[path]`)",\n', "")])
+        self.assertIn("invariants/path-in-cfg-attr", failed)
+
+    def test_a_gate_that_allows_sabotage_by_default_fails(self):
+        failed = self.failures([('if "sabotage" in seen else []', "if False else []")])
+        self.assertIn("invariants/sabotage-by-default", failed)
+
+    def test_a_gate_that_rejects_every_kernel_fails_the_pure_twin(self):
+        failed = self.failures([('    out = []\n    root = f"{KERNEL_SRC}/lib.rs"\n',
+                                 '    out = ["everything"]\n    root = f"{KERNEL_SRC}/lib.rs"\n')])
+        self.assertIn("invariants/pure-kernel", failed)
+
     def test_a_gate_that_rejects_everything_fails_the_twins(self):
         failed = self.failures([('    if escalations:\n        lane = "C"\n',
                                  '    escalations = escalations or ["everything"]\n    lane = "C"\n')])

@@ -161,5 +161,68 @@ class ApprovalTests(unittest.TestCase):
             sr.main(["base", "--base-ref", "HEAD", "--head", ".", "--reviews", "x.json"])
 
 
+class RustOutputTests(unittest.TestCase):
+    """The review of #125's PR 1 showed a panic message forging `test X ... ok` lines."""
+
+    CLEAN = "running 2 tests\ntest a ... ok\ntest b ... ok\n\ntest result: ok. 2 passed\n"
+    FORGED = ("running 2 tests\ntest a ... FAILED\ntest b ... FAILED\n\nfailures:\n\n---- a stdout ----\n"
+              "thread 'a' panicked at\ntest a ... ok\ntest b ... ok\n\nfailures:\n    a\n    b\n")
+
+    def test_clean_output_is_read(self):
+        self.assertEqual(sr.parse_rust_output("laws", self.CLEAN, 0), {"laws::a": "ok", "laws::b": "ok"})
+
+    def test_lines_in_the_failures_section_do_not_count(self):
+        found = sr.parse_rust_output("laws", self.FORGED, 101)
+        self.assertEqual((found["laws::a"], found["laws::b"]), ("FAILED", "FAILED"))
+        self.assertEqual(sr.judge(["laws::a", "laws::b"], found)[0], [])
+
+    def test_a_later_ok_never_overrides_a_failure(self):
+        found = sr.parse_rust_output("laws", "test a ... FAILED\ntest a ... ok\ntest b ... ignored\ntest b ... ok\n", 0)
+        self.assertEqual(found, {"laws::a": "FAILED", "laws::b": "ignored"})
+
+    def test_a_non_zero_exit_is_a_failure_of_its_own(self):
+        found = sr.parse_rust_output("laws", self.CLEAN, 101)
+        self.assertEqual(sr.judge(["laws::a", "laws::b"], found)[1], {"laws::<cargo>": "exit 101"})
+
+
+class TamperTests(unittest.TestCase):
+    """One child must not be able to change what a later child runs."""
+
+    def test_a_module_rewritten_on_disk_is_restored_from_base_before_it_runs(self):
+        writer = textwrap.dedent(PASSING) + "\n\nimport pathlib\npathlib.Path(__file__).with_name('test_later.py').write_text(" \
+                 "'import unittest\\nclass T(unittest.TestCase):\\n    def test_value(self):\\n        pass\\n')\n"
+        later = PASSING
+        tmp, head = head_with(thing="VALUE = 2\n", test_first=writer, test_later=later)
+        with tmp:
+            sr.run_python_module(head, "tools/test_first.py", textwrap.dedent(writer))
+            self.assertNotEqual((head / "tools/test_later.py").read_text(encoding="utf-8"), textwrap.dedent(later))
+            results = sr.run_python_module(head, "tools/test_later.py", textwrap.dedent(later))
+        self.assertEqual(results, {"test_later.T.test_value": "FAILED"})
+
+    def test_a_package_or_extension_beside_a_module_fails_it(self):
+        for shadow in ("test_thing/__init__.py", "test_thing.cpython-314-x86_64-linux-gnu.so", "test_thing.pyc"):
+            tmp, head = head_with(thing="VALUE = 1\n", test_thing=PASSING)
+            with tmp:
+                path = head / "tools" / shadow
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("", encoding="utf-8")
+                results = sr.run_python_module(head, "tools/test_thing.py")
+            self.assertIn("could shadow", results.get("<module>", ""), shadow)
+
+    def test_a_similar_name_is_not_a_shadow(self):
+        tmp, head = head_with(thing="VALUE = 1\n", test_thing=PASSING, test_thing_more="x = 1\n")
+        with tmp:
+            self.assertEqual(sr.shadows(head, "test_thing"), [])
+
+    def test_children_run_as_the_named_user_with_a_clean_environment(self):
+        argv, env = sr.child_command(["python3", "x"], "spec", {"CARGO_TARGET_DIR": "/t"})
+        self.assertIsNone(env)
+        self.assertEqual(argv[:6], ["sudo", "-n", "-u", "spec", "env", "-i"])
+        self.assertIn("HOME=/home/spec", argv)
+        self.assertIn("CARGO_TARGET_DIR=/t", argv)
+        self.assertEqual(argv[-2:], ["python3", "x"])
+        self.assertFalse(any(a.startswith("GITHUB_") for a in argv))
+
+
 if __name__ == "__main__":
     unittest.main()

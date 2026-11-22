@@ -440,7 +440,8 @@ def kernel_sources(ref=None):
         base = ROOT / KERNEL_SRC
         return {p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8") for p in sorted(base.rglob("*.rs"))}
     get = reader(ref)
-    names = git("ls-tree", "-r", "--name-only", f"{ref}^{{commit}}", "--", f"{KERNEL_SRC}/").splitlines()
+    # -z: without it git quotes an unusual name, and a quoted name would be skipped.
+    names = git("ls-tree", "-r", "-z", "--name-only", f"{ref}^{{commit}}", "--", f"{KERNEL_SRC}/").split("\0")
     return {name: get(name) for name in sorted(names) if name.endswith(".rs")}
 
 
@@ -501,6 +502,11 @@ def run(parser, args):
         if args.head_sha and git("rev-parse", "--verify", f"{args.head}^{{commit}}").strip() != args.head_sha:
             sys.exit(f"policy: --head {args.head} is not --head-sha {args.head_sha}; an approval is of one commit")
         paths = [p for p in git("diff", "--name-only", "--no-renames", args.base, args.head).splitlines() if p]
+        # git quotes a name with unusual characters, and a quoted name matches no lane
+        # pattern and no ratchet. Refuse rather than judge a path we cannot read.
+        quoted = [p for p in paths if p.startswith('"')]
+        if quoted:
+            sys.exit(f"policy: paths with unusual characters cannot be classified: {quoted}")
         result = classify(paths, base_get, head_get, lanes)
         needs_owner = result["lane"] == "C" or args.fork
         reviews = json.loads(Path(args.reviews).read_text(encoding="utf-8")) if args.reviews else []

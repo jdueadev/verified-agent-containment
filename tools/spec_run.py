@@ -7,20 +7,30 @@ Usage:
   spec_run.py new  --base-ref REF --head DIR [--rust] [--json FILE]
   (either) [--reviews FILE --head-sha SHA]
 
-base  runs every spec test file the base commit has. Each Python test module runs in
-      its own `python3 -I -B` process, with the head's tools/ on its path, after the
-      head's __pycache__ is removed (a cached .pyc could run in place of the source).
-      Head-only spec files are moved out of the checkout first, so that a new test
-      cannot run beside the base spec, patch it, or rewrite what it builds. With
-      --rust, each base file in crates/containment-kernel/tests/ runs as its own
-      `cargo test --test NAME`.
+base  runs every spec test file the base commit has. Head-only spec files are moved out
+      of the checkout first, so a new test cannot run beside the base spec. With --rust,
+      each base file in crates/containment-kernel/tests/ runs first, as its own `cargo
+      test --test NAME`, before any Python child has run head code. Then each base
+      Python test module runs in its own `python3 -I -B` process. Before each one, its
+      file is rewritten from the base commit and the head's __pycache__ is removed, so
+      an earlier child cannot have changed it on disk; the child loads it by path, so a
+      package or extension of the same name cannot stand in for it, and any such file
+      beside it fails the module.
 new   runs only the head-only spec files, the same way. The workflow runs it in a
       separate job after `base`, so nothing it does can reach the base verdict.
 
+--as-user USER runs every child that runs head code as that unprivileged user, through
+`sudo -n -u USER env -i`, and kills everything the user left running after each child,
+so a child cannot write a later child's results. The workflow uses it; a local run
+without it judges only the author's own machine.
+
 The verdict is never an exit code. The ids every test file defines are read from the
 source with ast (Python) or the lexer (Rust), and each one must be reported as passed.
-A skip, an ignored test or a missing id is a failure. The result is printed as JSON;
-the exit status is 1 when any expected test did not pass.
+A skip, an ignored test or a missing id is a failure, and so is any failure reported
+for a test the source does not list. Rust results are read only from the lines before
+libtest's `failures:` section, where a panic message could imitate a result line, and a
+non-zero cargo exit is a failure of its own. The result is printed as JSON; the exit
+status is 1 when any expected test did not pass.
 
 A red base spec is not a dead end. A legitimately stricter change can fail the base test
 that encoded the old verdict, and the immutability ratchet stops the author from editing
@@ -55,6 +65,16 @@ def _one(tools_dir, module, out):
     sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != TOOLS]
     sys.path.insert(0, tools_dir)
     results = {}
+    # Load the module from its file, never by name: a package tools/<module>/ or an
+    # extension module of the same name would otherwise win the import.
+    import importlib.util
+    source = Path(tools_dir) / f"{module}.py"
+    spec = importlib.util.spec_from_file_location(module, source)
+    loaded = importlib.util.module_from_spec(spec)
+    sys.modules[module] = loaded
+    spec.loader.exec_module(loaded)
+    if Path(loaded.__file__).resolve() != source.resolve():
+        raise SystemExit(f"{module} was loaded from {loaded.__file__}, not {source}")
 
     class Recorder(unittest.TestResult):
         def addSuccess(self, test):
@@ -79,12 +99,8 @@ def _one(tools_dir, module, out):
             if err is not None:
                 results[test.id()] = "FAILED"
 
-    suite = unittest.defaultTestLoader.loadTestsFromName(module)
-    recorder = Recorder()
-    suite.run(recorder)
-    # A failed subtest marks the whole test failed, even if addSuccess came after it.
-    for test, _ in recorder.failures + recorder.errors:
-        results[getattr(test, "id", lambda: str(test))()] = "FAILED"
+    # A failed subtest records FAILED, and unittest does not call addSuccess after it.
+    unittest.defaultTestLoader.loadTestsFromModule(loaded).run(Recorder())
     Path(out).write_text(json.dumps(results), encoding="utf-8")
 
 
@@ -99,6 +115,7 @@ import rust_tokens  # noqa: E402
 PY_SPEC = "tools/test_*.py"
 RS_SPEC = "crates/containment-kernel/tests/"
 RESULT_LINE = re.compile(r"^test (\S+) \.\.\. (ok|FAILED|ignored)\b", re.M)
+FAILURES_SECTION = re.compile(r"^failures:$", re.M)
 
 
 # ---------- which tests the source defines ----------
@@ -150,40 +167,100 @@ def spec_files(get_names, include_rust):
 
 
 def base_names(ref):
-    return policy_check.git("ls-tree", "-r", "--name-only", f"{ref}^{{commit}}").splitlines()
+    # -z: without it git quotes an unusual name, and a quoted name matches no pattern.
+    return [n for n in policy_check.git("ls-tree", "-r", "-z", "--name-only", f"{ref}^{{commit}}").split("\0") if n]
 
 
 def head_names(head):
-    out = subprocess.run(["git", "-C", str(head), "ls-files", "--cached", "--others", "--exclude-standard"],
-                         capture_output=True, text=True, check=True).stdout.splitlines()
-    return [n for n in out if (head / n).is_file()]
+    out = subprocess.run(["git", "-C", str(head), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                         capture_output=True, text=True, check=True).stdout.split("\0")
+    return [n for n in out if n and (head / n).is_file()]
 
 
 # ---------- running ----------
 
-def run_python_module(head, path):
+def child_command(argv, as_user, env):
+    """The command for a child that runs head code. With as_user it runs as that
+    unprivileged user with a clean environment (the workflow's isolation); without it,
+    as this user (local runs, which judge only the author's own machine)."""
+    if not as_user:
+        return argv, {**os.environ, **env}
+    keep = {k: os.environ[k] for k in ("PATH", "RUSTUP_HOME", "LANG") if k in os.environ}
+    pairs = [f"{k}={v}" for k, v in {**keep, "HOME": f"/home/{as_user}", **env}.items()]
+    return ["sudo", "-n", "-u", as_user, "env", "-i", *pairs, *argv], None
+
+
+def end_children(as_user):
+    """Kill anything a child left running, so it cannot write a later child's results."""
+    if as_user:
+        subprocess.run(["sudo", "-n", "pkill", "-KILL", "-u", as_user], capture_output=True)
+
+
+def shadows(head, module):
+    """Files that could load in place of tools/<module>.py, or be imported beside it."""
+    return sorted(p.name for p in (head / "tools").glob(f"{module}*")
+                  if p.name != f"{module}.py" and p.name.split(".")[0] == module)
+
+
+def run_python_module(head, path, base_text=None, as_user=None):
     """Run one test module in a fresh isolated interpreter and return {id: outcome}.
-    The child loads the module from the head's tools/ and writes its results to a file
-    this process names; nothing it prints is parsed."""
-    with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp) / "result.json"
-        child = subprocess.run([sys.executable, "-I", "-B", str(Path(__file__).resolve()), "_one",
-                                str(head / "tools"), Path(path).stem, str(out)],
-                               cwd=head, capture_output=True, text=True, timeout=1800)
+
+    With base_text, the module file is first rewritten from the base commit, so an
+    earlier child cannot have changed it on disk. The child loads the module by path
+    from the head's tools/ and writes its results into a directory made for it alone;
+    nothing it prints is parsed. Afterwards anything it left running is killed."""
+    module = Path(path).stem
+    source = head / "tools" / f"{module}.py"
+    if base_text is not None:
+        source.write_text(base_text, encoding="utf-8")
+    found = shadows(head, module)
+    if found:
+        return {"<module>": f"files that could shadow {module}.py: {found}"}
+    clear_pycache(head)
+    results_dir = Path(tempfile.mkdtemp(prefix="spec-result-"))
+    try:
+        results_dir.chmod(0o777)
+        out = results_dir / "result.json"
+        argv, env = child_command([sys.executable, "-I", "-B", str(Path(__file__).resolve()), "_one",
+                                   str(head / "tools"), module, str(out)], as_user, {})
+        child = subprocess.run(argv, cwd=head, env=env, capture_output=True, text=True, timeout=1800)
+        end_children(as_user)
         results = json.loads(out.read_text(encoding="utf-8")) if out.exists() else {}
-        if not results:
-            results = {"<module>": f"no results (exit {child.returncode}): {child.stderr.strip()[-400:]}"}
-        return results
+    finally:
+        shutil.rmtree(results_dir, ignore_errors=True)
+    if not results:
+        results = {"<module>": f"no results (exit {child.returncode}): {child.stderr.strip()[-400:]}"}
+    return results
 
 
-def run_rust_file(head, path, env=None):
+def parse_rust_output(name, stdout, returncode):
+    """{name::test: outcome} from libtest's output. Only the lines before the `failures:`
+    section count, because a failing test's panic message is printed there and can hold
+    text that looks like a result line. A failure or an ignored test is never overridden
+    by a later `ok`, and a non-zero exit is a failure of its own."""
+    match = FAILURES_SECTION.search(stdout)
+    head = stdout[:match.start()] if match else stdout
+    found = {}
+    for m in RESULT_LINE.finditer(head):
+        key = f"{name}::{m.group(1)}"
+        if found.get(key, "ok") == "ok":
+            found[key] = m.group(2)
+    if returncode != 0:
+        found[f"{name}::<cargo>"] = f"exit {returncode}"
+    return found
+
+
+def run_rust_file(head, path, target_dir, as_user=None):
     name = Path(path).stem
-    child = subprocess.run(["cargo", "test", "--locked", "-p", "containment-kernel", "--test", name,
-                            "--", "--test-threads=1"], cwd=head, capture_output=True, text=True,
-                           env=env, timeout=3600)
-    found = {m.group(1): m.group(2) for m in RESULT_LINE.finditer(child.stdout)}
-    return {f"{name}::{k}": ("ok" if v == "ok" else v) for k, v in found.items()} or \
-        {"<build>": f"no results (exit {child.returncode}): {child.stderr.strip()[-400:]}"}
+    argv, env = child_command(["cargo", "test", "--locked", "-p", "containment-kernel", "--test", name,
+                               "--", "--test-threads=1"], as_user,
+                              {"CARGO_TARGET_DIR": str(target_dir), "CARGO_TERM_COLOR": "never"})
+    child = subprocess.run(argv, cwd=head, env=env, capture_output=True, text=True, timeout=3600)
+    end_children(as_user)
+    found = parse_rust_output(name, child.stdout, child.returncode)
+    if not any(not k.endswith("::<cargo>") for k in found):
+        found[f"{name}::<build>"] = f"no results (exit {child.returncode}): {child.stderr.strip()[-400:]}"
+    return found
 
 
 def judge(expected, reported):
@@ -201,7 +278,7 @@ def clear_pycache(head):
         shutil.rmtree(cache)
 
 
-def run(mode, base_ref, head, rust):
+def run(mode, base_ref, head, rust, as_user=None):
     head = head.resolve()
     base_spec = spec_files(lambda: base_names(base_ref), rust)
     head_spec = spec_files(lambda: head_names(head), rust)
@@ -209,6 +286,8 @@ def run(mode, base_ref, head, rust):
     get = policy_check.reader(base_ref)
     report = {"mode": mode, "base": base_ref, "files": [], "failed": {}, "passed": 0}
     parked = Path(tempfile.mkdtemp(prefix="spec-parked-"))
+    target_dir = Path(tempfile.mkdtemp(prefix="spec-target-"))
+    target_dir.chmod(0o777)
     try:
         if mode == "base":
             # Park head-only spec outside the checkout for the whole run.
@@ -219,18 +298,19 @@ def run(mode, base_ref, head, rust):
             todo = [(name, get(name)) for name in base_spec]
         else:
             todo = [(name, (head / name).read_text(encoding="utf-8")) for name in head_only]
-        clear_pycache(head)
+        # Rust first: it builds and runs before any Python child has run head code.
+        todo.sort(key=lambda item: not item[0].endswith(".rs"))
         for name, text in todo:
             if text is None:
                 report["failed"][name] = "missing at base"
                 continue
             if name.endswith(".py"):
                 expected = python_test_ids(Path(name).stem, text)
-                reported = run_python_module(head, name)
+                reported = run_python_module(head, name, text if mode == "base" else None, as_user)
             else:
                 stem = Path(name).stem
                 expected = [f"{stem}::{t}" for t in rust_test_ids(text)]
-                reported = run_rust_file(head, name)
+                reported = run_rust_file(head, name, target_dir, as_user)
             passed, failed = judge(expected, reported)
             if not expected:
                 failed = {name: "defines no tests"}
@@ -243,6 +323,7 @@ def run(mode, base_ref, head, rust):
                 (head / name).parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(parked / name), str(head / name))
         shutil.rmtree(parked, ignore_errors=True)
+        shutil.rmtree(target_dir, ignore_errors=True)
     if mode == "base" and not report["files"]:
         report["failed"]["<spec>"] = "the base commit has no spec files"
     return report
@@ -258,10 +339,11 @@ def main(argv=None):
     parser.add_argument("--json", type=Path)
     parser.add_argument("--reviews", type=Path, help="the pull request's reviews, as JSON")
     parser.add_argument("--head-sha", help="the head commit the reviews must approve")
+    parser.add_argument("--as-user", help="run every child that runs head code as this user, through sudo")
     args = parser.parse_args(argv)
     if args.reviews and not args.head_sha:
         parser.error("--reviews needs --head-sha: approval is only ever of one commit")
-    report = run(args.mode, args.base_ref, args.head, args.rust)
+    report = run(args.mode, args.base_ref, args.head, args.rust, args.as_user)
     report["approved"] = None
     if report["failed"] and args.reviews:
         lanes_text = policy_check.reader(args.base_ref)(policy_check.LANES_FILE)
