@@ -69,7 +69,8 @@ jobs:
     if: always()
     environment: gate
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # A sweep posts five contexts for every open head; failures go first.
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:

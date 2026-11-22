@@ -83,11 +83,12 @@ retargeted away from main, whose new base's workflows the agent controls.
 The sweep works in two passes. First it downgrades, cheaply: a head whose open
 pull requests from this repository include none into main gets its existing
 gate check runs set to failure, with no fetching and no checkers. Then it
-judges the heads of pull requests into main in full, starting at a different
-head each sweep, until its time budget runs out. Heads it did not reach wait
-for the next sweep. The budget plus one worst-case head fits inside the job's
-timeout, because every checker, gh call and git call has its own timeout. A
-sweep that produces nothing ends red.
+judges the heads of pull requests into main in full, starting at a random
+head, until its time runs out. Heads it did not reach wait for the next sweep.
+Each head is judged in a child process that is killed at a fixed limit, and
+no head starts unless it can end before the job's timeout. So the output is
+always written, and a head that runs out of time fails like any other error.
+A sweep that produces nothing ends red.
 
 Each batch carries the time it was judged, and each check run stores that time
 in `external_id`. post never overwrites a check run with a verdict judged
@@ -114,7 +115,9 @@ import hmac
 import io
 import json
 import os
+import random
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -136,13 +139,15 @@ RUN_WORKFLOWS = {
 }
 POLICY = "gate/policy"
 CONTEXTS = [c for jobs in RUN_WORKFLOWS.values() for c in jobs] + [POLICY]
-# The judge job's timeout in gate.yml. A sweep's budget plus one worst-case head must
-# finish inside it, or the job is killed and the downgrade batches are lost with it.
+# The judge job's timeout in gate.yml. A sweep must write its output before then, or the
+# job is killed and the downgrade batches are lost with it. So each head is judged in a
+# child process that is killed at PER_HEAD_SECONDS, and no head starts unless it can end,
+# with RESERVE_SECONDS left for listing pull requests and writing the output.
 JUDGE_JOB_SECONDS = 50 * 60
+PER_HEAD_SECONDS = 8 * 60
+RESERVE_SECONDS = 5 * 60
 CHECKER_TIMEOUT_SECONDS = 5 * 60     # each of the three checkers in policy_result
 CALL_TIMEOUT_SECONDS = 2 * 60        # each gh or git call
-WORST_HEAD_SECONDS = 3 * CHECKER_TIMEOUT_SECONDS + 10 * CALL_TIMEOUT_SECONDS
-SWEEP_BUDGET_SECONDS = JUDGE_JOB_SECONDS - WORST_HEAD_SECONDS - 5 * 60
 ISSUER = "https://token.actions.githubusercontent.com"
 JWKS_URL = ISSUER + "/.well-known/jwks"
 AUDIENCE = "gate"
@@ -394,8 +399,8 @@ def signing_keys(tries=3, sleep=time.sleep):
 
 def sweep_heads(repo):
     """(heads to judge in full, heads to downgrade) over every open pull request from
-    this repository. A head is judged when an open PR into main has it, oldest PR
-    first; otherwise it is only downgraded."""
+    this repository. A head is judged when an open PR into main has it; otherwise it
+    is only downgraded."""
     prs = [p for p in pages(f"repos/{repo}/pulls?state=open&sort=created&direction=asc&per_page=100")
            if (p["head"].get("repo") or {}).get("full_name") == repo]
     into_main = []
@@ -570,6 +575,28 @@ def judged(head_sha):
     return {"head_sha": head_sha, "pr": pr, "judged_at": at, "verdicts": result}
 
 
+def judged_in_child(head_sha):
+    """judged(head_sha) in a child process killed at PER_HEAD_SECONDS, so no head,
+    however many calls it needs, can outrun the sweep. Anything but one clean batch
+    for this head fails it."""
+    try:
+        # A session of its own, so a timeout kills the child and everything it started
+        # (gh, git, the checkers); otherwise their open pipes would hold this read open.
+        child = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "judge", "--head-sha", head_sha],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        try:
+            out, err = child.communicate(timeout=PER_HEAD_SECONDS)
+        except subprocess.TimeoutExpired:
+            os.killpg(child.pid, signal.SIGKILL)
+            child.communicate(timeout=30)
+            raise
+        sys.stderr.write(err[-4000:])
+        return checked_verdicts(out, head_sha)[0]
+    except Exception as error:  # noqa: BLE001
+        return {"head_sha": head_sha, "pr": None, "judged_at": int(time.time()),
+                "verdicts": all_failed(f"Judging this commit in the sweep failed ({type(error).__name__}).")}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -586,23 +613,22 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.command == "judge":
         if args.sweep:
+            started = time.monotonic()
             try:
                 into_main, away = sweep_heads(os.environ["GITHUB_REPOSITORY"])
             except Exception as error:  # noqa: BLE001  nothing known to fail; the next sweep retries
                 sys.exit(f"gate_check: sweep could not list pull requests: {error}")
             batches = [downgrade(h) for h in away]
-            start = time.monotonic()
-            # Start at a different head each sweep, so one slow head cannot starve the
-            # same others every time.
+            # A random start, so one slow head cannot starve the same others every sweep.
             if into_main:
-                turn = int(time.time() // 600) % len(into_main)
+                turn = random.randrange(len(into_main))
                 into_main = into_main[turn:] + into_main[:turn]
-            for head in into_main:
-                if time.monotonic() - start > SWEEP_BUDGET_SECONDS:
-                    waiting = len(into_main) - (len(batches) - len(away))
-                    print(f"Sweep budget spent; {waiting} head(s) wait for the next sweep.", file=sys.stderr)
+            for done, head in enumerate(into_main):
+                if time.monotonic() - started + PER_HEAD_SECONDS + RESERVE_SECONDS > JUDGE_JOB_SECONDS:
+                    print(f"Sweep time spent; {len(into_main) - done} head(s) wait for the next sweep.",
+                          file=sys.stderr)
                     break
-                batches.append(judged(head))
+                batches.append(judged_in_child(head))
         else:
             batches = [judged(args.head_sha)]
         print(json.dumps(batches, indent=2))

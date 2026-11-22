@@ -309,60 +309,94 @@ class Main(unittest.TestCase):
             data = gc.checked_verdicts(out.read_text().split("=", 1)[1], HEAD)
         self.assertIsNone(data[0]["pr"])
 
-    def test_a_sweep_judges_every_open_pull_requests_head(self):
-        judged = []
+    def sweep(self, into_main, away, judge, clock=None, start=0):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(gc, "sweep_heads", lambda repo: (into_main, away)), \
+                mock.patch.object(gc, "judged_in_child", judge), \
+                mock.patch.object(gc.random, "randrange", lambda n: start % n), \
+                mock.patch.object(gc.time, "monotonic", (lambda: clock[0]) if clock else gc.time.monotonic):
+            out = Path(tmp) / "out"
+            _, _, err = self.run_main(["judge", "--sweep", "--out", str(out)])
+            return gc.checked_verdicts(out.read_text().split("=", 1)[1]), err
+
+    def test_a_sweep_judges_heads_into_main_and_downgrades_the_rest(self):
+        judged, away = [], "d" * 40
 
         def judge(head):
             judged.append(head)
-            if head == OLD:
-                raise RuntimeError("boom")
-            return 7, gc.all_failed("x")
+            return {"head_sha": head, "pr": 7, "judged_at": 5, "verdicts": gc.all_failed("x")}
 
-        away = "d" * 40
-        with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.object(gc, "sweep_heads", lambda repo: ([HEAD, OLD], [away])), \
-                mock.patch.object(gc, "judge", judge), mock.patch.object(gc.time, "time", lambda: 599.0):
-            out = Path(tmp) / "out"
-            self.run_main(["judge", "--sweep", "--out", str(out)])
-            data = gc.checked_verdicts(out.read_text().split("=", 1)[1])
+        data, _ = self.sweep([HEAD, OLD], [away], judge)
         self.assertEqual(judged, [HEAD, OLD])                              # the away head is not judged
-        self.assertEqual([(b["head_sha"], b["pr"]) for b in data], [(away, None), (HEAD, 7), (OLD, None)])
+        self.assertEqual([(b["head_sha"], b["pr"]) for b in data], [(away, None), (HEAD, 7), (OLD, 7)])
         self.assertTrue(all(v["conclusion"] == "failure" for v in data[0]["verdicts"]))
 
-    def test_the_sweep_stops_full_judging_at_its_budget_but_always_downgrades(self):
+    def test_no_head_starts_unless_it_can_end_before_the_job_does(self):
         clock = [0.0]
 
         def judge(head):
-            clock[0] += gc.SWEEP_BUDGET_SECONDS
-            return 7, gc.all_failed("x")
+            clock[0] += gc.PER_HEAD_SECONDS                                 # every head takes its full limit
+            return {"head_sha": head, "pr": 7, "judged_at": 5, "verdicts": gc.all_failed("x")}
 
+        heads = [c * 40 for c in "abcdefghij"]
+        data, err = self.sweep(heads, ["0" * 40], judge, clock=clock)
+        fits = (gc.JUDGE_JOB_SECONDS - gc.RESERVE_SECONDS) // gc.PER_HEAD_SECONDS
+        self.assertEqual(len(data), 1 + fits)                               # the downgrade, then what fits
+        self.assertLessEqual(clock[0] + gc.RESERVE_SECONDS, gc.JUDGE_JOB_SECONDS)
+        self.assertIn(f"{len(heads) - fits} head(s) wait", err)
+
+    def test_the_sweep_starts_at_a_random_head(self):
+        judged = []
         heads = [c * 40 for c in "abc"]
-        with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.object(gc, "sweep_heads", lambda repo: (heads, ["d" * 40])), \
-                mock.patch.object(gc, "judge", judge), mock.patch.object(gc.time, "monotonic", lambda: clock[0]), \
-                mock.patch.object(gc.time, "time", lambda: 599.0):
-            out = Path(tmp) / "out"
-            _, _, err = self.run_main(["judge", "--sweep", "--out", str(out)])
-            data = gc.checked_verdicts(out.read_text().split("=", 1)[1])
-        self.assertEqual([b["head_sha"] for b in data], ["d" * 40, heads[0], heads[1]])
-        self.assertIn("1 head(s) wait", err)
 
-    def test_each_sweep_starts_at_a_different_head(self):
-        starts = []
-        heads = [c * 40 for c in "abc"]
-        for now in (1.0, 601.0, 1201.0):
-            judged = []
+        def judge(head):
+            judged.append(head)
+            return {"head_sha": head, "pr": 7, "judged_at": 5, "verdicts": gc.all_failed("x")}
 
-            def judge(head):
-                judged.append(head)
-                return 7, gc.all_failed("x")
+        self.sweep(heads, [], judge, start=2)
+        self.assertEqual(judged, [heads[2], heads[0], heads[1]])
 
-            with mock.patch.object(gc, "sweep_heads", lambda repo: (heads, [])), \
-                    mock.patch.object(gc, "judge", judge), mock.patch.object(gc.time, "time", lambda: now):
-                self.run_main(["judge", "--sweep"])
-            starts.append(judged[0])
-            self.assertEqual(sorted(judged), heads)
-        self.assertEqual(starts, heads)
+    def test_a_head_that_outruns_its_limit_is_killed_with_its_children_and_fails(self):
+        killed = []
+
+        class Child:
+            pid = 4242
+            calls = 0
+
+            def communicate(self, timeout=None):
+                Child.calls += 1
+                if Child.calls == 1:
+                    raise subprocess.TimeoutExpired("judge", timeout)
+                return "", ""
+
+        with mock.patch.object(gc.subprocess, "Popen", lambda *a, **k: Child()), \
+                mock.patch.object(gc.os, "killpg", lambda pid, sig: killed.append((pid, sig))), \
+                redirect_stderr(io.StringIO()):
+            batch = gc.judged_in_child(HEAD)
+        self.assertEqual(killed, [(4242, gc.signal.SIGKILL)])
+        self.assertEqual((batch["head_sha"], batch["pr"]), (HEAD, None))
+        self.assertTrue(all(v["conclusion"] == "failure" for v in batch["verdicts"]))
+
+    def test_a_child_batch_must_be_one_clean_batch_for_its_head(self):
+        def child(out):
+            return lambda *a, **k: type("C", (), {"pid": 1, "communicate": lambda self, timeout=None: (out, "")})()
+
+        with redirect_stderr(io.StringIO()):
+            with mock.patch.object(gc.subprocess, "Popen", child(json.dumps([dict(good(), head_sha=OLD)]))):
+                self.assertIsNone(gc.judged_in_child(HEAD)["pr"])
+            with mock.patch.object(gc.subprocess, "Popen", child("not json")):
+                self.assertIsNone(gc.judged_in_child(HEAD)["pr"])
+            with mock.patch.object(gc.subprocess, "Popen", child(json.dumps([good()]))):
+                self.assertEqual(gc.judged_in_child(HEAD), good())
+
+    def test_a_real_child_process_judges_one_head(self):
+        # The child is this file run as a script; with no GITHUB_REPOSITORY it fails,
+        # and that failure must come back as a failed batch for this head.
+        env = {k: v for k, v in os.environ.items() if k != "GITHUB_REPOSITORY"}
+        with mock.patch.dict(os.environ, env, clear=True), redirect_stderr(io.StringIO()):
+            batch = gc.judged_in_child(HEAD)
+        self.assertEqual(batch["head_sha"], HEAD)
+        self.assertTrue(all(v["conclusion"] == "failure" for v in batch["verdicts"]))
 
     def test_sweep_heads_lists_open_prs_from_this_repository_whatever_their_base(self):
         prs = [dict(PR), dict(PR, base={"ref": "evil", "sha": OLD}, head={"sha": OLD, "ref": "x", "repo": {"full_name": REPO}}),
@@ -709,13 +743,12 @@ class Repository(unittest.TestCase):
                        "judge --sweep", "post --app-id \"$APP_ID\" --sweep"):
             self.assertIn(needle, text)
 
-    def test_a_sweeps_budget_plus_one_worst_head_fits_the_judge_jobs_timeout(self):
+    def test_the_sweeps_limits_match_the_judge_jobs_timeout(self):
         text = (ROOT / ".github/workflows/gate.yml").read_text(encoding="utf-8")
         judge_job = text.split("\n  judge:\n", 1)[1].split("\n  post:\n", 1)[0]
         minutes = int(judge_job.split("timeout-minutes: ", 1)[1].split("\n", 1)[0])
         self.assertEqual(minutes * 60, gc.JUDGE_JOB_SECONDS)
-        self.assertGreater(gc.SWEEP_BUDGET_SECONDS, 0)
-        self.assertLessEqual(gc.SWEEP_BUDGET_SECONDS + gc.WORST_HEAD_SECONDS, gc.JUDGE_JOB_SECONDS)
+        self.assertGreater(gc.JUDGE_JOB_SECONDS, gc.PER_HEAD_SECONDS + gc.RESERVE_SECONDS)
 
     def test_gate_events_brings_retargets_closes_and_reopens_to_the_gate(self):
         text = (ROOT / ".github/workflows/gate-events.yml").read_text(encoding="utf-8")
