@@ -8,8 +8,9 @@ Usage:
   policy_check.py codeowners [--write]
   policy_check.py invariants
 
-queue      judges a merge-queue group: one commit per queued PR, each classified with
-           the lane map before it and, if lane C, approved by the owner at its head.
+queue      judges a merge-queue group: one commit per queued PR, tied to that PR's group
+           commit and head, each classified with the lane map before it and, if lane C
+           or from a fork, approved by the owner at its head.
 classify   prints the lane of the diff between two commits. Lanes are defined in
            ci/lanes.toml. A ratchet raises the lane to C when the change removes
            or rewords a law, mutant, scenario or sabotage control, or weakens a
@@ -412,25 +413,43 @@ def main(argv=None):
 
 def judge_queue(base, head, entries):
     """Judge a merge-queue group (#102). `entries` are the group's pull requests in queue
-    order, as the API lists them: {"number", "head_sha", "reviews"}. The group must be
-    exactly one first-parent commit per entry on top of `base`. Each commit's own change
-    is classified with the lane map of the commit before it, as if it merged alone, so a
-    stale PR-time result counts for nothing; a lane C commit needs the owner's approval
-    of that entry's head. Anything that does not line up is a problem, never a pass."""
+    order, as the API lists them: {"number", "head_sha", "group_commit", "fork",
+    "reviews"}. The group must be exactly one first-parent commit per entry on top of
+    `base`, and commit i must be entry i's own group commit, so each commit is tied to
+    the pull request whose reviews judge it. Its tree must be what merging that pull
+    request's head onto the commit before gives, so the approval of the head covers what
+    lands. Each commit's change is classified with the lane map of the commit before it,
+    as if it merged alone, so a stale PR-time result counts for nothing. A lane C commit,
+    or one from a fork, needs the owner's approval of the head. Anything that does not
+    line up is a problem, never a pass."""
+    if not isinstance(entries, list) or not entries:
+        return [], ["the group lists no entries"]
+    if not all(isinstance(e, dict) for e in entries):
+        return [], ["a group entry is not an object"]
     problems, rows = [], []
-    base = git("rev-parse", "--verify", f"{base}^{{commit}}").strip()
-    head = git("rev-parse", "--verify", f"{head}^{{commit}}").strip()
-    commits = [c for c in git("rev-list", "--first-parent", "--reverse", f"{base}..{head}").split() if c]
-    if not entries:
-        return [{"problem": "the group lists no entries"}], ["the group lists no entries"]
+    try:
+        base = git("rev-parse", "--verify", f"{base}^{{commit}}").strip()
+        head = git("rev-parse", "--verify", f"{head}^{{commit}}").strip()
+        if git("merge-base", base, head).strip() != base:
+            return [], [f"{base[:12]} is not an ancestor of {head[:12]}"]
+        commits = [c for c in git("rev-list", "--first-parent", "--reverse", f"{base}..{head}").split() if c]
+    except subprocess.CalledProcessError as error:
+        return [], [f"git could not read the group: {(error.stderr or '').strip()}"]
     if len(commits) != len(entries):
-        problems.append(f"the group has {len(commits)} commits for {len(entries)} entries")
-        return rows, problems
+        return [], [f"the group has {len(commits)} commits for {len(entries)} entries; the queue moved or the data is wrong"]
     previous = base
     for commit, entry in zip(commits, entries):
+        number = entry.get("number")
+        if entry.get("group_commit") != commit:
+            problems.append(f"PR #{number}'s group commit is {str(entry.get('group_commit'))[:12]}, "
+                            f"but the group has {commit[:12]} in its place")
+            break
         parents = git("rev-list", "--parents", "-n", "1", commit).split()[1:]
         if parents != [previous]:
             problems.append(f"{commit[:12]} is not a single-parent commit on top of {previous[:12]}")
+            break
+        if not landed_tree_matches(previous, commit, entry.get("head_sha")):
+            problems.append(f"PR #{number}: {commit[:12]} is not its head merged onto {previous[:12]}")
             break
         lanes_text = reader(previous)(LANES_FILE)
         if lanes_text is None:
@@ -439,19 +458,37 @@ def judge_queue(base, head, entries):
         owner, lanes = load_lanes(lanes_text)
         paths = [p for p in git("diff", "--name-only", "--no-renames", previous, commit).splitlines() if p]
         result = classify(paths, reader(previous), reader(commit), lanes)
-        ok = result["lane"] != "C" or approved(entry.get("reviews", []), owner, entry.get("head_sha"))
-        rows.append({"pr": entry.get("number"), "commit": commit, "lane": result["lane"],
+        # A missing or malformed fork flag counts as a fork: the stricter reading.
+        fork = entry.get("fork") is not False
+        needs_owner = result["lane"] == "C" or fork
+        ok = not needs_owner or approved(entry.get("reviews", []), owner, entry.get("head_sha"))
+        rows.append({"pr": number, "commit": commit, "lane": result["lane"], "fork": fork,
                      "escalations": result["escalations"], "approved": ok})
         if not ok:
-            problems.append(f"PR #{entry.get('number')} is lane C in this group, without {owner}'s approval of its head")
+            why = "lane C" if result["lane"] == "C" else "from a fork"
+            problems.append(f"PR #{number} is {why} in this group, without {owner}'s approval of its head")
         previous = commit
     return rows, problems
+
+
+def landed_tree_matches(previous, commit, head_sha):
+    """True when `commit`'s tree is exactly the three-way merge of the pull request head
+    onto `previous`, which is what a squash in the queue writes. A conflict, a head git
+    cannot read, or any other tree means the approved head is not what lands."""
+    if not head_sha:
+        return False
+    try:
+        merge_base = git("merge-base", previous, head_sha).strip()
+        tree = git("merge-tree", "--write-tree", "--merge-base", merge_base, previous, head_sha).split()[0]
+        return tree == git("rev-parse", f"{commit}^{{tree}}").strip()
+    except (subprocess.CalledProcessError, IndexError):
+        return False
 
 
 def run(parser, args):
     if args.command == "queue":
         entries = json.loads(Path(args.entries).read_text(encoding="utf-8"))
-        rows, problems = judge_queue(args.base, args.head, entries if isinstance(entries, list) else [])
+        rows, problems = judge_queue(args.base, args.head, entries)
         print(json.dumps({"entries": rows, "problems": problems, "enforced": args.enforce}, indent=2))
         for problem in problems:
             print(f"policy: {problem}", file=sys.stderr)
