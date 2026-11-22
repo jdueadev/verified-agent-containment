@@ -147,7 +147,7 @@ check_inputs_committed() {
   mapfile -t inputs < <(context_files)
   inputs+=(scripts/check-in-container.sh)
   git diff --quiet HEAD -- "${inputs[@]}" \
-    || die "the image's inputs have uncommitted changes ($(git diff --name-only HEAD -- "${inputs[@]}" | tr '\n' ' ')); commit them first"
+    || die "the image's inputs have uncommitted changes ($(git diff --name-only HEAD -- "${inputs[@]}" | paste -sd " " -)); commit them first"
   [ -z "$(git ls-files --others --exclude-standard -- "${inputs[@]}")" ] \
     || die "the image's inputs include untracked files; commit them first"
 }
