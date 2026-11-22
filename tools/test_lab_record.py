@@ -31,6 +31,26 @@ class RecordTests(unittest.TestCase):
             "attack-suite.json": json.loads((RUN / "attack-suite.json").read_text(encoding="utf-8")),
             "live-suite.json": json.loads((RUN / "live-suite.json").read_text(encoding="utf-8")),
         }
+        self.cover_newer_evidence()
+
+    def cover_newer_evidence(self):
+        """The fixture run predates scenarios and controls that claims.toml cites today
+        (wide_root, #88, say). Give each one a passing honest run or a detecting control,
+        so these tests are about the recorder, not about how old the fixture is. Tests
+        that need a missing or failing entry still remove or spoil one themselves."""
+        claims = tomllib.loads((self.root / "claims.toml").read_text(encoding="utf-8"))["claim"]
+        template_run = next(r for r in self.results["attack-suite.json"]["runs"] if r["weakness"] == "none")
+        for claim in lr.lab_claims(claims):
+            for ref in claim.get("evidence", []):
+                kind, _, name = ref.partition(":")
+                if kind not in lr.REF_KINDS:
+                    continue
+                suite, section = lr.REF_KINDS[kind]
+                entries = self.results[suite][section]
+                if section == "runs" and not any(r["scenario"] == name and r["weakness"] == "none" for r in entries):
+                    entries.append(dict(template_run, scenario=name, passed=True))
+                elif section == "sabotage" and not any(c["weakness"] == name for c in entries):
+                    entries.append({"weakness": name, "scenario": "synthetic", "detected": True, "failed_checks": []})
 
     def environment(self, results=None, commit=COMMIT):
         build = (results or self.results)["attack-suite.json"]["build"]

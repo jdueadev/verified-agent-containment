@@ -150,11 +150,11 @@ statement = "The agent's only network path is gateway.sock: its netns has lo onl
 layer = "host"
 status = "tested"
 evidence = ["scenario:sandbox_escape", "scenario:direct_egress", "scenario:process_escape", "sabotage:shared_network",
-  "sabotage:host_root", "sabotage:no_seccomp", "sabotage:memfd_exec", "sabotage:no_kill"]
+  "sabotage:host_root", "sabotage:no_seccomp", "sabotage:memfd_exec", "sabotage:no_kill", "sabotage:wide_root"]
 falsifier = "Agent bytes reach a non-gateway endpoint, or code outside the sandbox root runs"
 limits = "Agent root in the shared kernel is out of scope (L-ISO-01)."
 platforms = [{ name = "linux-vm-6.18", commit = "d81a32e", result = "pass" }, { name = "wsl2-6.18.58", commit = "870142c", result = "fail: interop exec via memfd" }, { name = "wsl2-6.18.58", commit = "f88aeef", result = "pass (results/wsl2/lab-f88aeef; also lab-9ffd69a)" }, { name = "wsl2-6.18.58", commit = "cd7172f", result = "pass (results/wsl2/lab-cd7172f; honest runs on the default build, controls on the sabotage build)" }]
-files = ["crates/containment-host/src/sandbox.rs", "crates/containment-host/src/agent.rs", "crates/containment-host/src/controller/weakness.rs"]
+files = ["crates/containment-host/src/sandbox.rs", "crates/containment-host/src/sandbox_view.rs", "crates/containment-host/src/agent.rs", "crates/containment-host/src/controller/weakness.rs"]
 
 [[claim]]
 id = "H-GW-01"
@@ -289,7 +289,7 @@ status = "tested"
 evidence = ["scenario:sandbox_escape", "sabotage:memfd_exec"]
 falsifier = "memfd_exec_elf or a reachable PE runs on WSL2"
 platforms = [{ name = "wsl2-6.18.58", commit = "870142c", result = "fail: interop exec via memfd" }, { name = "wsl2-6.18.58", commit = "f88aeef", result = "pass (results/wsl2/lab-f88aeef; also lab-9ffd69a)" }, { name = "wsl2-6.18.58", commit = "cd7172f", result = "pass (results/wsl2/lab-cd7172f; honest runs on the default build, controls on the sabotage build)" }]
-files = ["crates/containment-host/src/sandbox.rs", "crates/containment-host/src/agent.rs"]
+files = ["crates/containment-host/src/sandbox.rs", "crates/containment-host/src/sandbox_view.rs", "crates/containment-host/src/agent.rs"]
 
 [[claim]]
 id = "A-RST-01"

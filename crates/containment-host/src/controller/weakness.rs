@@ -101,6 +101,7 @@ weaknesses! {
     live_credential_everywhere,
     live_workspace_reused,
     hud_log_unredacted,
+    wide_root,
 }
 
 #[cfg(test)]
@@ -132,7 +133,7 @@ mod tests {
     #[cfg(feature = "sabotage")]
     #[test]
     fn the_sabotage_build_accepts_every_defect() {
-        assert_eq!(NAMES.len(), 36);
+        assert_eq!(NAMES.len(), 37);
         for name in NAMES {
             assert!(Weakness::parse(name).is_ok(), "{name} was refused");
         }
