@@ -3,7 +3,7 @@
 #
 #   scripts/lab/ci-record.sh RESULTS_DIR COMMIT RUN_URL
 #
-# Run by the `record` job of .github/workflows/lab.yml, on a checkout of COMMIT
+# Run by the `record` job of .github/workflows/lab.yaml, on a checkout of COMMIT
 # (a commit on main), with GH_TOKEN allowed to push a branch and open a PR. It
 # builds and runs nothing from the change: only tools/lab_record.py and
 # tools/claims_check.py, which are lane C.

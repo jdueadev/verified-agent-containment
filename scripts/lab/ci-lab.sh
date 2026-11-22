@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The root lab on a disposable CI runner (.github/workflows/lab.yml, #53).
+# The root lab on a disposable CI runner (.github/workflows/lab.yaml, #53).
 #
 #   scripts/lab/ci-lab.sh [--if-affected BASE_SHA]
 #
