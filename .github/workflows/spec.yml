@@ -106,5 +106,7 @@ jobs:
                       > "$RUNNER_TEMP/out.json" || code=$? ;;
           esac
           sudo -n pkill -KILL -u spec || true
+          # In the log as well as the summary: the API returns logs, not step summaries.
+          cat "$RUNNER_TEMP/out.json"
           { echo '```json'; cat "$RUNNER_TEMP/out.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit "$code"
