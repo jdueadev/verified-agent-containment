@@ -246,7 +246,7 @@ if [ "$status" -ne 0 ]; then
   # What the sandbox_escape scan walks: the host's /usr and /lib* are bound read-only.
   echo "files under /usr and /lib*: $(sudo find /usr /lib /lib64 /lib32 /libx32 -xdev 2>/dev/null | wc -l)"
   echo "busiest directories:"
-  sudo find /usr /lib -xdev -type f 2>/dev/null | cut -d/ -f1-4 | sort | uniq -c | sort -rn | head -12
+  (set +o pipefail; sudo find /usr /lib -xdev -type f 2>/dev/null | cut -d/ -f1-4 | sort | uniq -c | sort -rn | head -12) || true
   sudo python3 -I - <<'PY' || true
 import os, time
 start, files, pe = time.monotonic(), 0, 0
@@ -269,6 +269,22 @@ PY
     sudo strace -f -qq -Z -e trace=all -o "$work/strace.txt" "$default" attack-suite --only benign --repeat 1 \
       --allow-missing-limits --out "$work/diag.json" >/dev/null 2>&1 || true
     grep -E 'EACCES|EPERM' "$work/strace.txt" | head -40 || true
+    # What the sandbox_escape agent does before the harness stops waiting for its scan.
+    sudo strace -f -qq -tt -o "$work/escape.txt" "$default" attack-suite --only sandbox_escape --repeat 1 \
+      --allow-missing-limits --out "$work/diag-escape.json" >/dev/null 2>&1 || true
+    sudo python3 -I - "$work/escape.txt" <<'PY' || true
+import collections, re, sys
+lines = open(sys.argv[1], errors="replace").read().splitlines()
+# The agent is the process that runs /agent after the sandbox pivots its root.
+agents = {l.split()[0] for l in lines if 'execve("/agent"' in l}
+print(f"agent pids: {sorted(agents)}")
+for pid in sorted(agents):
+    mine = [l for l in lines if l.split()[0] == pid]
+    calls = collections.Counter(m.group(1) for l in mine if (m := re.match(r"\S+ \S+ (\w+)\(", l)))
+    print(f"pid {pid}: {len(mine)} lines; top calls {calls.most_common(8)}")
+    for l in mine[-25:]:
+        print("  " + l[:220])
+PY
   else
     echo "strace is not available"
   fi
