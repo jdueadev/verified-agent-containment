@@ -321,7 +321,7 @@ class Main(unittest.TestCase):
         away = "d" * 40
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(gc, "sweep_heads", lambda repo: ([HEAD, OLD], [away])), \
-                mock.patch.object(gc, "judge", judge):
+                mock.patch.object(gc, "judge", judge), mock.patch.object(gc.time, "time", lambda: 599.0):
             out = Path(tmp) / "out"
             self.run_main(["judge", "--sweep", "--out", str(out)])
             data = gc.checked_verdicts(out.read_text().split("=", 1)[1])
@@ -339,12 +339,30 @@ class Main(unittest.TestCase):
         heads = [c * 40 for c in "abc"]
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(gc, "sweep_heads", lambda repo: (heads, ["d" * 40])), \
-                mock.patch.object(gc, "judge", judge), mock.patch.object(gc.time, "monotonic", lambda: clock[0]):
+                mock.patch.object(gc, "judge", judge), mock.patch.object(gc.time, "monotonic", lambda: clock[0]), \
+                mock.patch.object(gc.time, "time", lambda: 599.0):
             out = Path(tmp) / "out"
             _, _, err = self.run_main(["judge", "--sweep", "--out", str(out)])
             data = gc.checked_verdicts(out.read_text().split("=", 1)[1])
         self.assertEqual([b["head_sha"] for b in data], ["d" * 40, heads[0], heads[1]])
         self.assertIn("1 head(s) wait", err)
+
+    def test_each_sweep_starts_at_a_different_head(self):
+        starts = []
+        heads = [c * 40 for c in "abc"]
+        for now in (1.0, 601.0, 1201.0):
+            judged = []
+
+            def judge(head):
+                judged.append(head)
+                return 7, gc.all_failed("x")
+
+            with mock.patch.object(gc, "sweep_heads", lambda repo: (heads, [])), \
+                    mock.patch.object(gc, "judge", judge), mock.patch.object(gc.time, "time", lambda: now):
+                self.run_main(["judge", "--sweep"])
+            starts.append(judged[0])
+            self.assertEqual(sorted(judged), heads)
+        self.assertEqual(starts, heads)
 
     def test_sweep_heads_lists_open_prs_from_this_repository_whatever_their_base(self):
         prs = [dict(PR), dict(PR, base={"ref": "evil", "sha": OLD}, head={"sha": OLD, "ref": "x", "repo": {"full_name": REPO}}),
@@ -687,9 +705,17 @@ class Repository(unittest.TestCase):
         allowed = wl.load_allowed((ROOT / wl.ALLOW_FILE).read_text(encoding="utf-8"))
         self.assertEqual(wl.lint("gate.yml", text, allowed), [])
         for needle in ("workflows: [check, spec, policy, policy-refresh, gate-events]", "environment: gate",
-                       "permission-checks: write", "if: always()", "cron: '*/10 * * * *'",
+                       "permission-checks: write", "if: always()", "schedule:",
                        "judge --sweep", "post --app-id \"$APP_ID\" --sweep"):
             self.assertIn(needle, text)
+
+    def test_a_sweeps_budget_plus_one_worst_head_fits_the_judge_jobs_timeout(self):
+        text = (ROOT / ".github/workflows/gate.yml").read_text(encoding="utf-8")
+        judge_job = text.split("\n  judge:\n", 1)[1].split("\n  post:\n", 1)[0]
+        minutes = int(judge_job.split("timeout-minutes: ", 1)[1].split("\n", 1)[0])
+        self.assertEqual(minutes * 60, gc.JUDGE_JOB_SECONDS)
+        self.assertGreater(gc.SWEEP_BUDGET_SECONDS, 0)
+        self.assertLessEqual(gc.SWEEP_BUDGET_SECONDS + gc.WORST_HEAD_SECONDS, gc.JUDGE_JOB_SECONDS)
 
     def test_gate_events_brings_retargets_closes_and_reopens_to_the_gate(self):
         text = (ROOT / ".github/workflows/gate-events.yml").read_text(encoding="utf-8")
@@ -710,6 +736,7 @@ class Repository(unittest.TestCase):
             job = text.split("\n  gate-attestation:\n", 1)[1].split("\n  evidence-freshness:\n")[0]
             self.assertIn("      id-token: write\n", job)
             self.assertIn("audience=gate", job)
+            self.assertIn('"sha"', job)                                     # the binding's claim is logged
             self.assertIn("name: gate-attestation-${{ github.run_attempt }}", job)
             self.assertNotIn("actions/checkout", job)
             self.assertEqual(text.count("id-token: write"), 1)

@@ -83,9 +83,11 @@ retargeted away from main, whose new base's workflows the agent controls.
 The sweep works in two passes. First it downgrades, cheaply: a head whose open
 pull requests from this repository include none into main gets its existing
 gate check runs set to failure, with no fetching and no checkers. Then it
-judges the heads of pull requests into main in full, oldest first, until its
-time budget runs out. Heads it did not reach wait for the next sweep. Each
-checker has its own timeout. A sweep that produces nothing ends red.
+judges the heads of pull requests into main in full, starting at a different
+head each sweep, until its time budget runs out. Heads it did not reach wait
+for the next sweep. The budget plus one worst-case head fits inside the job's
+timeout, because every checker, gh call and git call has its own timeout. A
+sweep that produces nothing ends red.
 
 Each batch carries the time it was judged, and each check run stores that time
 in `external_id`. post never overwrites a check run with a verdict judged
@@ -134,8 +136,13 @@ RUN_WORKFLOWS = {
 }
 POLICY = "gate/policy"
 CONTEXTS = [c for jobs in RUN_WORKFLOWS.values() for c in jobs] + [POLICY]
-SWEEP_BUDGET_SECONDS = 30 * 60
-CHECKER_TIMEOUT_SECONDS = 10 * 60
+# The judge job's timeout in gate.yml. A sweep's budget plus one worst-case head must
+# finish inside it, or the job is killed and the downgrade batches are lost with it.
+JUDGE_JOB_SECONDS = 50 * 60
+CHECKER_TIMEOUT_SECONDS = 5 * 60     # each of the three checkers in policy_result
+CALL_TIMEOUT_SECONDS = 2 * 60        # each gh or git call
+WORST_HEAD_SECONDS = 3 * CHECKER_TIMEOUT_SECONDS + 10 * CALL_TIMEOUT_SECONDS
+SWEEP_BUDGET_SECONDS = JUDGE_JOB_SECONDS - WORST_HEAD_SECONDS - 5 * 60
 ISSUER = "https://token.actions.githubusercontent.com"
 JWKS_URL = ISSUER + "/.well-known/jwks"
 AUDIENCE = "gate"
@@ -320,7 +327,7 @@ def run_verdict(context, job_name, runs, jobs_by_run, changed, approved, owner):
 
 def gh(*args, data=None):
     result = subprocess.run(["gh", "api", *args], input=None if data is None else json.dumps(data),
-                            capture_output=True, text=True, check=True)
+                            capture_output=True, text=True, check=True, timeout=CALL_TIMEOUT_SECONDS)
     return json.loads(result.stdout) if result.stdout.strip() else None
 
 
@@ -340,7 +347,8 @@ def pages(path):
 
 
 def git(*args):
-    return subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True, check=True).stdout
+    return subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True, check=True,
+                          timeout=CALL_TIMEOUT_SECONDS).stdout
 
 
 def open_pr_into_main(repo, head_sha):
@@ -361,7 +369,7 @@ def proofs_of(repo):
                     or not 0 < int(artifact.get("size_in_bytes") or 0) <= 65536):
                 continue
             data = subprocess.run(["gh", "api", f"repos/{repo}/actions/artifacts/{artifact['id']}/zip"],
-                                  capture_output=True, check=True).stdout
+                                  capture_output=True, check=True, timeout=CALL_TIMEOUT_SECONDS).stdout
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
                 names = archive.namelist()
                 if names != ["gate-attestation.jwt"]:
@@ -508,8 +516,8 @@ def post(data, app_id, repo):
             # Without a pull request into main, only existing check runs are updated (to
             # failure); creating gate results for a commit no PR into main has is noise.
             post_one(v, head, where, app_id, repo, create=data["pr"] is not None, at=data["judged_at"])
-        except subprocess.CalledProcessError as error:
-            errors.append(f"{v['context']}: {error.stderr or error}")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            errors.append(f"{v['context']}: {getattr(error, 'stderr', None) or error}")
     if errors:
         raise RuntimeError("; ".join(errors))
 
@@ -584,6 +592,11 @@ def main(argv=None):
                 sys.exit(f"gate_check: sweep could not list pull requests: {error}")
             batches = [downgrade(h) for h in away]
             start = time.monotonic()
+            # Start at a different head each sweep, so one slow head cannot starve the
+            # same others every time.
+            if into_main:
+                turn = int(time.time() // 600) % len(into_main)
+                into_main = into_main[turn:] + into_main[:turn]
             for head in into_main:
                 if time.monotonic() - start > SWEEP_BUDGET_SECONDS:
                     waiting = len(into_main) - (len(batches) - len(away))
@@ -612,12 +625,12 @@ def main(argv=None):
         for batch in checked_verdicts(text, None if args.sweep else args.head_sha):
             try:
                 post(batch, args.app_id, os.environ["GITHUB_REPOSITORY"])
-            except (subprocess.CalledProcessError, RuntimeError) as error:
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as error:
                 errors.append(f"{batch['head_sha'][:12]}: {error}")
         if errors:
             raise RuntimeError("; ".join(errors))
         return 0
-    except (subprocess.CalledProcessError, ValueError, RuntimeError, KeyError) as error:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError, RuntimeError, KeyError) as error:
         sys.exit(f"gate_check: {error} {getattr(error, 'stderr', '') or ''}".strip())
 
 

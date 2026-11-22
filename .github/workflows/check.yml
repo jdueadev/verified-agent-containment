@@ -130,7 +130,8 @@ jobs:
           body = token.split(".")[1]
           claims = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
           # The claims, never the token, so the log shows what the gate will check.
-          keys = ("repository", "event_name", "ref", "base_ref", "head_ref", "run_id", "run_attempt", "workflow_ref")
+          keys = ("repository", "event_name", "ref", "base_ref", "head_ref", "sha", "run_id", "run_attempt",
+                  "workflow_ref")
           print(json.dumps({k: claims.get(k) for k in keys}, indent=2))
           PY
           rm -f "$RUNNER_TEMP/oidc.json"
