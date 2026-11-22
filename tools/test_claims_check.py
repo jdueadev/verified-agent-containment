@@ -327,5 +327,113 @@ const SABOTAGE: &[(&str, &str, &str, &[&str])] = &[
         self.assertGreaterEqual(len(live_sabotage), 8)
 
 
+
+
+class PendingLabEvidenceTests(unittest.TestCase):
+    """A lab scenario or control the committed results have never run is pending: the
+    claim is stale (a warning on main, an error under --strict). One that ran and failed
+    is an error in both modes. Run on this repository, with one result removed or failed."""
+
+    def run_main(self, change, *args):
+        import contextlib
+        import io
+        import json
+        from unittest import mock
+        real = cc.load_results
+
+        def patched():
+            results = list(real())
+            change(results)
+            return tuple(results)
+        out = io.StringIO()
+        with mock.patch.object(cc, "load_results", patched), contextlib.redirect_stdout(out):
+            code = cc.main(list(args))
+        return code, json.loads(out.getvalue())
+
+    def test_a_control_that_never_ran_makes_its_claim_stale_not_broken(self):
+        drop = lambda r: r[3].pop("ignore_expiry")  # sabotage_ok
+        code, report = self.run_main(drop)
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(code, 0)
+        self.assertTrue(any("sabotage:ignore_expiry has not run in the lab yet" in w and "H-LEASE-01" in w
+                            for w in report["stale"]), report["stale"])
+        code, report = self.run_main(drop, "--strict")
+        self.assertEqual(code, 1)
+        self.assertTrue(any("has not run in the lab yet" in e for e in report["errors"]))
+
+    def test_a_scenario_that_never_ran_is_pending_too(self):
+        code, report = self.run_main(lambda r: r[2].pop("monitor_crash"))
+        self.assertEqual(code, 0)
+        self.assertTrue(any("scenario:monitor_crash has not run in the lab yet" in w for w in report["stale"]))
+
+    def test_a_control_that_ran_and_missed_is_an_error_in_both_modes(self):
+        failed = lambda r: r[3].__setitem__("ignore_expiry", False)
+        for args in ((), ("--strict",)):
+            with self.subTest(args=args):
+                code, report = self.run_main(failed, *args)
+                self.assertEqual(code, 1)
+                self.assertIn("CI-3 H-LEASE-01: sabotage:ignore_expiry was not caught or did not pass in results/",
+                              report["errors"])
+
+    def test_a_kind_without_lab_results_is_never_pending(self):
+        # Mutants come from check, not the lab: a missing one is an error, never "pending".
+        code, report = self.run_main(lambda r: r[0].clear())
+        self.assertEqual(code, 1)
+        self.assertTrue(any("was not caught or did not pass" in e for e in report["errors"]))
+
+    def test_a_live_control_that_never_ran_is_pending(self):
+        code, report = self.run_main(lambda r: r[6].pop("live_canary_unchecked"))
+        self.assertEqual(code, 0)
+        self.assertTrue(any("live-sabotage:live_canary_unchecked has not run in the lab yet" in w for w in report["stale"]))
+
+    def test_the_newest_ci_lab_run_counts_and_cannot_hide_a_failure(self):
+        import json
+        import shutil
+        head = cc.subprocess.run(["git", "-C", str(cc.ROOT), "rev-parse", "HEAD"], capture_output=True, text=True,
+                                 check=True).stdout.strip()
+        ci_dir = cc.ROOT / "results/ci"
+        lab = ci_dir / f"lab-{head}"
+        if lab.exists():
+            self.skipTest("a CI lab run for HEAD is already committed")
+        created_ci = not ci_dir.exists()
+        lab.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, ci_dir if created_ci else lab)
+        attack = json.loads((cc.ROOT / "results/attack-suite.json").read_text(encoding="utf-8"))
+        (lab / "live-suite.json").write_text((cc.ROOT / "results/live-suite.json").read_text(encoding="utf-8"), encoding="utf-8")
+        (lab / "attack-suite.json").write_text(json.dumps(attack), encoding="utf-8")
+        self.assertEqual(cc.latest_ci_lab(), lab)
+        # With a CI run that caught everything, nothing changes.
+        code, report = self.run_main(lambda r: None)
+        self.assertEqual((code, report["errors"]), (0, []))
+        # A control the CI run missed fails, even though the root lab's run caught it.
+        missed = dict(attack, sabotage=[dict(c, detected=False) if c["weakness"] == "ignore_expiry" else c
+                                        for c in attack["sabotage"]])
+        (lab / "attack-suite.json").write_text(json.dumps(missed), encoding="utf-8")
+        code, report = self.run_main(lambda r: None)
+        self.assertEqual(code, 1)
+        self.assertIn("CI-3 H-LEASE-01: sabotage:ignore_expiry was not caught or did not pass in results/",
+                      report["errors"])
+
+    def test_a_pending_claim_is_marked_in_the_rendered_table(self):
+        import contextlib
+        import io
+        from unittest import mock as m
+        real = cc.load_results
+
+        def patched():
+            results = list(real())
+            results[3].pop("ignore_expiry")
+            return tuple(results)
+        written = {}
+        with m.patch.object(cc, "load_results", patched), \
+                m.patch.object(cc.Path, "write_text", lambda self, text, **kw: written.__setitem__(str(self), text)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            cc.main(["--write"])
+        table = next(text for path, text in written.items() if path.endswith("docs/claims.md"))
+        row = next(line for line in table.splitlines() if line.startswith("| H-LEASE-01 |"))
+        self.assertIn("pending lab: sabotage:ignore_expiry", row)
+
+
+
 if __name__ == "__main__":
     unittest.main()
