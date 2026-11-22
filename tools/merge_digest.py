@@ -111,7 +111,11 @@ def collect(repo, since=None, commit=None, span=None):
 def analyze(merge):
     """Lane, escalations, claims affected and approval state of one merge commit."""
     sha = merge["sha"]
-    parent = git("rev-parse", f"{sha}^").strip()
+    try:
+        parent = git("rev-parse", "--verify", f"{sha}^").strip()
+    except subprocess.CalledProcessError:
+        return {"sha": sha, "pr": merge.get("pr"), "lane": "-", "escalations": [], "claims": [],
+                "lab_claims": [], "approval": "first parent could not be resolved", "alert": True}
     paths = [p for p in git("diff", "--name-only", "--no-renames", parent, sha).splitlines() if p]
     lanes_text = policy_check.reader(parent)(policy_check.LANES_FILE)
     if lanes_text is None:

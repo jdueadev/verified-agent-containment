@@ -24,6 +24,10 @@ def full(sha):
     return pc.git("rev-parse", sha).strip()
 
 
+def root_commit():
+    return pc.git("rev-list", "--first-parent", "--max-parents=0", LANE_C).strip()
+
+
 def pr(sha, author="jdueadev-agent", merged_by="jdueadev-agent", head=None, reviews=(), **extra):
     """A pull request that merged `sha`. Its head defaults to `sha` itself, whose tree is
     by definition the merged tree."""
@@ -123,6 +127,13 @@ class AnalyzeTests(unittest.TestCase):
         row = md.analyze({"sha": full(BEFORE_MAP), "pr": pr(full(BEFORE_MAP)), "pulls": [1]})
         self.assertEqual((row["lane"], row["alert"]), ("-", False))
 
+    def test_a_parentless_commit_is_an_alert(self):
+        sha = root_commit()
+        pr_data = pr(sha)
+        row = md.analyze({"sha": sha, "pr": pr_data, "pulls": [1]})
+        self.assertEqual((row["sha"], row["pr"], row["lane"], row["alert"]), (sha, pr_data, "-", True))
+        self.assertIn("first parent", row["approval"])
+
 
 class CollectTests(unittest.TestCase):
     def collect(self, answers):
@@ -189,6 +200,18 @@ class ReportTests(unittest.TestCase):
         code, text = self.run_report(merges, "--fail-on-unapproved")
         self.assertEqual(code, 0)
         self.assertIn("None. Every lane C merge was approved", text)
+
+    def test_report_includes_other_merges_after_a_parentless_commit(self):
+        root, lane_b = root_commit(), full(LANE_B)
+        merges = [{"sha": root, "pr": None, "pulls": []},
+                  {"sha": lane_b, "pr": pr(lane_b), "pulls": [1]}]
+        code, text = self.run_report(merges, "--fail-on-unapproved")
+        self.assertEqual(code, 1)
+        alerts, rest = text.split("## Lane B merges", 1)
+        self.assertIn(root[:7], alerts)
+        self.assertIn("first parent", alerts)
+        self.assertIn(lane_b[:7], rest)
+        self.assertIn("R-DIFF-01", rest)
 
 
 if __name__ == "__main__":
