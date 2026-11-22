@@ -220,9 +220,36 @@ def load_inventory():
     return laws, bend, rust, sabotage, scenarios, live_scenarios, live_sabotage
 
 
+def latest_ci_lab():
+    """The newest CI lab run recorded for a commit on HEAD's history (results/ci/lab-<sha>/,
+    written by tools/lab_record.py and accepted in a lane C evidence PR), or None."""
+    best, best_distance = None, None
+    for path in sorted((ROOT / "results/ci").glob("lab-*")):
+        sha = path.name[4:]
+        if not re.fullmatch(r"[0-9a-f]{40}", sha) or not path.is_dir():
+            continue
+        try:
+            subprocess.run(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", sha, "HEAD"], check=True, capture_output=True)
+            distance = int(subprocess.run(["git", "-C", str(ROOT), "rev-list", "--count", f"{sha}..HEAD"],
+                                          check=True, capture_output=True, text=True).stdout)
+        except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
+            continue
+        if best_distance is None or distance < best_distance:
+            best, best_distance = path, distance
+    return best
+
+
 def load_results():
     mutation = json.loads((ROOT / "results/mutation-check.json").read_text(encoding="utf-8"))
-    suites = [json.loads(p.read_text(encoding="utf-8")) for p in [ROOT / "results/attack-suite.json", ROOT / "results/attack-suite-under-cpu-load.json"] if p.exists()]
+    # The root lab's committed runs, and the newest CI lab run (#53). A name passes only if
+    # every run of it, in every file, passed: a newer run cannot hide a failing older one.
+    ci = latest_ci_lab()
+    attack_files = [ROOT / "results/attack-suite.json", ROOT / "results/attack-suite-under-cpu-load.json"]
+    live_files = [ROOT / "results/live-suite.json"]
+    if ci is not None:
+        attack_files.append(ci / "attack-suite.json")
+        live_files.append(ci / "live-suite.json")
+    suites = [json.loads(p.read_text(encoding="utf-8")) for p in attack_files if p.exists()]
     scenario_ok = {}
     sabotage_ok = {}
     for suite in suites:
@@ -240,13 +267,15 @@ def load_results():
             data = json.loads(path.read_text(encoding="utf-8"))
             diffs[name] = data.get("mismatches", 1) == 0
     live_ok, live_sab_ok = {}, {}
-    live_path = ROOT / "results/live-suite.json"
-    if live_path.exists():
+    for live_path in live_files:
+        if not live_path.exists():
+            continue
         live = json.loads(live_path.read_text(encoding="utf-8"))
         for run in live["runs"]:
-            live_ok[run["scenario"]] = live_ok.get(run["scenario"], True) and bool(run["passed"])
+            if run.get("weakness", "none") == "none":
+                live_ok[run["scenario"]] = live_ok.get(run["scenario"], True) and bool(run["passed"])
         for item in live["sabotage"]:
-            live_sab_ok[item["weakness"]] = bool(item["detected"])
+            live_sab_ok[item["weakness"]] = live_sab_ok.get(item["weakness"], True) and bool(item["detected"])
     return bend_ok, rust_ok, scenario_ok, sabotage_ok, diffs, live_ok, live_sab_ok
 
 
@@ -520,6 +549,7 @@ def main(argv=None):
                     # pending evidence and makes the claim stale, which strict mode (and
                     # so every release) refuses. One that ran and failed is an error.
                     pending.setdefault(cid, []).append(ref)
+                    claim["_pending"] = pending[cid]
                 else:
                     errors.append(f"CI-3 {cid}: {ref} was not caught or did not pass in results/")
         if status == "checked-bounded":
@@ -617,6 +647,8 @@ def render(claims, effective, verdict_ok, n_laws, n_bend, n_rust, n_sab):
         platforms = "; ".join(f"{p['name']} @{p['commit']}: {p['result']}" + (" (predates later changes)" if p.get("_changed") else "")
                               for p in claim.get("platforms", []))
         status = effective[claim["id"]]
+        if claim.get("_pending"):
+            status += " (pending lab: " + ", ".join(claim["_pending"]) + ")"
         if claim.get("depends_on"):
             status += " (needs " + ", ".join(claim["depends_on"]) + ")"
         statement = claim["statement"] + (f" *Limits: {claim['limits']}*" if claim.get("limits") else "")
