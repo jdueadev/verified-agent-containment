@@ -395,6 +395,34 @@ class KernelPurityTests(unittest.TestCase):
             with self.subTest(snippet=snippet):
                 self.assertTrue(self.errors(self.PURE + snippet + "\n"))
 
+    def test_the_review_bypasses_are_refused(self):
+        # Each of these got past the first version of the check (CodeRabbit on #84).
+        bypasses = {
+            "raw identifier": 'const P: &str = r#include_str!("../../../examples/x");',
+            "raw include": 'r#include!("../../containment-wasm/src/payload.rs");',
+            "renamed import": 'use core::include as load;\nload!("../../containment-wasm/src/payload.rs");',
+            "path in cfg_attr": '#[cfg_attr(all(), path = "../../containment-wasm/src/payload.rs")]\npub mod payload;',
+            "nested cfg_attr": '#[cfg_attr(all(), cfg_attr(all(), path = "x.rs"))]\nmod x;',
+            "global_asm": 'core::arch::global_asm!("nop");',
+            "feature gate": "#![feature(asm_experimental_arch)]",
+            "export": "#[no_mangle]\npub fn exported() {}",
+            "link section": '#[link_section = ".init_array"]\npub static S: u8 = 0;',
+            "extern block": 'extern "C" { fn f(); }',
+        }
+        for name, snippet in bypasses.items():
+            with self.subTest(name=name):
+                self.assertTrue(self.errors(self.PURE + snippet + "\n"))
+
+    def test_root_attributes_count_only_at_the_top_of_the_crate(self):
+        moved = self.PURE.replace("#![forbid(unsafe_code)]\n", "") + "pub mod marker {\n    #![forbid(unsafe_code)]\n}\n"
+        self.assertTrue(any("forbid(unsafe_code)" in e for e in self.errors(moved)))
+        late = self.PURE.replace("#![no_std]\n", "") + "#![no_std]\n"
+        self.assertTrue(any("no_std" in e for e in self.errors(late)))
+        hidden = self.PURE.replace("#![no_std]", "#![cfg_attr(any(), no_std)]")
+        self.assertTrue(any("no_std" in e for e in self.errors(hidden)))
+        extra = self.PURE.replace("#![forbid(unsafe_code)]\n", "#![forbid(unsafe_code)]\n#![deny(clippy::panic)]\n")
+        self.assertEqual(self.errors(extra), [])
+
     def test_every_kernel_file_is_checked_and_a_missing_root_fails(self):
         self.assertTrue(self.errors(self.PURE, {"crates/containment-kernel/src/m.rs": "use std::io;\n"}))
         self.assertTrue(pc.kernel_purity_errors({}))

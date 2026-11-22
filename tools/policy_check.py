@@ -294,7 +294,58 @@ def sabotage_default_errors(manifest_text):
 # attributes that keep it pure are checked here on every commit (#83). Tokens, not
 # text: a comment or a string that names `std` is not code.
 KERNEL_ROOT_ATTRIBUTES = (("no_std",), ("forbid", "(", "unsafe_code", ")"))
-KERNEL_FORBIDDEN_MACROS = {"include", "include_str", "include_bytes", "env", "option_env"}
+# Identifiers the kernel may not contain at all, in any position: a call, an import,
+# an alias, a path or an attribute argument (including inside cfg_attr). The kernel
+# uses none of them, so refusing the name outright cannot be dodged by renaming
+# (`use core::include as load`) or by moving it (`#[cfg_attr(all(), path = ..)]`).
+KERNEL_FORBIDDEN_IDENTS = {
+    # crates beyond core, and foreign code
+    "std": "depends on more than `core`",
+    "alloc": "depends on more than `core`",
+    "extern": "declares foreign code or another crate",
+    # build-time reads of files or the environment
+    "include": "reads a file at build time",
+    "include_str": "reads a file at build time",
+    "include_bytes": "reads a file at build time",
+    "env": "reads the environment at build time",
+    "option_env": "reads the environment at build time",
+    # source from elsewhere, and code that bypasses forbid(unsafe_code)
+    "path": "loads source from elsewhere (`#[path]`)",
+    "global_asm": "injects machine code without `unsafe`",
+    "asm": "injects machine code",
+    "naked_asm": "injects machine code",
+    "link": "links foreign code",
+    "link_section": "places data in a chosen link section",
+    "no_mangle": "exports a symbol",
+    "export_name": "exports a symbol",
+    "used": "keeps a symbol for the linker",
+    "linkage": "sets symbol linkage",
+    "feature": "enables unstable features",
+}
+
+
+def _ident(kind, text):
+    """A raw identifier (`r#include`) means the same name as `include`."""
+    return text[2:] if kind == "ident" and text.startswith("r#") else text
+
+
+def _leading_inner_attributes(toks):
+    """The token lists of the `#![...]` attributes that open the file, which are the
+    ones that apply to the whole crate. One inside `mod m { ... }` applies to `m` only."""
+    attrs, i = [], 0
+    while toks[i:i + 3] == ["#", "!", "["]:
+        depth, j = 0, i + 2
+        while j < len(toks):
+            depth += toks[j] == "["
+            depth -= toks[j] == "]"
+            if depth == 0:
+                break
+            j += 1
+        if j >= len(toks):
+            break
+        attrs.append(toks[i + 3:j])
+        i = j + 1
+    return attrs
 
 
 def kernel_purity_errors(files):
@@ -305,24 +356,17 @@ def kernel_purity_errors(files):
         return [f"{root}: missing, so the kernel's purity cannot be checked"]
     for path, text in sorted(files.items()):
         try:
-            toks = [tok for kind, tok in rust_tokens.code_tokens(text) if kind != "doc"]
+            toks = [_ident(kind, tok) for kind, tok in rust_tokens.code_tokens(text) if kind != "doc"]
         except rust_tokens.LexError as error:
             out.append(f"{path}: cannot be read ({error}), so the kernel's purity cannot be checked")
             continue
         if path == root:
+            leading = _leading_inner_attributes(toks)
             for attr in KERNEL_ROOT_ATTRIBUTES:
-                if not any(toks[i:i + 3 + len(attr) + 1] == ["#", "!", "[", *attr, "]"] for i in range(len(toks))):
-                    out.append(f"{path}: the crate attribute #![{''.join(attr)}] is missing")
-        for i, tok in enumerate(toks):
-            nxt = toks[i + 1] if i + 1 < len(toks) else ""
-            if tok in ("std", "alloc"):
-                out.append(f"{path}: uses `{tok}`; the kernel depends on nothing beyond `core`")
-            elif tok == "extern" and nxt == "crate":
-                out.append(f"{path}: `extern crate` brings in another crate")
-            elif tok in KERNEL_FORBIDDEN_MACROS and nxt == "!":
-                out.append(f"{path}: `{tok}!` reads a file or the environment at build time")
-            elif tok == "path" and i >= 2 and toks[i - 1] == "[" and toks[i - 2] == "#":
-                out.append(f"{path}: `#[path]` loads source from elsewhere")
+                if list(attr) not in leading:
+                    out.append(f"{path}: the crate attribute #![{''.join(attr)}] is missing from the top of the file")
+        for tok in sorted(set(toks) & set(KERNEL_FORBIDDEN_IDENTS)):
+            out.append(f"{path}: uses `{tok}`, which {KERNEL_FORBIDDEN_IDENTS[tok]}")
     return out
 
 
