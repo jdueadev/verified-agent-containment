@@ -90,3 +90,24 @@ jobs:
           python3 tools/policy_check.py invariants --ref "$HEAD_SHA" > "$RUNNER_TEMP/invariants.json" || code=$?
           { echo '```json'; cat "$RUNNER_TEMP/invariants.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit "$code"
+
+      - name: Workflow lint of the head, by the base branch's lint
+        # Secrets only in main-only environments, and no event text in scripts (#137).
+        # The allowlist comes from this base checkout, so a pull request cannot add to it.
+        if: ${{ !cancelled() }}
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Probe the file, not a run of it: a lint that crashes must fail this step, not skip it.
+          if [ ! -f tools/workflow_lint.py ]; then
+            echo "The base branch has no workflow lint yet."
+            exit 0
+          fi
+          git fetch --quiet origin "pull/$PR/head"
+          test "$(git rev-parse FETCH_HEAD)" = "$HEAD_SHA"
+          # Not in a pipeline, so the lint's exit status survives.
+          code=0
+          python3 tools/workflow_lint.py --ref "$HEAD_SHA" > "$RUNNER_TEMP/workflow-lint.json" || code=$?
+          { echo '```json'; cat "$RUNNER_TEMP/workflow-lint.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"

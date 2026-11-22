@@ -1,0 +1,5 @@
+# Environments whose secrets a workflow job may read (tools/workflow_lint.py, #137).
+# Add a name here only after the environment's deployment policy in the
+# repository settings is limited to the `main` branch (branch type, not tag).
+# The settings detective (#137, stage 5) is meant to keep checking that.
+secret_environments = ["evidence"]
