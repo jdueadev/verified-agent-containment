@@ -16,6 +16,7 @@
 /tools/corpus_run.py @jdueadev
 /tools/pins_check.py @jdueadev
 /tools/workflow_lint.py @jdueadev
+/tools/gate_check.py @jdueadev
 /tools/rust_tokens.py @jdueadev
 /tools/mutation_check.py @jdueadev
 /tools/differential.mjs @jdueadev
