@@ -107,8 +107,9 @@ Agents push under their own identity (`docs/decisions/0003-lane-c-friction.md`).
 For lane C, the maintainer's approval of a pull request's head commit is the
 gate: `policy` passes only on an approved head, and auto-merge does the rest.
 A push after the approval needs a new one. The agent identity has no
-administration rights and no Workflows permission, is not a code owner and is on no bypass list. A
-change under `.github/workflows/` is therefore pushed by the maintainer.
+administration rights and no Workflows permission, is not a code owner and is
+on no bypass list. A change under `.github/workflows/` is therefore pushed by
+the maintainer.
 
 ## When your change makes a claim stale
 
