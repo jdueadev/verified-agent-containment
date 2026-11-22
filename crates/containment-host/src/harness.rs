@@ -764,8 +764,24 @@ fn execute(scenario: &str, weakness: &str, sequence: usize) -> Result<Value, Box
             checks.add("grant_readable", value["read"] == "granted\n", value["read"].clone());
             let refused = |v: &Value| v["succeeded"] == false;
             checks.add("grant_not_writable", refused(&value["write"]) && refused(&value["mkdir"]), json!({"write": value["write"], "mkdir": value["mkdir"]}));
-            // The file is 0755 and readable: only noexec on the mount refuses it.
-            checks.add("grant_not_executable", refused(&value["exec"]) && value["exec"]["errno"] == libc::EACCES, value["exec"].clone());
+            // The probe execs an existing regular 0755 ELF the agent can read, with a bare
+            // execve. The kernel refuses an exec from a noexec mount in do_open_execat with
+            // EACCES (path_noexec), and EACCES is the only pass. Any other errno, ENOENT
+            // included, or a target that is not such a file, means the probe never reached
+            // that check: a failure, labelled so.
+            let exec = &value["exec"];
+            let target = &exec["target"];
+            let valid = target["regular"] == true && target["elf"] == true && target["mode"] == 0o755;
+            let verdict = if !valid {
+                "probe invalid"
+            } else if exec["succeeded"] == true {
+                "executed"
+            } else if refused(exec) && exec["errno"] == libc::EACCES {
+                "refused by noexec"
+            } else {
+                "probe invalid"
+            };
+            checks.add("grant_not_executable", verdict == "refused by noexec", json!({"verdict": verdict, "exec": exec}));
             let (exact, detail) = agent_view_exact(agent_value(agent, "view"), &grant_fixture_view(&grant));
             checks.add("agent_view_exact", exact, detail);
             // The results list what the agent could see: exactly the one grant, both ways.

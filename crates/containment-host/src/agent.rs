@@ -264,22 +264,77 @@ fn grant_probe(probe: &Value) -> Value {
         Ok(()) => json!({"succeeded": true}),
         Err(e) => json!({"succeeded": false, "errno": e.raw_os_error()}),
     };
-    let exec = std::process::Command::new(dir.join("sub/tool"))
-        .env_clear()
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|mut child| {
-            let _ = child.kill();
-            let _ = child.wait();
-        });
+    let tool = dir.join("sub/tool");
+    // What was exec'd, so the harness can tell a valid probe (an existing 0755 ELF) from
+    // one that never reached the noexec check.
+    let target = fs::symlink_metadata(&tool).map(|meta| {
+        use std::os::unix::fs::PermissionsExt;
+        let mut head = [0_u8; 4];
+        let elf = fs::File::open(&tool).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut head)).is_ok() && &head == b"\x7fELF";
+        json!({"regular": meta.is_file(), "mode": meta.permissions().mode() & 0o7777, "elf": elf})
+    });
+    let mut exec = exec_errno(&tool);
+    exec["target"] = target.unwrap_or_else(|e| json!({"error": e.raw_os_error()}));
     json!({
         "read": fs::read_to_string(dir.join("readme.txt")).ok(),
         "write": attempt(fs::write(dir.join("written-by-agent"), "x")),
         "mkdir": attempt(fs::create_dir(dir.join("made-by-agent"))),
-        "exec": attempt(exec),
+        "exec": exec,
     })
+}
+
+/// Runs `path` with a bare execve in a forked child and reports execve's own errno. A
+/// CLOEXEC pipe carries the errno back: an exec that succeeds closes it unwritten.
+/// Nothing else is opened in the child (the sandbox has no /dev/null), so an error can
+/// only come from execve.
+fn exec_errno(path: &Path) -> Value {
+    let Ok(file) = CString::new(path.as_os_str().as_encoded_bytes()) else { return json!({"succeeded": false, "error": "path has NUL"}) };
+    let mut pipe = [0; 2];
+    // SAFETY: `pipe` is a valid two-element output array.
+    if unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return json!({"succeeded": false, "error": format!("pipe2: {}", std::io::Error::last_os_error())});
+    }
+    let argv = [file.as_ptr(), std::ptr::null()];
+    let envp = [std::ptr::null::<libc::c_char>()];
+    // SAFETY: the child only calls async-signal-safe functions (close, execve, write,
+    // _exit) on memory prepared before the fork.
+    let child = unsafe { libc::fork() };
+    if child == 0 {
+        // SAFETY: as above; `argv` and `envp` are NULL-terminated arrays of live strings.
+        unsafe {
+            libc::close(pipe[0]);
+            libc::execve(file.as_ptr(), argv.as_ptr(), envp.as_ptr());
+            let errno = *libc::__errno_location();
+            libc::write(pipe[1], (&errno as *const libc::c_int).cast(), std::mem::size_of::<libc::c_int>());
+            libc::_exit(127);
+        }
+    }
+    // SAFETY: closing this process's copy of the write end.
+    unsafe { libc::close(pipe[1]) };
+    if child < 0 {
+        // SAFETY: closing the read end this function opened.
+        unsafe { libc::close(pipe[0]) };
+        return json!({"succeeded": false, "error": format!("fork: {}", std::io::Error::last_os_error())});
+    }
+    let mut errno: libc::c_int = 0;
+    // SAFETY: reads at most size_of::<c_int>() bytes into `errno`.
+    let got = unsafe { libc::read(pipe[0], (&mut errno as *mut libc::c_int).cast(), std::mem::size_of::<libc::c_int>()) };
+    // SAFETY: closing the read end, then reaping the child this function forked.
+    unsafe {
+        libc::close(pipe[0]);
+        if got == 0 {
+            libc::kill(child, libc::SIGKILL);
+        }
+        let mut status = 0;
+        libc::waitpid(child, &mut status, 0);
+    }
+    if got == 0 {
+        json!({"succeeded": true})
+    } else if got == std::mem::size_of::<libc::c_int>() as isize {
+        json!({"succeeded": false, "errno": errno})
+    } else {
+        json!({"succeeded": false, "error": "no errno from the child"})
+    }
 }
 
 /// Counts files the agent may execute that carry a Windows executable header.
@@ -489,5 +544,25 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             idle()
         }
         other => Err(format!("unknown scenario {other}").into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The exec probe reports execve's own errno: success, a missing file and a file
+    /// without execute permission are told apart (#88).
+    #[test]
+    fn the_exec_probe_reports_execves_errno() {
+        assert_eq!(exec_errno(Path::new("/bin/true")), json!({"succeeded": true}));
+        assert_eq!(exec_errno(Path::new("/nonexistent/tool")), json!({"succeeded": false, "errno": libc::ENOENT}));
+        let file = std::env::temp_dir().join(format!("vac-exec-probe-{}", std::process::id()));
+        fs::copy("/bin/true", &file).expect("copy");
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).expect("chmod");
+        let result = exec_errno(&file);
+        let _ = fs::remove_file(&file);
+        assert_eq!(result, json!({"succeeded": false, "errno": libc::EACCES}));
     }
 }
