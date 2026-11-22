@@ -90,10 +90,18 @@ def git(*args):
 
 
 def reader(ref):
+    """Read files of one commit. A path the commit does not contain reads as None;
+    any other git failure (an unknown ref, a broken repository) is raised. Treating
+    every failure as "absent" would make the ratchets compare against nothing on
+    the base side and escalate nothing, which fails open."""
+    commit = git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").strip()
+
     def get(path):
         try:
-            return git("show", f"{ref}:{path}").replace("\r\n", "\n")
+            return git("show", f"{commit}:{path}").replace("\r\n", "\n")
         except subprocess.CalledProcessError:
+            if git("ls-tree", "--name-only", commit, "--", path).strip():
+                raise
             return None
     return get
 
@@ -235,7 +243,7 @@ def approved(reviews, owner, head_sha):
     latest = None
     flat = [r for page in reviews for r in (page if isinstance(page, list) else [page])]
     for review in flat:
-        if (review.get("user") or {}).get("login", "").lower() == owner.lstrip("@").lower() \
+        if ((review.get("user") or {}).get("login") or "").lower() == owner.lstrip("@").lower() \
                 and review.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
             latest = review
     return bool(latest) and latest["state"] == "APPROVED" and latest.get("commit_id") == head_sha
@@ -307,7 +315,13 @@ def main(argv=None):
         # change cannot reclassify itself, and a path the target has since
         # promoted is judged by the newer rule. The diff and the ratchets still
         # compare against --base, the point the change started from.
-        owner, lanes = load_lanes(reader(args.map_ref or args.base)(LANES_FILE) or read(LANES_FILE))
+        map_ref = args.map_ref or args.base
+        lanes_text = reader(map_ref)(LANES_FILE)
+        if lanes_text is None:
+            sys.exit(f"policy: {map_ref} has no {LANES_FILE}; refusing to classify against another lane map")
+        owner, lanes = load_lanes(lanes_text)
+        if args.head_sha and git("rev-parse", "--verify", f"{args.head}^{{commit}}").strip() != args.head_sha:
+            sys.exit(f"policy: --head {args.head} is not --head-sha {args.head_sha}; an approval is of one commit")
         paths = [p for p in git("diff", "--name-only", "--no-renames", args.base, args.head).splitlines() if p]
         result = classify(paths, base_get, head_get, lanes)
         needs_owner = result["lane"] == "C" or args.fork

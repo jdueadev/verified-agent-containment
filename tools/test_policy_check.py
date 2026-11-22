@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -210,9 +211,16 @@ class ApprovalTests(unittest.TestCase):
         reviews.append(self.review("jdueadev", "APPROVED"))
         self.assertTrue(pc.approved(reviews, "@jdueadev", "h1"))
 
+    def test_an_approval_dismissed_in_place_counts_for_nothing(self):
+        approval = self.review("jdueadev", "APPROVED")
+        approval["state"] = "DISMISSED"
+        self.assertFalse(pc.approved([approval], "@jdueadev", "h1"))
+
     def test_a_deleted_reviewer_is_nobody(self):
         ghost = {"user": None, "state": "APPROVED", "commit_id": "h1"}
         self.assertFalse(pc.approved([ghost], "@jdueadev", "h1"))
+        no_login = {"user": {"login": None}, "state": "APPROVED", "commit_id": "h1"}
+        self.assertFalse(pc.approved([no_login], "@jdueadev", "h1"))
         self.assertTrue(pc.approved([ghost, self.review("jdueadev", "APPROVED")], "@jdueadev", "h1"))
 
     def test_an_unknown_commit_never_matches(self):
@@ -232,41 +240,99 @@ class EnforceExitTests(unittest.TestCase):
 
     LANES_TEXT = (ROOT / "ci/lanes.toml").read_text(encoding="utf-8")
 
-    def run_classify(self, paths, *extra, reviews=None):
+    def run_classify(self, paths, *extra, reviews=None, head_commit=None, trees=None):
+        """Return (exit code, parsed result). Refs b, h and m are base, head and map-ref."""
         files = dict(BASE, **{"ci/lanes.toml": self.LANES_TEXT})
+        trees = trees or {}
         argv = ["classify", "--base", "b", "--head", "h", *extra]
+        if head_commit is None and "--head-sha" in extra:
+            head_commit = extra[extra.index("--head-sha") + 1]
+
+        def fake_git(*args):
+            return (head_commit or "") + "\n" if args[0] == "rev-parse" else "\n".join(paths) + "\n"
+
+        out = io.StringIO()
         with tempfile.TemporaryDirectory() as tmp:
             if reviews is not None:
                 review_file = Path(tmp) / "reviews.json"
                 review_file.write_text(json.dumps(reviews), encoding="utf-8")
                 argv += ["--reviews", str(review_file)]
-            with mock.patch.object(pc, "reader", lambda ref: files.get), \
-                    mock.patch.object(pc, "git", lambda *args: "\n".join(paths) + "\n"), \
-                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                return pc.main(argv)
+            with mock.patch.object(pc, "reader", lambda ref: trees.get(ref, files).get), \
+                    mock.patch.object(pc, "git", fake_git), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                code = pc.main(argv)
+        return code, json.loads(out.getvalue())
 
     def approval(self, sha="h1"):
         return [{"user": {"login": "jdueadev"}, "state": "APPROVED", "commit_id": sha}]
 
     def test_lane_c_without_approval_fails_only_when_enforced(self):
-        self.assertEqual(self.run_classify(["AGENTS.md"], "--head-sha", "h1", "--enforce", reviews=[]), 1)
-        self.assertEqual(self.run_classify(["AGENTS.md"], "--head-sha", "h1", reviews=[]), 0)
+        code, result = self.run_classify(["AGENTS.md"], "--head-sha", "h1", "--enforce", reviews=[])
+        self.assertEqual((code, result["lane"], result["needs_maintainer"], result["approved"]), (1, "C", True, False))
+        code, result = self.run_classify(["AGENTS.md"], "--head-sha", "h1", reviews=[])
+        self.assertEqual((code, result["approved"]), (0, False))
 
     def test_lane_c_approved_at_this_head_passes(self):
-        self.assertEqual(self.run_classify(["AGENTS.md"], "--head-sha", "h1", "--enforce", reviews=self.approval()), 0)
+        code, result = self.run_classify(["AGENTS.md"], "--head-sha", "h1", "--enforce", reviews=self.approval())
+        self.assertEqual((code, result["lane"], result["approved"]), (0, "C", True))
 
     def test_lane_c_approved_at_an_older_head_fails(self):
-        self.assertEqual(self.run_classify(["AGENTS.md"], "--head-sha", "h2", "--enforce", reviews=self.approval("h1")), 1)
+        code, result = self.run_classify(["AGENTS.md"], "--head-sha", "h2", "--enforce", reviews=self.approval("h1"))
+        self.assertEqual((code, result["approved"]), (1, False))
 
     def test_a_fork_needs_approval_whatever_its_lane(self):
-        self.assertEqual(self.run_classify(["docs/reference.md"], "--head-sha", "h1", "--fork", "--enforce", reviews=[]), 1)
-        self.assertEqual(self.run_classify(["docs/reference.md"], "--head-sha", "h1", "--enforce", reviews=[]), 0)
+        code, result = self.run_classify(["docs/reference.md"], "--head-sha", "h1", "--fork", "--enforce", reviews=[])
+        self.assertEqual((code, result["lane"], result["needs_maintainer"]), (1, "A", True))
+        code, result = self.run_classify(["docs/reference.md"], "--head-sha", "h1", "--enforce", reviews=[])
+        self.assertEqual((code, result["lane"], result["needs_maintainer"]), (0, "A", False))
+
+    def test_the_lane_map_comes_from_the_map_ref_not_the_head(self):
+        promoted = self.LANES_TEXT.replace('  "AGENTS.md",\n', "", 1).replace('A = [\n', 'A = [\n  "AGENTS.md",\n', 1)
+        self.assertNotEqual(promoted, self.LANES_TEXT)
+        head = dict(BASE, **{"ci/lanes.toml": promoted})
+        code, result = self.run_classify(["AGENTS.md", "ci/lanes.toml"], "--map-ref", "m", "--head-sha", "h1",
+                                         "--enforce", reviews=[], trees={"h": head})
+        self.assertEqual((code, result["lane"]), (1, "C"))
+
+    def test_a_missing_lane_map_is_refused(self):
+        with self.assertRaises(SystemExit) as stop:
+            self.run_classify(["AGENTS.md"], "--map-ref", "m", "--head-sha", "h1", "--enforce", reviews=[],
+                              trees={"m": dict(BASE)})
+        self.assertIn("has no ci/lanes.toml", str(stop.exception.code))
+
+    def test_an_approval_of_another_commit_than_the_one_classified_is_refused(self):
+        with self.assertRaises(SystemExit) as stop:
+            self.run_classify(["AGENTS.md"], "--head-sha", "h1", "--enforce", reviews=self.approval(), head_commit="h9")
+        self.assertIn("is not --head-sha", str(stop.exception.code))
 
     def test_reviews_or_enforce_without_a_head_commit_is_refused(self):
-        for extra, reviews in ((("--enforce",), None), ((), self.approval())):
+        ghost_commit = [{"user": {"login": "jdueadev"}, "state": "APPROVED", "commit_id": None}]
+        for extra, reviews in ((("--enforce",), None), ((), self.approval()),
+                               (("--head-sha", "", "--enforce"), ghost_commit)):
             with self.subTest(extra=extra), self.assertRaises(SystemExit) as stop:
                 self.run_classify(["AGENTS.md"], *extra, reviews=reviews)
             self.assertEqual(stop.exception.code, 2)
+
+
+class ReaderTests(unittest.TestCase):
+    """reader() against this repository: only a path the commit lacks reads as absent."""
+
+    def test_a_missing_path_is_none_and_a_present_one_is_read(self):
+        get = pc.reader("HEAD")
+        self.assertIsNone(get("no/such/file.txt"))
+        self.assertIn("lanes", get("ci/lanes.toml"))
+
+    def test_a_failed_read_of_a_present_path_is_an_error(self):
+        def fake_git(*args):
+            if args[0] == "show":
+                raise subprocess.CalledProcessError(128, ["git", *args])
+            return "c0ffee\n" if args[0] == "rev-parse" else "claims.toml\n"
+        with mock.patch.object(pc, "git", fake_git), self.assertRaises(subprocess.CalledProcessError):
+            pc.reader("HEAD")("claims.toml")
+
+    def test_an_unknown_ref_is_an_error_not_an_empty_tree(self):
+        with self.assertRaises(subprocess.CalledProcessError):
+            pc.reader("refs/heads/no-such-branch-for-policy-tests")
 
 
 class CodeownersAndInvariantTests(unittest.TestCase):
