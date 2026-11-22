@@ -80,6 +80,18 @@ pull request from this repository, whatever its base. That covers re-runs
 started by GITHUB_TOKEN, which may not fire `workflow_run`, and pull requests
 retargeted away from main, whose new base's workflows the agent controls.
 
+The sweep works in two passes. First it downgrades, cheaply: a head whose open
+pull requests from this repository include none into main gets its existing
+gate check runs set to failure, with no fetching and no checkers. Then it
+judges the heads of pull requests into main in full, oldest first, until its
+time budget runs out. Heads it did not reach wait for the next sweep. Each
+checker has its own timeout. A sweep that produces nothing ends red.
+
+Each batch carries the time it was judged, and each check run stores that time
+in `external_id`. post never overwrites a check run with a verdict judged
+earlier than the one it holds. So a slow triggered run cannot undo a sweep's
+newer downgrade.
+
 Known residual: a pull request retargeted away from main and back within one
 sweep keeps its earlier gate results until the gate runs for the `edited`
 event, which takes about a minute. It matters only if the owner withdrew an
@@ -122,6 +134,8 @@ RUN_WORKFLOWS = {
 }
 POLICY = "gate/policy"
 CONTEXTS = [c for jobs in RUN_WORKFLOWS.values() for c in jobs] + [POLICY]
+SWEEP_BUDGET_SECONDS = 30 * 60
+CHECKER_TIMEOUT_SECONDS = 10 * 60
 ISSUER = "https://token.actions.githubusercontent.com"
 JWKS_URL = ISSUER + "/.well-known/jwks"
 AUDIENCE = "gate"
@@ -371,9 +385,17 @@ def signing_keys(tries=3, sleep=time.sleep):
 
 
 def sweep_heads(repo):
-    """The head of every open pull request from this repository, whatever its base."""
-    prs = pages(f"repos/{repo}/pulls?state=open&per_page=100")
-    return sorted({p["head"]["sha"] for p in prs if (p["head"].get("repo") or {}).get("full_name") == repo})
+    """(heads to judge in full, heads to downgrade) over every open pull request from
+    this repository. A head is judged when an open PR into main has it, oldest PR
+    first; otherwise it is only downgraded."""
+    prs = [p for p in pages(f"repos/{repo}/pulls?state=open&sort=created&direction=asc&per_page=100")
+           if (p["head"].get("repo") or {}).get("full_name") == repo]
+    into_main = []
+    for p in prs:
+        if p["base"]["ref"] == "main" and p["head"]["sha"] not in into_main:
+            into_main.append(p["head"]["sha"])
+    away = sorted({p["head"]["sha"] for p in prs} - set(into_main))
+    return into_main, away
 
 
 def fetch_head(pr):
@@ -398,7 +420,8 @@ def policy_result(pr, merge_base, reviews_file, enforce):
              ("invariants", [sys.executable, str(ROOT / "tools/policy_check.py"), "invariants", "--ref", head]),
              ("workflow lint", [sys.executable, str(ROOT / "tools/workflow_lint.py"), "--ref", head])]
     failed = [name for name, cmd in steps
-              if subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True).returncode != 0]
+              if subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
+                                timeout=CHECKER_TIMEOUT_SECONDS).returncode != 0]
     if failed:
         return False, f"main's checkers failed on this head: {', '.join(failed)}. The `policy` run's log has the details."
     return True, "main's lane classifier, invariants and workflow lint passed on this head."
@@ -435,8 +458,10 @@ def judge(head_sha):
 
 def checked_batch(data, head_sha=None):
     """One head's verdicts, as judge produces them. With `head_sha`, it must be that commit."""
-    if not isinstance(data, dict) or set(data) != {"head_sha", "pr", "verdicts"}:
-        raise ValueError("verdicts: expected head_sha, pr and verdicts")
+    if not isinstance(data, dict) or set(data) != {"head_sha", "pr", "judged_at", "verdicts"}:
+        raise ValueError("verdicts: expected head_sha, pr, judged_at and verdicts")
+    if not isinstance(data["judged_at"], int) or isinstance(data["judged_at"], bool) or data["judged_at"] <= 0:
+        raise ValueError("verdicts: bad judged_at")
     if not SHA.fullmatch(str(data["head_sha"])) or (head_sha is not None and data["head_sha"] != head_sha) \
             or not (data["pr"] is None or (isinstance(data["pr"], int) and not isinstance(data["pr"], bool))):
         raise ValueError("verdicts: bad head_sha or pr")
@@ -466,6 +491,12 @@ def checked_verdicts(text, head_sha=None):
     return data
 
 
+def judged_at(check_run):
+    """The judging time a gate check run holds in external_id, or 0."""
+    value = str(check_run.get("external_id") or "")
+    return int(value) if value.isdigit() else 0
+
+
 def post(data, app_id, repo):
     """Failures first, and every context is attempted even if one write fails, so a
     failed write cannot leave the contexts after it standing on an old success."""
@@ -476,25 +507,29 @@ def post(data, app_id, repo):
         try:
             # Without a pull request into main, only existing check runs are updated (to
             # failure); creating gate results for a commit no PR into main has is noise.
-            post_one(v, head, where, app_id, repo, create=data["pr"] is not None)
+            post_one(v, head, where, app_id, repo, create=data["pr"] is not None, at=data["judged_at"])
         except subprocess.CalledProcessError as error:
             errors.append(f"{v['context']}: {error.stderr or error}")
     if errors:
         raise RuntimeError("; ".join(errors))
 
 
-def post_one(v, head, where, app_id, repo, create=True):
+def post_one(v, head, where, app_id, repo, create=True, at=0):
     name = urllib.parse.quote(v["context"], safe="")
     mine = [c for c in pages(f"repos/{repo}/commits/{head}/check-runs?check_name={name}"
                              f"&app_id={app_id}&filter=all&per_page=100")
             if str((c.get("app") or {}).get("id")) == str(app_id) and c.get("name") == v["context"]]
+    newer = [c for c in mine if judged_at(c) > at]
+    if newer:
+        print(f"{v['context']}: left as is; it holds a verdict judged after this one")
+        return
     status, conclusion, summary = v["status"], v["conclusion"], v["summary"]
     if mine and status == "in_progress":
         # A completed run is not moved back to in_progress. "Not decided yet" is posted
         # as a failure, so it blocks and cannot leave an earlier success standing.
         status, conclusion, summary = "completed", "failure", "Not decided yet: " + summary
     summary = (where + summary)[:SUMMARY_LIMIT]
-    body = {"name": v["context"], "head_sha": head, "status": status,
+    body = {"name": v["context"], "head_sha": head, "status": status, "external_id": str(at),
             "output": {"title": v["context"], "summary": summary}}
     if status == "completed":
         body["conclusion"] = conclusion
@@ -508,15 +543,23 @@ def post_one(v, head, where, app_id, repo, create=True):
     print(f"{v['context']}: {status} {conclusion or ''}")
 
 
+def downgrade(head_sha):
+    """The sweep's cheap pass: no open PR into main has this head, so every existing
+    gate check run on it fails. post only updates; it creates nothing for pr None."""
+    return {"head_sha": head_sha, "pr": None, "judged_at": int(time.time()),
+            "verdicts": all_failed("No open pull request into main has this head commit.")}
+
+
 def judged(head_sha):
     """One batch for one head; any error fails every context with no PR."""
+    at = int(time.time())
     try:
         pr, result = judge(head_sha)
     except Exception as error:  # noqa: BLE001  every failure must fail the contexts
         print(f"gate_check: judging {head_sha} failed: {error} {getattr(error, 'stderr', '') or ''}".strip(),
               file=sys.stderr)
         pr, result = None, all_failed(f"Judging this commit failed ({type(error).__name__}); see the gate run's log.")
-    return {"head_sha": head_sha, "pr": pr, "verdicts": result}
+    return {"head_sha": head_sha, "pr": pr, "judged_at": at, "verdicts": result}
 
 
 def main(argv=None):
@@ -536,12 +579,19 @@ def main(argv=None):
     if args.command == "judge":
         if args.sweep:
             try:
-                heads = sweep_heads(os.environ["GITHUB_REPOSITORY"])
+                into_main, away = sweep_heads(os.environ["GITHUB_REPOSITORY"])
             except Exception as error:  # noqa: BLE001  nothing known to fail; the next sweep retries
                 sys.exit(f"gate_check: sweep could not list pull requests: {error}")
+            batches = [downgrade(h) for h in away]
+            start = time.monotonic()
+            for head in into_main:
+                if time.monotonic() - start > SWEEP_BUDGET_SECONDS:
+                    waiting = len(into_main) - (len(batches) - len(away))
+                    print(f"Sweep budget spent; {waiting} head(s) wait for the next sweep.", file=sys.stderr)
+                    break
+                batches.append(judged(head))
         else:
-            heads = [args.head_sha]
-        batches = [judged(h) for h in heads]
+            batches = [judged(args.head_sha)]
         print(json.dumps(batches, indent=2))
         if args.out:
             with open(args.out, "a", encoding="utf-8") as handle:
@@ -553,11 +603,10 @@ def main(argv=None):
         text = os.environ.get("VERDICTS", "")
         if not text:
             if args.sweep:
-                print("The sweep's judge produced nothing; the next sweep retries.")
-                return 0
+                raise RuntimeError("the sweep's judge produced nothing; the next sweep retries")
             # judge itself died (it always writes verdicts otherwise): fail every context
             # on this commit that already has a check run.
-            text = json.dumps([{"head_sha": args.head_sha, "pr": None,
+            text = json.dumps([{"head_sha": args.head_sha, "pr": None, "judged_at": int(time.time()),
                                 "verdicts": all_failed(f"The judge job ended '{args.judge_result}'.")}])
         errors = []
         for batch in checked_verdicts(text, None if args.sweep else args.head_sha):

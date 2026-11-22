@@ -166,7 +166,7 @@ class WorkflowChanges(unittest.TestCase):
 
 def good():
     verdicts = [{"context": c, "status": "completed", "conclusion": "success", "summary": "s"} for c in gc.CONTEXTS]
-    return {"head_sha": HEAD, "pr": 7, "verdicts": verdicts}
+    return {"head_sha": HEAD, "pr": 7, "judged_at": 1000, "verdicts": verdicts}
 
 
 class PostInput(unittest.TestCase):
@@ -195,6 +195,8 @@ class PostInput(unittest.TestCase):
         d = good(); d["verdicts"].append(dict(d["verdicts"][0])); bad.append(d)
         d = good(); d["verdicts"][0]["details_url"] = "x"; bad.append(d)
         d = good(); d["pr"] = True; bad.append(d)
+        d = good(); d["judged_at"] = "1000"; bad.append(d)
+        d = good(); del d["judged_at"]; bad.append(d)
         for d in bad:
             with self.subTest(d=str(d)[:80]), self.assertRaises(ValueError):
                 gc.checked_verdicts(json.dumps([d]), HEAD)
@@ -236,6 +238,14 @@ class Post(unittest.TestCase):
         self.assertEqual(order[0], data["verdicts"][-1]["context"])
         self.assertEqual(sorted(order), sorted(gc.CONTEXTS))
         self.assertLessEqual(max(len(c["output"]["summary"]) for c in calls), gc.SUMMARY_LIMIT)
+
+    def test_a_verdict_judged_earlier_never_overwrites_a_later_one(self):
+        later = {"gate/check": [{"id": 5, "name": "gate/check", "app": {"id": 123}, "external_id": "2000"}]}
+        calls = self.capture(later, good())                                # judged_at 1000
+        self.assertFalse(any(c[0] == "PATCH" for c in calls))
+        older = {"gate/check": [{"id": 5, "name": "gate/check", "app": {"id": 123}, "external_id": "500"}]}
+        patch = next(c for c in self.capture(older, good()) if c[0] == "PATCH")[2]
+        self.assertEqual(patch["external_id"], "1000")
 
     def test_without_a_pr_only_existing_runs_are_updated(self):
         data = dict(good(), pr=None, verdicts=gc.all_failed("gone"))
@@ -308,19 +318,43 @@ class Main(unittest.TestCase):
                 raise RuntimeError("boom")
             return 7, gc.all_failed("x")
 
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(gc, "sweep_heads", lambda repo: [HEAD, OLD]), \
+        away = "d" * 40
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(gc, "sweep_heads", lambda repo: ([HEAD, OLD], [away])), \
                 mock.patch.object(gc, "judge", judge):
             out = Path(tmp) / "out"
             self.run_main(["judge", "--sweep", "--out", str(out)])
             data = gc.checked_verdicts(out.read_text().split("=", 1)[1])
-        self.assertEqual(judged, [HEAD, OLD])
-        self.assertEqual([(b["head_sha"], b["pr"]) for b in data], [(HEAD, 7), (OLD, None)])
+        self.assertEqual(judged, [HEAD, OLD])                              # the away head is not judged
+        self.assertEqual([(b["head_sha"], b["pr"]) for b in data], [(away, None), (HEAD, 7), (OLD, None)])
+        self.assertTrue(all(v["conclusion"] == "failure" for v in data[0]["verdicts"]))
+
+    def test_the_sweep_stops_full_judging_at_its_budget_but_always_downgrades(self):
+        clock = [0.0]
+
+        def judge(head):
+            clock[0] += gc.SWEEP_BUDGET_SECONDS
+            return 7, gc.all_failed("x")
+
+        heads = [c * 40 for c in "abc"]
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(gc, "sweep_heads", lambda repo: (heads, ["d" * 40])), \
+                mock.patch.object(gc, "judge", judge), mock.patch.object(gc.time, "monotonic", lambda: clock[0]):
+            out = Path(tmp) / "out"
+            _, _, err = self.run_main(["judge", "--sweep", "--out", str(out)])
+            data = gc.checked_verdicts(out.read_text().split("=", 1)[1])
+        self.assertEqual([b["head_sha"] for b in data], ["d" * 40, heads[0], heads[1]])
+        self.assertIn("1 head(s) wait", err)
 
     def test_sweep_heads_lists_open_prs_from_this_repository_whatever_their_base(self):
         prs = [dict(PR), dict(PR, base={"ref": "evil", "sha": OLD}, head={"sha": OLD, "ref": "x", "repo": {"full_name": REPO}}),
                dict(PR, head={"sha": "c" * 40, "ref": "y", "repo": {"full_name": "fork/r"}})]
         with mock.patch.object(gc, "pages", lambda path: prs):
-            self.assertEqual(gc.sweep_heads(REPO), sorted([HEAD, OLD]))
+            self.assertEqual(gc.sweep_heads(REPO), ([HEAD], [OLD]))
+        # A head with one PR into main and one elsewhere is judged in full, not downgraded.
+        both = prs + [dict(PR, number=9, base={"ref": "evil", "sha": OLD})]
+        with mock.patch.object(gc, "pages", lambda path: both):
+            self.assertEqual(gc.sweep_heads(REPO), ([HEAD], [OLD]))
 
     def test_post_without_verdicts_after_a_failed_judge_fails_every_context(self):
         posted = []
@@ -332,7 +366,8 @@ class Main(unittest.TestCase):
         self.assertTrue(all(d["pr"] is None for d in posted))
         with mock.patch.dict(os.environ, {"VERDICTS": ""}), \
                 mock.patch.object(gc, "post", lambda data, app, repo: posted.append(data)):
-            self.run_main(["post", "--app-id", "1", "--sweep", "--judge-result", "failure"])
+            with self.assertRaises(SystemExit):                            # an empty sweep ends red
+                self.run_main(["post", "--app-id", "1", "--sweep", "--judge-result", "failure"])
         self.assertEqual(len(posted), 2)                                   # a sweep knows no head to fail
         self.assertTrue(all(v["conclusion"] == "failure" for d in posted for v in d["verdicts"]))
 
