@@ -18,15 +18,33 @@ Checks every `.github/workflows/*.yml` and `*.yaml` file (#137, stage 1):
   `repository`, `run-id` and `github-token` inputs are refused. `workflow_run`
   and `pull_request_target` jobs run as main and pass the environment's branch
   rule, so this rule is what keeps PR code away from their keys.
-- No `run:` script may expand `github.event`, `github.head_ref` or the whole
-  `github` context. Values that come from the event reach scripts only through
-  `env:`, so a branch name or title cannot become shell code.
+- A script (`run:`, or the `script` input of an action such as
+  github-script) may expand only fields no one can choose:
+  `github.sha`, `github.run_id`, `github.run_number`, `github.run_attempt`,
+  `github.repository`, `github.repository_id`, `github.server_url`,
+  `github.api_url`, `github.workspace`, `github.event_name`, `runner.temp`,
+  `runner.os` and `runner.arch`. Anything else, including `github.event`,
+  `github.ref_name` (a pushed branch name), `env`, `steps`, `needs`, `inputs`
+  and `matrix`, reaches the script as a shell variable through `env:`, so it
+  can never become shell code.
+
+Context names, keys and action inputs are compared without regard to case,
+as GitHub compares them. Composite actions under `.github/actions/` get the
+script rule too.
 
 The YAML is read as text with the standard library, because the repository
 has no YAML parser. Anything this reader cannot follow fails, rather than
 being guessed at. That covers anchors, aliases, merge keys, tags, flow
 mappings, tabs in indentation, document markers, sequences not indented under
-their key, and lines it cannot classify.
+their key, explicit `?` keys, a value that does not start on its key's line
+(unless it is a `|` or `>` block), flow sequences holding anything but plain
+items, block-scalar indentation indicators, a lone CR or other Unicode line
+breaks, and lines it cannot classify.
+
+Not covered, and left to the maintainer's review of every workflow change
+(lane C): a job that fetches and runs other code from inside a script, for
+example `git fetch` of a pull request ref followed by a build. Only the
+`with:` inputs are checked.
 
 With --ref it checks that commit's workflows, read through git. The allowlist
 always comes from the working tree: `policy` checks out the base branch, so a
@@ -42,29 +60,31 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ".github/workflows"
+ACTIONS = ".github/actions"
 ALLOW_FILE = "ci/workflow_lint.toml"
 
 KEY = re.compile(r"(?P<key>[A-Za-z0-9_][A-Za-z0-9_.\-/]*|\"[^\"]*\"|'[^']*')[ ]*:(?:[ ]+(?P<val>.*?)|)[ ]*$")
-BLOCK = re.compile(r"[|>][-+0-9]*[ ]*(#.*)?$")
-EXPR = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+BLOCK = re.compile(r"[|>][-+]?[ ]*(#.*)?$")
 QUOTED = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^']|'')*'")
-SECRETS = re.compile(r"\bsecrets\b")
-# In a script: github.event..., github.head_ref, github[...] or a bare `github`.
-EVENT_TEXT = re.compile(r"\bgithub\b(?!\s*\.\s*(?!event\b|head_ref\b)[A-Za-z_])")
+SECRETS = re.compile(r"\bsecrets\b", re.I)
+SCRIPT_SAFE = re.compile(r"\s*(github\s*\.\s*(sha|run_id|run_number|run_attempt|repository|repository_id|server_url"
+                         r"|api_url|workspace|event_name)|runner\s*\.\s*(temp|os|arch))\s*", re.I)
 ENV_NAME = re.compile(r"[A-Za-z0-9_-]+")
-SAFE_REF = re.compile(r"\$\{\{\s*github\.sha\s*\}\}")
+SAFE_REF = re.compile(r"\$\{\{\s*github\s*\.\s*sha\s*\}\}", re.I)
 REFUSED_WITH = ("repository", "run-id", "github-token")
+LINE_BREAKS = re.compile("\r(?!\n)|[\x85\u2028\u2029]")
 
 
 class Scalar:
     """One scalar value, with its position and the mapping path it sits under."""
 
     def __init__(self, line, path, text):
-        self.line, self.path, self.text = line, path, text
+        self.line, self.path, self.text, self.flow = line, path, text, False
 
 
 def unquote(key):
-    return key[1:-1] if key[:1] in "\"'" else key
+    """Keys compare without case, as GitHub compares action inputs and contexts."""
+    return (key[1:-1] if key[:1] in "\"'" else key).lower()
 
 
 def parse(text):
@@ -123,7 +143,7 @@ def parse(text):
                 if problem:
                     errors.append(f"{number}: {problem}")
                     continue
-                scalar.text = value
+                scalar.text, scalar.flow = value, value.startswith("[")
                 scalars.append(scalar)
                 owner = (column, scalar)
             continue
@@ -133,47 +153,75 @@ def parse(text):
                 errors.append(f"{number}: {problem}")
                 continue
             scalar = Scalar(number, [k for _, k, _ in stack] + ["-"], body)
+            scalar.flow = body.startswith("[")
             scalars.append(scalar)
             owner = (column, scalar)
             continue
-        # A bare line under a key with no value of its own is a multi-line plain scalar.
-        if stack and not stack[-1][2] and indent > stack[-1][0]:
-            scalar = Scalar(number, [k for _, k, _ in stack], raw)
-            scalars.append(scalar)
-            owner = (stack[-1][0], scalar)
-            continue
+        # Includes a value that starts on the line after its key, an explicit `? key`,
+        # and a key with a space in it: each could hide the lines below it.
         errors.append(f"{number}: cannot read this line")
     return scalars, errors
 
 
 def inline_problem(value):
-    """Anchors, aliases, tags and flow mappings, outside quotes and expressions."""
-    bare = QUOTED.sub("''", EXPR.sub("x", value))
-    bare = re.sub(r"\s+#.*$", "", bare)
-    if bare[:1] in "&*!@`%":
-        return "an anchor, alias, tag or reserved character"
-    if "{" in bare or "}" in bare:
+    """Anchors, aliases, tags, explicit keys and flow mappings at the start of a value."""
+    if value[:1] in "&*!@`%?:|>":
+        return "an anchor, alias, tag, explicit key or reserved character"
+    if value[:1] == "{":
         return "a flow mapping"
-    if re.search(r"[\[,]\s*[&*!]", bare):
-        return "an anchor, alias or tag inside a flow sequence"
+    return None
+
+
+def flow_problem(text):
+    """A flow sequence may hold only plain or quoted scalars and expressions."""
+    exprs, unclosed, bare = expressions(text)
+    bare = QUOTED.sub("''", bare)
+    bare = re.sub(r"\s+#[^\n]*", "", bare)
+    if unclosed or not re.fullmatch(r"\[[^\[\]{}]*\]\s*", bare):
+        return "a flow sequence that is not a plain list"
+    if re.search(r"[\[,]\s*[&*!?:|>]|:(\s|,|\]|$)", bare):
+        return "a flow sequence holding a mapping, anchor, alias or tag"
     return None
 
 
 def expressions(text):
-    """The bodies of `${{ ... }}` in a scalar, and whether one is left open."""
-    found = [m.group(1) for m in EXPR.finditer(text)]
-    # A body holding another `${{` means an earlier one was left open and the match ran on.
-    return found, "${{" in EXPR.sub("", text) or any("${{" in body for body in found)
+    """The bodies of `${{ ... }}` in a scalar, the text with each replaced by `x`,
+    and whether one is left open. A `}}` inside a quoted string does not end one."""
+    found, rest, i = [], [], 0
+    while True:
+        start = text.find("${{", i)
+        if start < 0:
+            rest.append(text[i:])
+            return found, False, "".join(rest)
+        rest.append(text[i:start] + "x")
+        j, quote = start + 3, False
+        while j < len(text):
+            if text[j] == "'":
+                quote = not quote  # '' inside a string toggles twice: an escaped quote
+            elif not quote and text.startswith("}}", j):
+                break
+            j += 1
+        else:
+            return found, True, "".join(rest)
+        found.append(text[start + 3:j])
+        i = j + 2
 
 
 def lint(name, text, allowed):
+    text = text.removeprefix("\ufeff")
+    if LINE_BREAKS.search(text):
+        return [f"{name}: a lone CR or another Unicode line break; lines end with LF"]
     scalars, problems = parse(text)
     errors = [f"{name}:{p}" for p in problems]
     jobs = {}
     for s in scalars:
-        exprs, unclosed = expressions(s.text)
-        if unclosed:
+        exprs, unclosed, _ = expressions(s.text)
+        if unclosed or any("${{" in e for e in exprs):
             errors.append(f"{name}:{s.line}: an expression that is never closed")
+        if s.flow:
+            problem = flow_problem(s.text)
+            if problem:
+                errors.append(f"{name}:{s.line}: {problem}")
         in_job = len(s.path) >= 2 and s.path[0] == "jobs"
         job = jobs.setdefault(s.path[1], {"secret": None, "env": None, "env_line": None, "refs": [], "with": []}) \
             if in_job else None
@@ -182,12 +230,13 @@ def lint(name, text, allowed):
             errors.append(f"{name}:{s.line}: a secret outside a job; secrets belong to a job with an allowed environment")
         if in_job and uses_secret and job["secret"] is None:
             job["secret"] = s.line
-        if "secrets" in s.path:
+        if in_job and "secrets" in s.path:
             errors.append(f"{name}:{s.line}: secrets passed to a reusable workflow")
-        if s.path[-1:] == ["run"] or (s.path[-2:-1] == ["run"]):
-            if any(EVENT_TEXT.search(e) for e in exprs):
-                errors.append(f"{name}:{s.line}: a run script expands github.event, github.head_ref or the github "
-                              "context; pass the value through env: instead")
+        if s.path[-1:] == ["run"] or s.path[-2:] == ["with", "script"]:
+            unsafe = [e.strip() for e in exprs if not SCRIPT_SAFE.fullmatch(e)]
+            if unsafe:
+                errors.append(f"{name}:{s.line}: a script expands {unsafe}; only fixed run fields may be expanded "
+                              "in a script, so pass this value through env: and read it as a shell variable")
         if not in_job:
             continue
         rest = s.path[2:]
@@ -196,7 +245,7 @@ def lint(name, text, allowed):
             if exprs or not ENV_NAME.fullmatch(value):
                 errors.append(f"{name}:{s.line}: an environment must be a plain name, not '{s.text.strip()}'")
                 value = None
-            job["env"], job["env_line"] = value, s.line
+            job["env"], job["env_line"] = (value.lower() if value else value), s.line
         if "steps" in rest and "with" in rest:
             key = rest[-1]
             if key == "ref":
@@ -227,23 +276,30 @@ def load_allowed(text):
     names = data.get("secret_environments")
     if not isinstance(names, list) or not all(isinstance(n, str) and ENV_NAME.fullmatch(n) for n in names):
         raise ValueError(f"{ALLOW_FILE}: secret_environments must be a list of plain environment names")
-    return set(names)
+    return {n.lower() for n in names}
 
 
 def git(root, *args):
     return subprocess.run(["git", "-C", str(root), *args], capture_output=True, check=True).stdout
 
 
+def wanted(path):
+    """Workflow files GitHub runs, and composite action definitions."""
+    if path.startswith(WORKFLOWS + "/"):
+        return "/" not in path[len(WORKFLOWS) + 1:] and path.endswith((".yml", ".yaml"))
+    return path.startswith(ACTIONS + "/") and path.rsplit("/", 1)[-1] in ("action.yml", "action.yaml")
+
+
 def workflow_files(root, ref=None):
-    """{path: text} for every workflow file, from the working tree or from a commit."""
+    """{path: text} for every workflow and composite action, from the working tree or from a commit."""
     if ref is None:
-        folder = Path(root) / WORKFLOWS
-        paths = sorted(p for p in folder.iterdir() if p.suffix in (".yml", ".yaml")) if folder.is_dir() else []
-        return {f"{WORKFLOWS}/{p.name}": p.read_bytes().decode("utf-8") for p in paths}
+        base = Path(root)
+        paths = [p.relative_to(base).as_posix() for d in (WORKFLOWS, ACTIONS) if (base / d).is_dir()
+                 for p in (base / d).rglob("*") if p.is_file()]
+        return {n: (base / n).read_bytes().decode("utf-8") for n in sorted(paths) if wanted(n)}
     commit = git(root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").decode().strip()
-    names = git(root, "ls-tree", "-r", "-z", "--name-only", commit, "--", f"{WORKFLOWS}/").decode().split("\0")
-    return {n: git(root, "show", f"{commit}:{n}").decode("utf-8")
-            for n in sorted(names) if n.endswith((".yml", ".yaml"))}
+    names = git(root, "ls-tree", "-r", "-z", "--name-only", commit, "--", f"{WORKFLOWS}/", f"{ACTIONS}/").decode()
+    return {n: git(root, "show", f"{commit}:{n}").decode("utf-8") for n in sorted(names.split("\0")) if wanted(n)}
 
 
 def main(argv=None):
@@ -256,7 +312,7 @@ def main(argv=None):
     except (OSError, ValueError, UnicodeDecodeError, subprocess.CalledProcessError) as error:
         sys.exit(f"workflow_lint: {error}")
     errors = [e for name, text in files.items() for e in lint(name, text, allowed)]
-    if not files:
+    if not any(n.startswith(WORKFLOWS + "/") for n in files):
         errors.append(f"no workflow files under {WORKFLOWS}")
     print(json.dumps({"files": sorted(files), "errors": errors}, indent=2))
     return 1 if errors else 0

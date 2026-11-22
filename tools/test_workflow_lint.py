@@ -141,17 +141,17 @@ class Scripts(unittest.TestCase):
                      "${{ toJSON(github) }}", "${{ github['event'] }}", "${{ github.event_path && github.event.x }}"):
             with self.subTest(expr=expr):
                 errors = lint(GOOD.replace("echo \"$TITLE\"", f"echo {expr}"))
-                self.assertTrue(any("run script expands" in e for e in errors), errors)
+                self.assertTrue(any("a script expands" in e for e in errors), errors)
 
     def test_event_text_in_a_shell_comment_still_fails(self):
         # GitHub expands expressions before the shell sees the script.
         errors = lint(GOOD.replace("echo \"$TITLE\"", "# ${{ github.event.issue.title }}"))
-        self.assertTrue(any("run script expands" in e for e in errors), errors)
+        self.assertTrue(any("a script expands" in e for e in errors), errors)
 
     def test_event_text_in_a_one_line_script_fails(self):
         text = GOOD.replace("        run: |\n          echo \"$TITLE\"\n",
                             "        run: echo ${{ github.event.pull_request.title }}\n")
-        self.assertTrue(any("run script expands" in e for e in lint(text)))
+        self.assertTrue(any("a script expands" in e for e in lint(text)))
 
     def test_safe_github_fields_pass(self):
         text = GOOD.replace("echo \"$TITLE\"", "echo ${{ github.run_id }} ${{ github.repository }} ${{ github.event_name }}")
@@ -193,6 +193,106 @@ class Unreadable(unittest.TestCase):
                 wl.load_allowed(text)
 
 
+class ReviewBypasses(unittest.TestCase):
+    """Texts that passed the first version of the lint (#137, stage 1 review). Each must fail."""
+
+    def assertFails(self, text, needle):
+        errors = lint(text)
+        self.assertTrue(any(needle in e for e in errors), errors)
+
+    def test_context_names_ignore_case(self):
+        no_env = GOOD.replace("    environment: evidence\n", "")
+        for form in ("${{ Secrets.KEY }}", "${{ SECRETS['KEY'] }}", "${{ toJSON(SeCrEtS) }}"):
+            with self.subTest(form=form):
+                self.assertFails(no_env.replace("${{ secrets.KEY }}", form), "reads a secret")
+        for expr in ("${{ GitHub.Event.head_commit.message }}", "${{ github.EVENT.x }}", "${{ github.Head_Ref }}"):
+            with self.subTest(expr=expr):
+                self.assertFails(GOOD.replace('echo "$TITLE"', f"echo {expr}"), "a script expands")
+
+    def test_input_and_key_names_ignore_case(self):
+        self.assertFails(GOOD.replace("ref: ${{ github.sha }}", "Ref: ${{ github.event.pull_request.head.sha }}"),
+                         "checks out")
+        self.assertFails(GOOD.replace("          token: ", "          REPOSITORY: x\n          token: "),
+                         "sets 'repository'")
+        self.assertFails(GOOD.replace("    environment: evidence\n", "    Environment: staging\n"),
+                         "environment 'staging'")
+
+    def test_explicit_keys_and_values_on_the_next_line_fail(self):
+        cases = [
+            GOOD.replace("          ref: ${{ github.sha }}\n",
+                         "          ? ref\n          : ${{ github.event.pull_request.head.sha }}\n"),
+            GOOD.replace("      - name: Use it\n", "      - ? run\n        : echo ${{ github.event.pull_request.title }}\n"
+                         "      - name: Use it\n"),
+            "on: push\njobs:\n  call:\n    ? secrets\n    : inherit\n    uses: ./.github/workflows/other.yml\n",
+            GOOD.replace("          ref: ${{ github.sha }}\n",
+                         "          fetch depth: 1\n          ref: ${{ github.event.pull_request.head.sha }}\n"),
+            GOOD.replace("    runs-on: ubuntu-24.04\n", "    runs-on:\n      ubuntu-24.04\n"),
+        ]
+        for text in cases:
+            with self.subTest(text=text[-160:]):
+                self.assertNotEqual(lint(text), [])
+
+    def test_lone_cr_and_unicode_line_breaks_fail(self):
+        for brk in ("\r", "\x85", "\u2028", "\u2029"):
+            with self.subTest(brk=repr(brk)):
+                text = GOOD.replace("    runs-on: ubuntu-24.04\n", f"    runs-on: ubuntu-24.04{brk}    steps: []\n")
+                self.assertFails(text, "line break")
+
+    def test_crlf_and_a_bom_are_read(self):
+        self.assertEqual(lint("\ufeff" + GOOD.replace("\n", "\r\n")), [])
+
+    def test_flow_sequences_holding_mappings_fail(self):
+        for steps in ("    steps: [ run: echo ${{ github.event.head_commit.message }} ]\n",
+                      "    steps: [\n      run: echo x ]\n",
+                      "    steps: [ [a], b ]\n",
+                      "    steps: [ ? a ]\n",
+                      "    steps: [ *a ]\n"):
+            with self.subTest(steps=steps):
+                text = "on: push\njobs:\n  a:\n    runs-on: x\n" + steps
+                self.assertFails(text, "flow sequence")
+
+    def test_plain_flow_sequences_pass(self):
+        text = GOOD.replace("branches: [main]", "branches: [main, 'release/*', \"x\"]  # note")
+        self.assertEqual(lint(text), [])
+
+    def test_env_and_other_laundering_contexts_fail_in_scripts(self):
+        for expr in ("${{ env.T }}", "${{ steps.app.outputs.token }}", "${{ needs.a.outputs.x }}",
+                     "${{ inputs.x }}", "${{ matrix.x }}", "${{ github.ref_name }}", "${{ github.ref }}",
+                     "${{ vars.X }}", "${{ fromJSON(github.event.x) }}"):
+            with self.subTest(expr=expr):
+                self.assertFails(GOOD.replace('echo "$TITLE"', f"echo {expr}"), "a script expands")
+
+    def test_script_inputs_are_scripts(self):
+        text = GOOD.replace("          token: ${{ steps.app.outputs.token }}\n",
+                            "          token: ${{ steps.app.outputs.token }}\n          script: ${{ github.event.x }}\n")
+        self.assertFails(text, "a script expands")
+
+    def test_composite_actions_are_linted(self):
+        action = "runs:\n  using: composite\n  steps:\n    - shell: bash\n      run: echo ${{ github.event.x }}\n"
+        self.assertFails(action, "a script expands")
+
+    def test_quoted_close_does_not_end_an_expression(self):
+        no_env = GOOD.replace("    environment: evidence\n", "")
+        self.assertFails(no_env.replace("${{ secrets.KEY }}", "${{ format('}}', secrets.KEY) }}"), "reads a secret")
+
+    def test_block_scalar_indentation_indicators_fail(self):
+        self.assertNotEqual(lint(GOOD.replace("        run: |\n", "        run: |2\n")), [])
+
+
+class HonestScripts(unittest.TestCase):
+    """Shapes the first version refused that are plain YAML and safe."""
+
+    def test_braces_inside_a_plain_value_pass(self):
+        for run in ("find . -exec rm {} \\;", "echo ${HOME}"):
+            with self.subTest(run=run):
+                text = GOOD.replace("        run: |\n          echo \"$TITLE\"\n", f"        run: {run}\n")
+                self.assertEqual(lint(text.replace("          echo ${{ github.sha }} ${{ github.event_name }}\n", "")), [])
+
+    def test_reusable_workflow_secret_declarations_pass(self):
+        text = "on:\n  workflow_call:\n    secrets:\n      key:\n        required: true\njobs:\n  a:\n    runs-on: x\n"
+        self.assertEqual(lint(text), [])
+
+
 class ReadThroughGit(unittest.TestCase):
     def test_ref_mode_reads_the_commit_not_the_working_tree(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -204,11 +304,16 @@ class ReadThroughGit(unittest.TestCase):
             (root / wl.WORKFLOWS).mkdir(parents=True)
             (root / wl.WORKFLOWS / "a.yml").write_text(GOOD)
             (root / wl.WORKFLOWS / "notes.txt").write_text("ignored")
+            (root / wl.WORKFLOWS / "sub").mkdir()
+            (root / wl.WORKFLOWS / "sub" / "x.yml").write_text("ignored: GitHub runs only the top level\n")
+            (root / wl.ACTIONS / "do").mkdir(parents=True)
+            (root / wl.ACTIONS / "do" / "action.yml").write_text("runs:\n  using: composite\n")
             run("add", "-A")
             run("commit", "-q", "-m", "one")
             (root / wl.WORKFLOWS / "a.yml").write_text("changed in the tree only\n")
             files = wl.workflow_files(root, "HEAD")
-            self.assertEqual(list(files), [f"{wl.WORKFLOWS}/a.yml"])
+            self.assertEqual(list(files), [f"{wl.ACTIONS}/do/action.yml", f"{wl.WORKFLOWS}/a.yml"])
+            self.assertEqual(wl.workflow_files(root), files | {f"{wl.WORKFLOWS}/a.yml": "changed in the tree only\n"})
             self.assertEqual(files[f"{wl.WORKFLOWS}/a.yml"], GOOD)
             self.assertEqual(wl.lint("a.yml", files[f"{wl.WORKFLOWS}/a.yml"], ALLOWED), [])
             with self.assertRaises(subprocess.CalledProcessError):
