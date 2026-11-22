@@ -22,7 +22,17 @@
 #      recorded for an ancestor of COMMIT.
 #   5. The run summary, which a pull request cannot edit, lists the evidence
 #      commit, its tree and every file's SHA-256, for the maintainer to compare.
+#
+# It refuses to run outside GitHub Actions: it force-pushes and opens a PR with
+# whatever credentials it finds, and a local run once left this clone's identity
+# set for every later commit (#99). The evidence commit's identity is passed to
+# that one `git commit`, never written to the repository config.
 set -euo pipefail
+
+[ "${GITHUB_ACTIONS:-}" = "true" ] || {
+  echo "ci-record: runs only in the record job of .github/workflows/lab.yaml (GITHUB_ACTIONS is not true); nothing was changed" >&2
+  exit 2
+}
 
 results="${1:?usage: ci-record.sh RESULTS_DIR COMMIT RUN_URL}"
 commit="${2:?usage: ci-record.sh RESULTS_DIR COMMIT RUN_URL}"
@@ -67,8 +77,6 @@ python3 tools/lab_record.py --results "$results" --commit "$commit" --platform g
   | tee "$RUNNER_TEMP/record.json"
 python3 tools/claims_check.py --write > /dev/null || true
 
-git config user.name "lab workflow"
-git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 git switch -c "$branch"
 # Staged first: CI-9 looks for the results among tracked files.
 git add claims.toml docs/claims.md "results/ci/lab-$commit"
@@ -80,7 +88,9 @@ if [ -n "$after" ]; then
 fi
 [ -z "$(git status --porcelain --untracked-files=no | grep -v '^[AM]  ')" ] \
   || { echo "ci-record: unexpected changes besides the evidence" >&2; git status --short >&2; exit 1; }
-git commit -q -m "Lab evidence for $short from CI
+git -c user.name="lab workflow" \
+    -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+    commit -q -m "Lab evidence for $short from CI
 
 Recorded by scripts/lab/ci-record.sh from $run_url"
 # A retried job finds its own branch already pushed. Only the evidence App can write
