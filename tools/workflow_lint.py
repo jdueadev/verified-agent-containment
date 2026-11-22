@@ -29,8 +29,12 @@ Checks every `.github/workflows/*.yml` and `*.yaml` file (#137, stage 1):
   can never become shell code.
 
 Context names, keys and action inputs are compared without regard to case,
-as GitHub compares them. Composite actions under `.github/actions/` get the
-script rule too.
+as GitHub compares them. Every composite action definition
+(`action.yml` or `action.yaml`, anywhere in the tree) gets the script rule
+too. A script is a `run:` or `shell:` value, or a `script`, `run`, `command`,
+`args` or `entrypoint` input. A backslash inside a double-quoted string is
+refused, because YAML decodes its escapes (`\x73ecrets`, an escaped line
+break) only after this reader has read the raw text.
 
 The YAML is read as text with the standard library, because the repository
 has no YAML parser. Anything this reader cannot follow fails, rather than
@@ -60,7 +64,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ".github/workflows"
-ACTIONS = ".github/actions"
 ALLOW_FILE = "ci/workflow_lint.toml"
 
 KEY = re.compile(r"(?P<key>[A-Za-z0-9_][A-Za-z0-9_.\-/]*|\"[^\"]*\"|'[^']*')[ ]*:(?:[ ]+(?P<val>.*?)|)[ ]*$")
@@ -72,6 +75,10 @@ SCRIPT_SAFE = re.compile(r"\s*(github\s*\.\s*(sha|run_id|run_number|run_attempt|
 ENV_NAME = re.compile(r"[A-Za-z0-9_-]+")
 SAFE_REF = re.compile(r"\$\{\{\s*github\s*\.\s*sha\s*\}\}", re.I)
 REFUSED_WITH = ("repository", "run-id", "github-token")
+# Values that a runner executes or hands to a shell: the script rule covers them all.
+SCRIPT_KEYS = ("run", "shell")
+SCRIPT_INPUTS = ("script", "run", "command", "args", "entrypoint")
+DOUBLE_QUOTED = re.compile(r"\"(?:[^\"\\]|\\.)*\"?", re.S)
 LINE_BREAKS = re.compile("\r(?!\n)|[\x85\u2028\u2029]")
 
 
@@ -127,6 +134,9 @@ def parse(text):
         if match:
             while stack and stack[-1][0] >= column:
                 stack.pop()
+            if "\\" in match.group("key"):
+                errors.append(f"{number}: a backslash in a key")
+                continue
             key, value = unquote(match.group("key")), match.group("val") or ""
             stack.append((column, key, bool(value)))
             path = [k for _, k, _ in stack]
@@ -179,7 +189,8 @@ def flow_problem(text):
     bare = re.sub(r"\s+#[^\n]*", "", bare)
     if unclosed or not re.fullmatch(r"\[[^\[\]{}]*\]\s*", bare):
         return "a flow sequence that is not a plain list"
-    if re.search(r"[\[,]\s*[&*!?:|>]|:(\s|,|\]|$)", bare):
+    # Any `:` left is a key: YAML allows `"run":"x"` with nothing after the colon.
+    if ":" in bare or re.search(r"[\[,]\s*[&*!?|>]", bare):
         return "a flow sequence holding a mapping, anchor, alias or tag"
     return None
 
@@ -215,6 +226,12 @@ def lint(name, text, allowed):
     errors = [f"{name}:{p}" for p in problems]
     jobs = {}
     for s in scalars:
+        # Only a YAML double-quoted scalar (or one inside a flow sequence) decodes escapes;
+        # quotes inside a block or plain scalar, such as a shell script's, are literal.
+        quoted = s.text.lstrip().startswith('"') or s.flow
+        if quoted and any("\\" in q for q in DOUBLE_QUOTED.findall(s.text)):
+            errors.append(f"{name}:{s.line}: a backslash in a double-quoted string; YAML would decode it after "
+                          "this check, so use a single-quoted or plain string")
         exprs, unclosed, _ = expressions(s.text)
         if unclosed or any("${{" in e for e in exprs):
             errors.append(f"{name}:{s.line}: an expression that is never closed")
@@ -232,7 +249,7 @@ def lint(name, text, allowed):
             job["secret"] = s.line
         if in_job and "secrets" in s.path:
             errors.append(f"{name}:{s.line}: secrets passed to a reusable workflow")
-        if s.path[-1:] == ["run"] or s.path[-2:] == ["with", "script"]:
+        if s.path[-1] in SCRIPT_KEYS or (s.path[-2:-1] == ["with"] and s.path[-1] in SCRIPT_INPUTS):
             unsafe = [e.strip() for e in exprs if not SCRIPT_SAFE.fullmatch(e)]
             if unsafe:
                 errors.append(f"{name}:{s.line}: a script expands {unsafe}; only fixed run fields may be expanded "
@@ -284,21 +301,24 @@ def git(root, *args):
 
 
 def wanted(path):
-    """Workflow files GitHub runs, and composite action definitions."""
+    """Workflow files GitHub runs, and every composite action definition: `uses: ./dir`
+    runs the action.yml of any directory in the repository, not only .github/actions."""
     if path.startswith(WORKFLOWS + "/"):
         return "/" not in path[len(WORKFLOWS) + 1:] and path.endswith((".yml", ".yaml"))
-    return path.startswith(ACTIONS + "/") and path.rsplit("/", 1)[-1] in ("action.yml", "action.yaml")
+    return path.rsplit("/", 1)[-1] in ("action.yml", "action.yaml")
 
 
 def workflow_files(root, ref=None):
-    """{path: text} for every workflow and composite action, from the working tree or from a commit."""
+    """{path: text} for every workflow and composite action, listed by git and read from
+    the working tree, or read from a commit. A symlink in a commit reads as its target
+    path, which this reader refuses, so a linked file fails rather than escapes."""
     if ref is None:
+        names = git(root, "ls-files", "-z").decode().split("\0")
         base = Path(root)
-        paths = [p.relative_to(base).as_posix() for d in (WORKFLOWS, ACTIONS) if (base / d).is_dir()
-                 for p in (base / d).rglob("*") if p.is_file()]
-        return {n: (base / n).read_bytes().decode("utf-8") for n in sorted(paths) if wanted(n)}
+        return {n: (base / n).read_bytes().decode("utf-8") for n in sorted(names)
+                if wanted(n) and (base / n).is_file()}
     commit = git(root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").decode().strip()
-    names = git(root, "ls-tree", "-r", "-z", "--name-only", commit, "--", f"{WORKFLOWS}/", f"{ACTIONS}/").decode()
+    names = git(root, "ls-tree", "-r", "-z", "--name-only", commit).decode()
     return {n: git(root, "show", f"{commit}:{n}").decode("utf-8") for n in sorted(names.split("\0")) if wanted(n)}
 
 

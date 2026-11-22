@@ -293,6 +293,46 @@ class HonestScripts(unittest.TestCase):
         self.assertEqual(lint(text), [])
 
 
+class SecondReviewBypasses(unittest.TestCase):
+    """Texts that passed the second version (#137, stage 1 re-review). Each must fail."""
+
+    def assertFails(self, text, needle):
+        errors = lint(text)
+        self.assertTrue(any(needle in e for e in errors), errors)
+
+    def test_escapes_in_double_quoted_strings_fail(self):
+        no_env = GOOD.replace("    environment: evidence\n", "")
+        for form in ('"$\\x7B{ secrets.KEY }}"', '"${{ \\x73ecrets.KEY }}"', '"${{ \\u0073ecrets.KEY }}"'):
+            with self.subTest(form=form):
+                self.assertFails(no_env.replace("${{ secrets.KEY }}", form), "backslash in a double-quoted string")
+        self.assertFails(GOOD.replace("        run: |\n          echo \"$TITLE\"\n",
+                                      '        run: "echo $\\\n          {{ github.event.x }}"\n'),
+                         "backslash in a double-quoted string")
+        self.assertFails(GOOD.replace("          ref: ${{ github.sha }}\n",
+                                      '          "r\\x65f": ${{ github.event.pull_request.head.sha }}\n'),
+                         "backslash in a key")
+        self.assertFails(GOOD.replace("branches: [main]", 'branches: ["m\\x61in"]'),
+                         "backslash in a double-quoted string")
+
+    def test_backslashes_in_block_scripts_pass(self):
+        text = GOOD.replace('echo "$TITLE"', 'printf "%s\\n" "$TITLE" | sed "s/a\\.b/c/"')
+        self.assertEqual(lint(text), [])
+
+    def test_json_style_key_in_a_flow_sequence_fails(self):
+        text = 'on: push\njobs:\n  a:\n    runs-on: x\n    steps: [ "run":"echo ${{ github.event.x }}" ]\n'
+        self.assertFails(text, "flow sequence")
+
+    def test_shell_and_command_inputs_are_scripts(self):
+        for step in ('        shell: bash -c "echo ${{ github.event.x }}; bash {0}"\n',
+                     "        with:\n          args: -c echo ${{ github.event.x }}\n",
+                     "        with:\n          entrypoint: ${{ github.event.x }}\n",
+                     "        with:\n          command: ${{ github.event.x }}\n"):
+            with self.subTest(step=step):
+                text = GOOD.replace("      - name: Use it\n", "      - uses: docker://alpine\n" + step +
+                                    "      - name: Use it\n")
+                self.assertFails(text, "a script expands")
+
+
 class ReadThroughGit(unittest.TestCase):
     def test_ref_mode_reads_the_commit_not_the_working_tree(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -306,13 +346,17 @@ class ReadThroughGit(unittest.TestCase):
             (root / wl.WORKFLOWS / "notes.txt").write_text("ignored")
             (root / wl.WORKFLOWS / "sub").mkdir()
             (root / wl.WORKFLOWS / "sub" / "x.yml").write_text("ignored: GitHub runs only the top level\n")
-            (root / wl.ACTIONS / "do").mkdir(parents=True)
-            (root / wl.ACTIONS / "do" / "action.yml").write_text("runs:\n  using: composite\n")
+            (root / ".github/actions/do").mkdir(parents=True)
+            (root / ".github/actions/do/action.yml").write_text("runs:\n  using: composite\n")
+            # `uses: ./ci/act` runs an action.yml anywhere in the repository.
+            (root / "ci/act").mkdir(parents=True)
+            (root / "ci/act/action.yaml").write_text("runs:\n  using: composite\n")
             run("add", "-A")
             run("commit", "-q", "-m", "one")
             (root / wl.WORKFLOWS / "a.yml").write_text("changed in the tree only\n")
             files = wl.workflow_files(root, "HEAD")
-            self.assertEqual(list(files), [f"{wl.ACTIONS}/do/action.yml", f"{wl.WORKFLOWS}/a.yml"])
+            self.assertEqual(list(files), [".github/actions/do/action.yml", f"{wl.WORKFLOWS}/a.yml",
+                                           "ci/act/action.yaml"])
             self.assertEqual(wl.workflow_files(root), files | {f"{wl.WORKFLOWS}/a.yml": "changed in the tree only\n"})
             self.assertEqual(files[f"{wl.WORKFLOWS}/a.yml"], GOOD)
             self.assertEqual(wl.lint("a.yml", files[f"{wl.WORKFLOWS}/a.yml"], ALLOWED), [])
