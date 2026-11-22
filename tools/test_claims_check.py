@@ -329,3 +329,56 @@ const SABOTAGE: &[(&str, &str, &str, &[&str])] = &[
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PendingLabEvidenceTests(unittest.TestCase):
+    """A lab scenario or control the committed results have never run is pending: the
+    claim is stale (a warning on main, an error under --strict). One that ran and failed
+    is an error in both modes. Run on this repository, with one result removed or failed."""
+
+    def run_main(self, change, *args):
+        import contextlib
+        import io
+        import json
+        from unittest import mock
+        real = cc.load_results
+
+        def patched():
+            results = list(real())
+            change(results)
+            return tuple(results)
+        out = io.StringIO()
+        with mock.patch.object(cc, "load_results", patched), contextlib.redirect_stdout(out):
+            code = cc.main(list(args))
+        return code, json.loads(out.getvalue())
+
+    def test_a_control_that_never_ran_makes_its_claim_stale_not_broken(self):
+        drop = lambda r: r[3].pop("ignore_expiry")  # sabotage_ok
+        code, report = self.run_main(drop)
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(code, 0)
+        self.assertTrue(any("sabotage:ignore_expiry has not run in the lab yet" in w and "H-LEASE-01" in w
+                            for w in report["stale"]), report["stale"])
+        code, report = self.run_main(drop, "--strict")
+        self.assertEqual(code, 1)
+        self.assertTrue(any("has not run in the lab yet" in e for e in report["errors"]))
+
+    def test_a_scenario_that_never_ran_is_pending_too(self):
+        code, report = self.run_main(lambda r: r[2].pop("monitor_crash"))
+        self.assertEqual(code, 0)
+        self.assertTrue(any("scenario:monitor_crash has not run in the lab yet" in w for w in report["stale"]))
+
+    def test_a_control_that_ran_and_missed_is_an_error_in_both_modes(self):
+        failed = lambda r: r[3].__setitem__("ignore_expiry", False)
+        for args in ((), ("--strict",)):
+            with self.subTest(args=args):
+                code, report = self.run_main(failed, *args)
+                self.assertEqual(code, 1)
+                self.assertIn("CI-3 H-LEASE-01: sabotage:ignore_expiry was not caught or did not pass in results/",
+                              report["errors"])
+
+    def test_a_kind_without_lab_results_is_never_pending(self):
+        # Mutants come from check, not the lab: a missing one is an error, never "pending".
+        code, report = self.run_main(lambda r: r[0].clear())
+        self.assertEqual(code, 1)
+        self.assertTrue(any("was not caught or did not pass" in e for e in report["errors"]))

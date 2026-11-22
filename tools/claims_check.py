@@ -454,6 +454,13 @@ def main(argv=None):
 
     verdict_ok, verdict_note = verdict_matches_head()
     effective = {}
+    pending = {}
+
+    def not_yet_run(ref):
+        """A lab scenario or control that the committed results have no entry for at all."""
+        kind, _, name = ref.partition(":")
+        ran = {"scenario": scenario_ok, "sabotage": sabotage_ok, "live": live_ok, "live-sabotage": live_sab_ok}.get(kind)
+        return ran is not None and name not in ran
 
     def caught(cid, ref):
         kind, _, name = ref.partition(":")
@@ -505,7 +512,15 @@ def main(argv=None):
             if not falsifiers:
                 errors.append(f"CI-3 {cid}: {status} needs a mutant, sabotage, diff or doc check that is caught")
             for ref in evidence:
-                if ref.partition(":")[0] != "tla" and not caught(cid, ref):
+                if ref.partition(":")[0] == "tla" or caught(cid, ref):
+                    continue
+                if not_yet_run(ref):
+                    # A lab scenario or control the committed results have never run, as
+                    # when a PR adds one: the lab runs after the merge (0002), so this is
+                    # pending evidence and makes the claim stale, which strict mode (and
+                    # so every release) refuses. One that ran and failed is an error.
+                    pending.setdefault(cid, []).append(ref)
+                else:
                     errors.append(f"CI-3 {cid}: {ref} was not caught or did not pass in results/")
         if status == "checked-bounded":
             for ref in evidence:
@@ -521,7 +536,7 @@ def main(argv=None):
             platform["_changed"] = changed_since(platform["commit"], claim.get("files", []))
         if passing and all(p["_changed"] for p in passing):
             stale_files = min((p["_changed"] for p in passing), key=len)
-        effective[cid] = "stale" if stale_files else status
+        effective[cid] = "stale" if stale_files or cid in pending else status
         claim["_stale"] = stale_files
 
     for claim in claims:
@@ -553,13 +568,15 @@ def main(argv=None):
     stale = {c["id"]: c["_stale"] for c in claims if c["_stale"]}
     warnings = [f"CI-4 {cid}: stale, {', '.join(files)} changed after its platform commit; rerun and update platforms"
                 for cid, files in stale.items()]
+    warnings += [f"CI-4 {cid}: stale, {', '.join(refs)} has not run in the lab yet; rerun and update platforms"
+                 for cid, refs in pending.items()]
 
     markdown = render(claims, effective, verdict_ok, len(laws), len(bend), len(rust), len(sabotage))
     target = ROOT / "docs/claims.md"
     if write:
         target.write_text(markdown, encoding="utf-8", newline="\n")
     elif not target.exists() or target.read_text(encoding="utf-8") != markdown:
-        if strict or not stale:
+        if strict or not (stale or pending):
             errors.append("docs/claims.md is out of date; run tools/claims_check.py --write")
         else:
             warnings.append("docs/claims.md will need regeneration after refreshing stale lab evidence")
