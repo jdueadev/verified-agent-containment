@@ -1,0 +1,54 @@
+name: policy-refresh
+
+# When a review is submitted or dismissed, re-run the pull request's latest
+# `policy` run so the required check reflects the reviews. Approving a lane C
+# pull request is then enough to let auto-merge finish.
+#
+# This job never reports a `policy` result itself. A re-run executes the
+# original run's workflow, which `pull_request_target` takes from the base
+# branch, and it reads the reviews afresh, so the one result that counts is
+# replaced in place. A run of its own on each review would add a separate
+# check run, and GitHub counts every one of them, so one early failure would
+# block the pull request for good.
+#
+# `pull_request_review` runs this file from the pull request's merge ref. The
+# agent identity has no Workflows permission, so that copy is main's. No code
+# from the pull request is checked out or run here.
+
+on:
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  actions: write
+
+concurrency:
+  group: policy-refresh-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    # A fork's pull_request_review token is read-only; the maintainer re-runs those by hand.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Re-run the latest policy run for the head commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          id="$(gh run list --workflow policy.yml --event pull_request_target --commit "$HEAD_SHA" \
+                 --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+          if [ -z "$id" ]; then
+            echo "No policy run for $HEAD_SHA yet; the one that starts will read the reviews itself."
+            exit 0
+          fi
+          # A run still in progress may have read the reviews before this one arrived.
+          # Wait for it to finish, then re-run, so the latest review is always counted.
+          gh run watch "$id" > /dev/null 2>&1 || true
+          gh run rerun "$id"
+          echo "Re-ran policy run $id for $HEAD_SHA."
