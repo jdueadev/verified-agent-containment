@@ -15,6 +15,7 @@ mod mock;
 mod redteam;
 mod run_live;
 mod sandbox;
+mod sandbox_view;
 mod system_one;
 
 use std::process::ExitCode;

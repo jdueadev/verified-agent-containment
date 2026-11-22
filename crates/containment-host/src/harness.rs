@@ -24,7 +24,7 @@ const SABOTAGE: &[(&str, &str)] = &[
     ("shared_control_socket", "classifier_sends_hard"), ("classifier_down_ignored", "classifier_crash"),
     ("system_one_unconfined", "system_one_isolation"), ("system_one_weak_filter", "system_one_isolation"), ("no_kill", "process_escape"),
     ("writable_policy", "agent_attacks_control"), ("no_parent_death_signal", "controller_crash"),
-    ("host_root", "sandbox_escape"), ("ignore_actuator_failure", "actuator_dead"), ("stale_clock", "clock_rollback"),
+    ("host_root", "sandbox_escape"), ("wide_root", "sandbox_escape"), ("ignore_actuator_failure", "actuator_dead"), ("stale_clock", "clock_rollback"),
     ("leak_streams", "gateway_churn"), ("drop_overflow", "gateway_flood"), ("unauthenticated_monitor", "forged_renewal"),
     ("no_seccomp", "sandbox_escape"), ("stale_generation_authority", "reset_races_kill"), ("no_enforcer_watchdog", "enforcer_stall"),
     ("single_flag_authority", "double_reset"),
@@ -235,6 +235,33 @@ fn unmediated(records: &[Value], cut: Option<u64>) -> u64 {
         r["authenticated"] != true
             && (r["complete"] != false || cut.is_none_or(|ns| r["ns"].as_u64().unwrap_or(u64::MAX) > ns))
     }))
+}
+
+/// The agent saw exactly its loader and libraries, /agent, the gateway socket, /proc and
+/// /tmp: nothing missing and nothing extra (#88). The expected set comes from the same
+/// executable the sandbox copies, through the resolver; the observed set from the agent's
+/// own walk, which must have completed without errors or truncation. The loader and
+/// /agent must be among them, so an empty or broken walk cannot pass.
+fn agent_view_exact(view: &Value) -> (bool, Value) {
+    let expected = std::env::current_exe()
+        .map_err(|e| e.to_string())
+        .and_then(|exe| fs::read(exe).map_err(|e| e.to_string()))
+        .and_then(|bytes| crate::sandbox_view::plan(&bytes, Path::new("/")))
+        .map(|plan| crate::sandbox_view::expected_view(&plan, &["/agent", "/gateway.sock", "/proc", "/tmp"]));
+    let expected = match expected {
+        Ok(set) => set.into_iter().collect::<std::collections::BTreeSet<String>>(),
+        Err(error) => return (false, json!({"error": error})),
+    };
+    let mut seen: std::collections::BTreeSet<String> =
+        view["paths"].as_array().map(|p| p.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+    seen.insert("/".to_owned());
+    let extra: Vec<&String> = seen.difference(&expected).take(40).collect();
+    let missing: Vec<&String> = expected.difference(&seen).collect();
+    let anchored = seen.contains("/agent") && seen.iter().any(|p| p.contains("ld-linux"));
+    let exact = view["complete"] == true && view["errors"] == 0 && view["truncated"] == false
+        && extra.is_empty() && missing.is_empty() && anchored;
+    (exact, json!({"extra": extra, "missing": missing, "errors": view["errors"], "truncated": view["truncated"],
+                   "seen": seen.len(), "expected": expected.len()}))
 }
 
 fn agent_value<'a>(events: &'a [Value], name: &str) -> &'a Value {
@@ -584,6 +611,8 @@ fn execute(scenario: &str, weakness: &str, sequence: usize) -> Result<Value, Box
             checks.add("root_filesystem_read_only", value["root_write"] == false, value["root_write"].clone());
             let scan = agent_value(agent, "pe_scan");
             checks.add("no_windows_images_reachable", scan["pe_files_reachable"] == 0, scan.clone());
+            let (exact, detail) = agent_view_exact(agent_value(agent, "view"));
+            checks.add("agent_view_exact", exact, detail);
         }
         "direct_egress" => {
             let value = agent_value(agent, "direct_network");

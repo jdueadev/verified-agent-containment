@@ -222,6 +222,39 @@ fn executable(path: &Path) -> bool {
     unsafe { libc::access(c.as_ptr(), libc::X_OK) == 0 }
 }
 
+/// Every path the agent can see, found with lstat, for the exact-view check (#88). /proc
+/// and /tmp are listed but not entered: what is in them belongs to the agent. The walk
+/// stops at a bound so a wide view is reported as truncated rather than run on forever.
+fn visible_paths() -> Value {
+    const LIMIT: usize = 4096;
+    fn walk(dir: &Path, out: &mut Vec<String>, errors: &mut usize) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            *errors += 1;
+            return;
+        };
+        for entry in entries {
+            if out.len() >= LIMIT {
+                return;
+            }
+            let Ok(entry) = entry else {
+                *errors += 1;
+                continue;
+            };
+            let path = entry.path();
+            out.push(path.display().to_string());
+            match fs::symlink_metadata(&path) {
+                Ok(meta) if meta.is_dir() && !matches!(path.to_str(), Some("/proc" | "/tmp")) => walk(&path, out, errors),
+                Ok(_) => {}
+                Err(_) => *errors += 1,
+            }
+        }
+    }
+    let (mut out, mut errors) = (Vec::new(), 0);
+    walk(Path::new("/"), &mut out, &mut errors);
+    let truncated = out.len() >= LIMIT;
+    json!({"paths": out, "errors": errors, "truncated": truncated, "complete": true})
+}
+
 /// Counts files the agent may execute that carry a Windows executable header.
 fn reachable_pe_files() -> usize {
     fn walk(dir: &Path, depth: usize, count: &mut usize) {
@@ -363,6 +396,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         }
         "sandbox_escape" => {
             escape_attempts(&probe);
+            say("view", visible_paths());
             say("pe_scan", json!({"pe_files_reachable": reachable_pe_files()}));
             idle()
         }

@@ -22,6 +22,8 @@ pub struct SandboxSpec {
     pub expose_private: bool,
     pub no_parent_death_signal: bool,
     pub host_root: bool,
+    /// Sabotage: keep the pivot but bind the host's whole /usr and /lib* again (#88).
+    pub wide_root: bool,
     pub seccomp: bool,
     pub memfd_exec: bool,
 }
@@ -39,6 +41,10 @@ fn c(path: &str) -> Result<CString, Box<dyn Error>> {
 pub fn spawn(spec: &SandboxSpec, cgroup: &Path, uid: u32, workspace: Option<&Path>) -> io::Result<Child> {
     let procs = fs::OpenOptions::new().write(true).open(cgroup.join("cgroup.procs"))?;
     let output = fs::OpenOptions::new().create(true).append(true).open(&spec.output)?;
+    // The agent writes to a pipe, not to the file: with a file descriptor on the file it
+    // could ftruncate away what earlier generations wrote (#88). The controller copies the
+    // pipe into the file, at most AGENT_OUTPUT_LIMIT bytes per generation.
+    let (reader, writer) = io::pipe()?;
     let mut flags = libc::CLONE_NEWNS | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS | libc::CLONE_NEWPID | libc::CLONE_NEWCGROUP;
     if !spec.share_network {
         flags |= libc::CLONE_NEWNET;
@@ -50,7 +56,8 @@ pub fn spawn(spec: &SandboxSpec, cgroup: &Path, uid: u32, workspace: Option<&Pat
     let config = json!({
         "exe": spec.exe, "new_root": spec.new_root, "private_dir": spec.private_dir, "gateway": spec.gateway,
         "scenario": spec.scenario, "uid": uid, "probe": spec.probe, "expose_private": spec.expose_private,
-        "death_signal": death_signal, "host_root": spec.host_root, "seccomp": spec.seccomp, "memfd_exec": spec.memfd_exec,
+        "death_signal": death_signal, "host_root": spec.host_root, "wide_root": spec.wide_root,
+        "seccomp": spec.seccomp, "memfd_exec": spec.memfd_exec,
         "workspace": workspace,
     });
     let mut command = Command::new(&spec.exe);
@@ -59,8 +66,8 @@ pub fn spawn(spec: &SandboxSpec, cgroup: &Path, uid: u32, workspace: Option<&Pat
         .arg(config.to_string())
         .env_clear()
         .stdin(Stdio::null())
-        .stdout(Stdio::from(output.try_clone()?))
-        .stderr(Stdio::from(output));
+        .stdout(Stdio::from(writer.try_clone()?))
+        .stderr(Stdio::from(writer));
     // SAFETY: the closure only calls async-signal-safe libc functions before exec.
     unsafe {
         command.pre_exec(move || {
@@ -78,7 +85,22 @@ pub fn spawn(spec: &SandboxSpec, cgroup: &Path, uid: u32, workspace: Option<&Pat
             check(libc::unshare(flags))
         });
     }
-    command.spawn()
+    let child = command.spawn()?;
+    // Closes the parent's copies of the write end, so the copy ends when the agent's do.
+    drop(command);
+    copy_agent_output(reader, output);
+    Ok(child)
+}
+
+/// The most one generation may add to its output file. The rest is read and dropped,
+/// so a flooding agent can neither fill the disk nor stall on a full pipe.
+const AGENT_OUTPUT_LIMIT: u64 = 16 * 1024 * 1024;
+
+fn copy_agent_output(mut reader: io::PipeReader, mut output: fs::File) {
+    std::thread::spawn(move || {
+        let _ = io::copy(&mut io::Read::take(&mut reader, AGENT_OUTPUT_LIMIT), &mut output);
+        let _ = io::copy(&mut reader, &mut io::sink());
+    });
 }
 
 fn mount(source: &str, target: &str, kind: Option<&str>, flags: libc::c_ulong, data: Option<&str>) -> Result<(), Box<dyn Error>> {
@@ -111,15 +133,36 @@ fn pivot_to_minimal_root(config: &Value) -> Result<(), Box<dyn Error>> {
     let root = config["new_root"].as_str().ok_or("new root")?;
     let exe = config["exe"].as_str().ok_or("exe")?;
     let gateway = config["gateway"].as_str().ok_or("gateway")?;
+    // What the agent needs from the host: its loader and the libraries it links, read
+    // from the executable before anything is mounted (#88). If that cannot be worked out
+    // exactly, the sandbox does not start.
+    let view = crate::sandbox_view::plan(&fs::read(exe)?, Path::new("/")).map_err(|e| format!("sandbox view: {e}"))?;
     mount("tmpfs", root, Some("tmpfs"), libc::MS_NOSUID | libc::MS_NODEV, Some("mode=755,size=4m"))?;
     let under = |p: &str| format!("{root}/{}", p.trim_start_matches('/'));
-    for dir in ["/usr", "/lib", "/lib64", "/lib32", "/libx32"] {
-        let Ok(meta) = fs::symlink_metadata(dir) else { continue };
-        if meta.file_type().is_symlink() {
-            symlink(fs::read_link(dir)?, under(dir))?;
-        } else if meta.is_dir() {
-            fs::create_dir(under(dir))?;
-            bind(dir, &under(dir), libc::MS_RDONLY)?;
+    if config["wide_root"] == true {
+        // Sabotage: the old root, which showed the agent the host's whole /usr and /lib*.
+        for dir in ["/usr", "/lib", "/lib64", "/lib32", "/libx32"] {
+            let Ok(meta) = fs::symlink_metadata(dir) else { continue };
+            if meta.file_type().is_symlink() {
+                symlink(fs::read_link(dir)?, under(dir))?;
+            } else if meta.is_dir() {
+                fs::create_dir(under(dir))?;
+                bind(dir, &under(dir), libc::MS_RDONLY)?;
+            }
+        }
+    } else {
+        // Parents come before children in the plan's order.
+        for (path, entry) in &view {
+            let path = path.to_str().ok_or("sandbox view: a path is not UTF-8")?;
+            match entry {
+                crate::sandbox_view::Entry::Dir => fs::create_dir_all(under(path))?,
+                crate::sandbox_view::Entry::Symlink(target) => symlink(target, under(path))?,
+                crate::sandbox_view::Entry::File => {
+                    fs::write(under(path), "")?;
+                    // Read-only, not noexec: the loader and libraries are mapped executable.
+                    bind(path, &under(path), libc::MS_RDONLY)?;
+                }
+            }
         }
     }
     for dir in ["/proc", "/tmp", "/.old"] {
@@ -307,7 +350,9 @@ fn drop_authority(uid: u32, seccomp: bool) -> Result<(), Box<dyn Error>> {
     limit(libc::RLIMIT_FSIZE, 16 * 1024 * 1024)?;
     // SAFETY: these calls change only this process's credentials and flags.
     unsafe {
-        libc::syscall(libc::SYS_close_range, 3_u32, u32::MAX, 0_u32);
+        // Unconfirmed means stopped (INV-7): a failed close_range would leave the
+        // controller's descriptors open in the agent.
+        check(libc::syscall(libc::SYS_close_range, 3_u32, u32::MAX, 0_u32) as libc::c_int)?;
         check(libc::setgroups(0, ptr::null()))?;
         check(libc::setresgid(uid, uid, uid))?;
         check(libc::setresuid(uid, uid, uid))?;
