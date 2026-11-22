@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Unit tests for tools/spec_run.py. Each case gives the runner a head tools/ directory
 built in a temporary folder, so nothing depends on this checkout's own tests."""
+import contextlib
+import io
+import json
 import sys
 import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import spec_run as sr
@@ -123,6 +127,38 @@ class RunPythonModuleTests(unittest.TestCase):
             (cache / "thing.cpython-314.pyc").write_bytes(b"not python")
             sr.clear_pycache(head)
             self.assertFalse(cache.exists())
+
+
+class ApprovalTests(unittest.TestCase):
+    """A red base spec passes only when the owner approved exactly this head."""
+
+    def main(self, failed, reviews, head_sha="h1"):
+        report = {"mode": "base", "base": "HEAD", "files": [], "failed": failed, "passed": 0}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "reviews.json"
+            path.write_text(json.dumps(reviews), encoding="utf-8")
+            argv = ["base", "--base-ref", "HEAD", "--head", tmp, "--reviews", str(path), "--head-sha", head_sha]
+            with mock.patch.object(sr, "run", lambda *a: dict(report)), contextlib.redirect_stdout(io.StringIO()) as out:
+                code = sr.main(argv)
+        return code, json.loads(out.getvalue())
+
+    def review(self, login="jdueadev", state="APPROVED", sha="h1"):
+        return {"user": {"login": login}, "state": state, "commit_id": sha}
+
+    def test_a_green_run_passes_without_any_review(self):
+        self.assertEqual(self.main({}, [])[0], 0)
+
+    def test_a_red_run_fails_unless_the_owner_approved_this_head(self):
+        self.assertEqual(self.main({"t": "FAILED"}, [])[0], 1)
+        self.assertEqual(self.main({"t": "FAILED"}, [self.review(login="someone")])[0], 1)
+        self.assertEqual(self.main({"t": "FAILED"}, [self.review(sha="older")])[0], 1)
+        self.assertEqual(self.main({"t": "FAILED"}, [self.review(), self.review(state="DISMISSED")])[0], 1)
+        code, report = self.main({"t": "FAILED"}, [self.review()])
+        self.assertEqual((code, report["approved"], report["failed"]), (0, True, {"t": "FAILED"}))
+
+    def test_reviews_without_a_head_commit_are_refused(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            sr.main(["base", "--base-ref", "HEAD", "--head", ".", "--reviews", "x.json"])
 
 
 if __name__ == "__main__":

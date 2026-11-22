@@ -5,6 +5,7 @@ only by tests it could have edited (#125).
 Usage:
   spec_run.py base --base-ref REF --head DIR [--rust] [--json FILE]
   spec_run.py new  --base-ref REF --head DIR [--rust] [--json FILE]
+  (either) [--reviews FILE --head-sha SHA]
 
 base  runs every spec test file the base commit has. Each Python test module runs in
       its own `python3 -I -B` process, with the head's tools/ on its path, after the
@@ -20,6 +21,12 @@ The verdict is never an exit code. The ids every test file defines are read from
 source with ast (Python) or the lexer (Rust), and each one must be reported as passed.
 A skip, an ignored test or a missing id is a failure. The result is printed as JSON;
 the exit status is 1 when any expected test did not pass.
+
+A red base spec is not a dead end. A legitimately stricter change can fail the base test
+that encoded the old verdict, and the immutability ratchet stops the author from editing
+that test. With --reviews and --head-sha (the pull request's reviews, as `policy` reads
+them), a failing run exits 0 when the owner in the base lane map approved exactly this
+head commit. The failures are still printed, and the report says it was approved.
 
 This file runs from the base branch (the workflow checks it out from base, as `policy`
 does). It reads the base commit only through git and never imports head code into its
@@ -249,13 +256,23 @@ def main(argv=None):
     parser.add_argument("--head", required=True, type=Path)
     parser.add_argument("--rust", action="store_true", help="also run crates/containment-kernel/tests")
     parser.add_argument("--json", type=Path)
+    parser.add_argument("--reviews", type=Path, help="the pull request's reviews, as JSON")
+    parser.add_argument("--head-sha", help="the head commit the reviews must approve")
     args = parser.parse_args(argv)
+    if args.reviews and not args.head_sha:
+        parser.error("--reviews needs --head-sha: approval is only ever of one commit")
     report = run(args.mode, args.base_ref, args.head, args.rust)
+    report["approved"] = None
+    if report["failed"] and args.reviews:
+        lanes_text = policy_check.reader(args.base_ref)(policy_check.LANES_FILE)
+        owner, _ = policy_check.load_lanes(lanes_text)
+        reviews = json.loads(args.reviews.read_text(encoding="utf-8"))
+        report["approved"] = policy_check.approved(reviews, owner, args.head_sha)
     text = json.dumps(report, indent=2)
     print(text)
     if args.json:
         args.json.write_text(text + "\n", encoding="utf-8")
-    return 1 if report["failed"] else 0
+    return 1 if report["failed"] and not report["approved"] else 0
 
 
 if __name__ == "__main__":
