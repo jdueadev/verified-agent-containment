@@ -552,6 +552,15 @@ def main(argv=None):
                     claim["_pending"] = pending[cid]
                 else:
                     errors.append(f"CI-3 {cid}: {ref} was not caught or did not pass in results/")
+        elif status != "planned":
+            # Other statuses (checked-bounded, assumed) are not judged by their lab refs, but
+            # one that has never run still means the claim's evidence is incomplete: it is
+            # pending, and so stale, exactly as above. A planned claim names scenarios that
+            # do not exist yet and is left alone.
+            for ref in evidence:
+                if not_yet_run(ref):
+                    pending.setdefault(cid, []).append(ref)
+                    claim["_pending"] = pending[cid]
         if status == "checked-bounded":
             for ref in evidence:
                 if ref.partition(":")[0] == "tla" and not caught(cid, ref):
@@ -617,6 +626,12 @@ def main(argv=None):
     if strict:
         errors.extend(warnings)
         errors.extend(build_errors())
+        # The newest CI lab run counts as evidence (load_results), so it is held to CI-8 as
+        # well: a CI run with too few timed repeats, waived limits or wrong stamps must not
+        # pass a release.
+        ci = latest_ci_lab()
+        if ci is not None:
+            errors.extend(e.replace("results/", f"{ci.relative_to(ROOT)}/", 1) for e in build_errors(ci))
     print(json.dumps({"claims": len(claims), "status": counts, "errors": errors, "stale": warnings}, indent=2))
     return 1 if errors else 0
 

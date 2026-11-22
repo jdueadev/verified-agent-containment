@@ -381,6 +381,45 @@ class PendingLabEvidenceTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertTrue(any("was not caught or did not pass" in e for e in report["errors"]))
 
+    def test_a_checked_bounded_claim_with_an_unrun_lab_reference_is_pending(self):
+        from unittest import mock
+        original = cc.tomllib.loads
+        extra = {"id": "X-BOUND-01", "statement": "s", "layer": "host", "status": "checked-bounded",
+                 "evidence": ["tla:host#ClassifierCannotForceStop", "scenario:never_ran_anywhere"],
+                 "falsifier": "f", "files": []}
+        planned = dict(extra, id="X-PLAN-01", status="planned")
+
+        def loads(text):
+            data = original(text)
+            if "claim" in data:
+                data["claim"] = data["claim"] + [dict(extra), dict(planned)]
+            return data
+        with mock.patch.object(cc.tomllib, "loads", loads):
+            code, report = self.run_main(lambda r: None)
+        self.assertTrue(any("X-BOUND-01" in w and "scenario:never_ran_anywhere has not run in the lab yet" in w
+                            for w in report["stale"]), report["stale"])
+        self.assertFalse(any("X-PLAN-01" in w for w in report["stale"]), "a planned claim was marked pending")
+
+    def test_strict_mode_holds_the_ci_lab_run_to_ci_8(self):
+        import json
+        import shutil
+        head = cc.subprocess.run(["git", "-C", str(cc.ROOT), "rev-parse", "HEAD"], capture_output=True, text=True,
+                                 check=True).stdout.strip()
+        ci_dir = cc.ROOT / "results/ci"
+        lab = ci_dir / f"lab-{head}"
+        if lab.exists():
+            self.skipTest("a CI lab run for HEAD is already committed")
+        created_ci = not ci_dir.exists()
+        lab.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, ci_dir if created_ci else lab)
+        attack = json.loads((cc.ROOT / "results/attack-suite.json").read_text(encoding="utf-8"))
+        (lab / "attack-suite.json").write_text(json.dumps(dict(attack, timed_repeat=1)), encoding="utf-8")
+        (lab / "live-suite.json").write_text((cc.ROOT / "results/live-suite.json").read_text(encoding="utf-8"),
+                                             encoding="utf-8")
+        _, report = self.run_main(lambda r: None, "--strict")
+        self.assertTrue(any(e.startswith(f"CI-8 results/ci/lab-{head}/attack-suite.json: timed_repeat is 1")
+                            for e in report["errors"]), report["errors"])
+
     def test_a_live_control_that_never_ran_is_pending(self):
         code, report = self.run_main(lambda r: r[6].pop("live_canary_unchecked"))
         self.assertEqual(code, 0)
