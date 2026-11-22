@@ -32,6 +32,20 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
+      # spec.yml and policy.yml judge only pull requests into main; so does this.
+      # A PR into a planted branch would otherwise run that branch's scripts and
+      # post a green `check` on a head commit also proposed to main (#136). It
+      # fails rather than skips: a skipped required check counts as passing.
+      - name: Only pull requests into main
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          if [ "$BASE_REF" != "main" ]; then
+            echo "check: only pull requests into main are judged (base is '$BASE_REF')." >&2
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -93,6 +107,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      - name: Only pull requests into main
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          if [ "$BASE_REF" != "main" ]; then
+            echo "check: only pull requests into main are judged (base is '$BASE_REF')." >&2
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
