@@ -115,6 +115,22 @@ default_sha="$(sha256sum "$default" | cut -d' ' -f1)"
 sabotage_sha="$(sha256sum "$sabotage" | cut -d' ' -f1)"
 out="$work/lab"
 mkdir -p "$out"
+# The record of this run, committed with the results by tools/lab_record.py.
+{
+  echo "commit id: $(git rev-parse HEAD)"
+  echo "runner: GitHub-hosted ${ImageOS:-unknown} ${ImageVersion:-unknown}"
+  echo "kernel: $(uname -r)"
+  echo "cgroup v2 controllers: $(cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null || echo none)"
+  echo "cpus: $(nproc)"
+  echo "rust-toolchain channel: $pin"
+  sed 's/^/rustc: /' <<<"$rustc_vv"
+  echo "cargo: $cargo_v"
+  echo "rustc path: $rustc_path"
+  echo "Cargo.lock sha256: $(sha256sum Cargo.lock | cut -d' ' -f1)"
+  echo "default binary sha256: $default_sha"
+  echo "sabotage binary sha256: $sabotage_sha"
+  echo "build overrides: none set (checked before the build)"
+} > "$out/environment.txt"
 
 {
   echo "### Lab on $(uname -r), commit $(git rev-parse HEAD)"

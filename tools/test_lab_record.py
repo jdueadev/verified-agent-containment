@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""Unit tests for tools/lab_record.py. Each refusal has a case that makes it fire.
+
+The fixture is the committed WSL2 lab run results/wsl2/lab-cd7172f: a real full run,
+honest and controls, that every current lab claim was recorded against."""
+import copy
+import json
+import shutil
+import sys
+import tempfile
+import tomllib
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import lab_record as lr
+
+ROOT = Path(__file__).resolve().parent.parent
+RUN = ROOT / "results/wsl2/lab-cd7172f"
+COMMIT = "0123456789abcdef0123456789abcdef01234567"
+
+
+class RecordTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.root = self.tmp / "root"
+        self.root.mkdir()
+        shutil.copyfile(ROOT / "claims.toml", self.root / "claims.toml")
+        self.results = {
+            "attack-suite.json": json.loads((RUN / "attack-suite.json").read_text(encoding="utf-8")),
+            "live-suite.json": json.loads((RUN / "live-suite.json").read_text(encoding="utf-8")),
+        }
+
+    def write_run(self, results=None, environment=True):
+        run = self.tmp / "run"
+        if run.exists():
+            shutil.rmtree(run)
+        run.mkdir()
+        for name, data in (results or self.results).items():
+            (run / lr.SUITES[name]).write_text(json.dumps(data), encoding="utf-8")
+        if environment:
+            shutil.copyfile(RUN / "environment.txt", run / "environment.txt")
+        return run
+
+    def record(self, results=None, commit=COMMIT, platform="gha-ubuntu-24.04", environment=True):
+        return lr.record(self.root, self.write_run(results, environment), commit, platform)
+
+    def refused(self, needle, **kwargs):
+        before = (self.root / "claims.toml").read_text(encoding="utf-8")
+        with self.assertRaises(lr.RecordError) as raised:
+            self.record(**kwargs)
+        self.assertIn(needle, str(raised.exception))
+        self.assertEqual((self.root / "claims.toml").read_text(encoding="utf-8"), before, "claims.toml changed on refusal")
+        self.assertFalse((self.root / "results").exists(), "results were written on refusal")
+
+    def test_a_full_run_records_every_lab_claim_and_nothing_else(self):
+        before = {c["id"]: c for c in tomllib.loads((self.root / "claims.toml").read_text(encoding="utf-8"))["claim"]}
+        ids, where = self.record()
+        self.assertEqual(where, "results/ci/lab-0123456")
+        lab = {cid for cid, c in before.items() if any(p["result"].startswith("pass") for p in c.get("platforms", []))}
+        self.assertEqual(set(ids), lab)
+        self.assertTrue(lab)
+        after = {c["id"]: c for c in tomllib.loads((self.root / "claims.toml").read_text(encoding="utf-8"))["claim"]}
+        for cid, old in before.items():
+            new = after[cid]
+            if cid in lab:
+                self.assertEqual(new["platforms"][:-1], old["platforms"])
+                self.assertEqual(new["platforms"][-1]["name"], "gha-ubuntu-24.04")
+                self.assertEqual(new["platforms"][-1]["commit"], "0123456")
+                self.assertTrue(new["platforms"][-1]["result"].startswith("pass (results/ci/lab-0123456;"))
+                new, old = {k: v for k, v in new.items() if k != "platforms"}, {k: v for k, v in old.items() if k != "platforms"}
+            self.assertEqual(new, old, cid)
+        for name in ("attack-suite.json", "live-suite.json", "environment.txt"):
+            self.assertTrue((self.root / where / name).is_file(), name)
+
+    def test_the_same_platform_and_commit_is_not_recorded_twice(self):
+        self.record()
+        shutil.rmtree(self.root / "results")
+        self.refused("already records gha-ubuntu-24.04 at 0123456")
+
+    def test_a_failed_honest_run_is_refused(self):
+        results = copy.deepcopy(self.results)
+        run = next(r for r in results["attack-suite.json"]["runs"] if r["scenario"] == "monitor_crash" and r["weakness"] == "none")
+        run["passed"] = False
+        self.refused("scenario:monitor_crash: 1 honest run(s) failed", results=results)
+
+    def test_an_undetected_control_is_refused(self):
+        results = copy.deepcopy(self.results)
+        next(c for c in results["attack-suite.json"]["sabotage"] if c["weakness"] == "ignore_expiry")["detected"] = False
+        self.refused("sabotage:ignore_expiry: a control did not detect its defect", results=results)
+
+    def test_a_scenario_missing_from_its_suite_is_refused(self):
+        results = copy.deepcopy(self.results)
+        results["attack-suite.json"]["runs"] = [r for r in results["attack-suite.json"]["runs"] if r["scenario"] != "monitor_crash"]
+        self.refused("scenario:monitor_crash: no honest run in attack-suite.json", results=results)
+
+    def test_a_run_on_a_sabotaged_build_is_not_an_honest_run(self):
+        results = copy.deepcopy(self.results)
+        runs = results["attack-suite.json"]["runs"]
+        honest = [r for r in runs if r["scenario"] == "monitor_crash" and r["weakness"] == "none"]
+        results["attack-suite.json"]["runs"] = [r for r in runs if r not in honest] + [
+            dict(honest[0], weakness="ignore_expiry", passed=True)]
+        self.refused("scenario:monitor_crash: no honest run in attack-suite.json", results=results)
+
+    def test_a_live_reference_is_only_satisfied_by_the_live_suite(self):
+        results = copy.deepcopy(self.results)
+        moved = [r for r in results["live-suite.json"]["runs"] if r["scenario"] == "canary_exfil"]
+        self.assertTrue(moved)
+        results["live-suite.json"]["runs"] = [r for r in results["live-suite.json"]["runs"] if r["scenario"] != "canary_exfil"]
+        results["attack-suite.json"]["runs"] += moved
+        self.refused("live:canary_exfil: no honest run in live-suite.json", results=results)
+        results = copy.deepcopy(self.results)
+        results["live-suite.json"]["sabotage"] = [c for c in results["live-suite.json"]["sabotage"] if c["weakness"] != "live_canary_unchecked"]
+        self.refused("live-sabotage:live_canary_unchecked: no control in live-suite.json", results=results)
+
+    def test_ci_8_must_hold(self):
+        cases = {
+            "came from the same binary": lambda r: r["attack-suite.json"]["build"]["sabotage"].update(
+                binary_sha256=r["attack-suite.json"]["build"]["honest"]["binary_sha256"]),
+            "timed_repeat is 29": lambda r: r["attack-suite.json"].update(timed_repeat=29),
+            "cgroup_limits_waived=false": lambda r: r["attack-suite.json"].update(cgroup_limits_waived=True),
+            "controls_cgroup_limits_waived=false": lambda r: r["attack-suite.json"].update(controls_cgroup_limits_waived=True),
+            "not stamped as coming from a default build": lambda r: r["live-suite.json"]["build"]["honest"].update(sabotage=True),
+        }
+        for needle, spoil in cases.items():
+            with self.subTest(needle=needle):
+                results = copy.deepcopy(self.results)
+                spoil(results)
+                self.refused(needle, results=results)
+
+    def test_inputs_are_checked(self):
+        self.refused("full 40-character SHA", commit="0123456")
+        self.refused("not a plain platform name", platform='gha"; evil = "x')
+        self.refused("environment.txt is missing", environment=False)
+        results = copy.deepcopy(self.results)
+        results["attack-suite.json"]["kernel"] = 'x" ; y'
+        self.refused("unexpected kernel", results=results)
+
+    def test_a_platforms_value_not_on_one_line_is_refused(self):
+        text = (self.root / "claims.toml").read_text(encoding="utf-8")
+        line = next(l for l in text.splitlines() if l.startswith("platforms = ["))
+        split = line.replace("[{", "[\n  {", 1)
+        (self.root / "claims.toml").write_text(text.replace(line, split, 1), encoding="utf-8")
+        self.refused("are not one `platforms = [...]` line")
+
+    def test_append_platform_only_touches_its_claim(self):
+        text = '[[claim]]\nid = "A"\nplatforms = [{ name = "x", commit = "1", result = "pass" }]\n\n[[claim]]\nid = "AB"\nplatforms = []\n'
+        out = lr.append_platform(text, "A", '{ name = "y", commit = "2", result = "pass" }')
+        rows = {c["id"]: c for c in tomllib.loads(out)["claim"]}
+        self.assertEqual([p["name"] for p in rows["A"]["platforms"]], ["x", "y"])
+        self.assertEqual(rows["AB"]["platforms"], [])
+        with self.assertRaises(lr.RecordError):
+            lr.append_platform(text, "C", "{}")
+
+
+if __name__ == "__main__":
+    unittest.main()
