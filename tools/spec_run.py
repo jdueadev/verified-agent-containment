@@ -211,6 +211,16 @@ def own_copy(head):
     work.chmod(0o755)  # mkdtemp makes it 0700; the child's user must reach the copy inside
     copy = work / "repo"
     shutil.copytree(head, copy, symlinks=True, ignore=shutil.ignore_patterns("target"))
+    # Head-only spec is parked during a base run, so it is missing from the copy. Drop
+    # such files from the copy's index too, so the copy reads as a checkout without
+    # them; a test that walks every tracked file would otherwise trip on a parked one.
+    if (copy / ".git").exists():
+        gone = subprocess.run(["git", "-C", str(copy), "ls-files", "-z", "--deleted"],
+                              capture_output=True, text=True, check=True).stdout.split("\0")
+        gone = [name for name in gone if name]
+        if gone:
+            subprocess.run(["git", "-C", str(copy), "rm", "-q", "--cached", "--", *gone],
+                           capture_output=True, check=True)
     return work, copy
 
 

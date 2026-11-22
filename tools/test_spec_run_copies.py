@@ -99,6 +99,24 @@ class CopyTests(unittest.TestCase):
         self.assertEqual(report["failed"], {})
         self.assertEqual(seen, [{"isolate": True}])
 
+    def test_a_parked_file_is_not_tracked_in_the_copy(self):
+        import subprocess
+        tmp, head = head_with(**{"tools/test_old.py": "", "tools/test_new.py": ""})
+        with tmp:
+            for args in (["init", "-q"], ["add", "-A"]):
+                subprocess.run(["git", "-C", str(head), *args], check=True, capture_output=True)
+            (head / "tools/test_new.py").unlink()  # what run() does to head-only spec
+            work, copy = sr.own_copy(head)
+            try:
+                tracked = subprocess.run(["git", "-C", str(copy), "ls-files"], capture_output=True, text=True,
+                                         check=True).stdout.split()
+            finally:
+                sr.remove_copy(work, None)
+            self.assertEqual(tracked, ["tools/test_old.py"])
+            head_tracked = subprocess.run(["git", "-C", str(head), "ls-files"], capture_output=True, text=True,
+                                          check=True).stdout.split()
+            self.assertEqual(head_tracked, ["tools/test_new.py", "tools/test_old.py"])
+
 
 if __name__ == "__main__":
     unittest.main()
