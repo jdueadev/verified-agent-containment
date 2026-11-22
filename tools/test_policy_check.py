@@ -80,8 +80,17 @@ class LaneTests(unittest.TestCase):
                      "results/formal-verdict.json", "docs/decisions/0001-agent-workflow.md"):
             self.assertEqual(self.lane(path), "C", path)
 
+    def test_host_code_and_build_inputs_are_lane_c(self):
+        # #83: the lab can be fooled by the code it tests, so host code needs the maintainer.
+        for path in ("crates/containment-host/src/controller.rs", "crates/containment-host/src/differential.rs",
+                     "crates/containment-host/build.rs", "Cargo.toml", "Cargo.lock", ".cargo/config.toml",
+                     "rust-toolchain.toml", "crates/containment-kernel/Cargo.toml",
+                     "crates/containment-kernel/build.rs"):
+            self.assertEqual(self.lane(path), "C", path)
+
     def test_source_and_claims_are_lane_b(self):
-        for path in ("crates/containment-host/src/controller.rs", "formal/LAWS.bend", "claims.toml", "Cargo.toml",
+        for path in ("crates/containment-kernel/src/lib.rs", "crates/containment-wasm/src/lib.rs",
+                     "formal/LAWS.bend", "claims.toml",
                      "docs/claims.md", "results/differential.json", "tools/kernel_mutants.py", "README.md"):
             self.assertEqual(self.lane(path), "B", path)
 
