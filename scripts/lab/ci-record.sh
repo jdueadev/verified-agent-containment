@@ -47,11 +47,16 @@ claims_report() {
 }
 
 before="$(claims_report stale)"
-if [ -z "$before" ]; then
+# An earlier CI entry that no longer holds for the claims as they are now (a claim
+# gained a scenario, say) needs replacing too, even though no listed file changed.
+if ! python3 tools/lab_record.py --verify > "$RUNNER_TEMP/verify.json"; then
+  before="$before"$'\n'"recorded CI evidence no longer holds: $(cat "$RUNNER_TEMP/verify.json")"
+fi
+if [ -z "${before//[[:space:]]/}" ]; then
   echo "No lab claim is stale at $short; no evidence to record." | tee -a "$summary"
   exit 0
 fi
-echo "Stale before recording:"; echo "$before"
+echo "Needs recording:"; echo "$before"
 
 python3 tools/lab_record.py --results "$results" --commit "$commit" --platform gha-ubuntu-24.04 \
   | tee "$RUNNER_TEMP/record.json"
@@ -73,7 +78,9 @@ fi
 git commit -q -m "Lab evidence for $short from CI
 
 Recorded by scripts/lab/ci-record.sh from $run_url"
-git push -q origin "$branch"
+# A retried job finds its own branch already pushed. Only the evidence App can write
+# evidence/** (a ruleset), so replacing it with this attempt's commit is safe.
+git push -q --force origin "$branch"
 evidence_commit="$(git rev-parse HEAD)"
 
 ids="$(python3 -I -c 'import json, sys; print(", ".join(json.load(open(sys.argv[1]))["claims"]))' "$RUNNER_TEMP/record.json")"
@@ -90,7 +97,13 @@ Lab evidence recorded by CI for $commit (on \`main\`).
 Before approving: the author is the evidence App; the PR has exactly one commit, equal to the evidence commit in the run summary; the run is a push of the recorded commit on \`main\` with \`lab\` passed; the diff touches only \`platforms\` lines, \`docs/claims.md\` and \`results/ci/lab-$commit/\`.
 EOF
 )"
-gh pr create --base main --head "$branch" --title "Lab evidence for $short from CI" --body "$body"
+existing="$(gh pr list --state open --head "$branch" --json number --jq '.[0].number // empty')"
+if [ -n "$existing" ]; then
+  echo "PR #$existing for $branch already exists; it now carries this attempt's commit."
+  gh pr comment "$existing" --body "Updated by $run_url (evidence commit $evidence_commit)."
+else
+  gh pr create --base main --head "$branch" --title "Lab evidence for $short from CI" --body "$body"
+fi
 gh pr merge --auto --squash "$branch" || echo "auto-merge could not be requested; merge after approval" >&2
 
 # Supersede only after the new PR exists, and only evidence for an ancestor of COMMIT.

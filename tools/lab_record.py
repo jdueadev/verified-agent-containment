@@ -231,17 +231,18 @@ RECORDED = re.compile(r"^pass \(lab evidence: (results/ci/lab-([0-9a-f]{40}));")
 
 
 def verify(root):
-    """Re-check every recorded CI entry against the files it names, with the claims as they
-    are now. A claim row edited after its entry was written (for example a merge into the
-    evidence branch) is judged by its current evidence, not by what was checked then."""
+    """Re-check each claim's latest recorded CI entry against the files it names, with the
+    claims as they are now. A claim row edited after its entry was written (for example a
+    merge into the evidence branch) is judged by its current evidence, not by what was
+    checked then. Older entries are history: each was true of the claim as it stood when
+    it was recorded, and a newer entry supersedes it."""
     root = Path(root)
     claims = tomllib.loads((root / "claims.toml").read_text(encoding="utf-8")).get("claim", [])
     problems, seen = [], {}
     for claim in claims:
-        for platform in claim.get("platforms", []):
+        recorded = [p for p in claim.get("platforms", []) if RECORDED.match(str(p.get("result", "")))]
+        for platform in recorded[-1:]:
             match = RECORDED.match(str(platform.get("result", "")))
-            if not match:
-                continue
             where, sha = match.groups()
             if platform.get("commit") != sha:
                 problems.append(f"{claim['id']}: entry names {where} but commit {platform.get('commit')!r}")

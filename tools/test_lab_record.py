@@ -176,6 +176,27 @@ class RecordTests(unittest.TestCase):
             encoding="utf-8")
         self.assertTrue(any("scenario:never_ran: no honest run" in p for p in lr.verify(self.root)))
 
+    def test_a_newer_entry_supersedes_one_that_no_longer_holds(self):
+        self.record()
+        text = (self.root / "claims.toml").read_text(encoding="utf-8")
+        line = next(l for l in text.splitlines() if l.startswith("evidence = [") and "scenario:monitor_crash" in l)
+        (self.root / "claims.toml").write_text(
+            text.replace(line, line.replace('"scenario:monitor_crash"', '"scenario:monitor_crash", "scenario:benign"'), 1),
+            encoding="utf-8")
+        self.assertEqual(lr.verify(self.root), [], "benign ran in the fixture, so the entry still holds")
+        text = (self.root / "claims.toml").read_text(encoding="utf-8")
+        line = next(l for l in text.splitlines() if l.startswith("evidence = [") and "scenario:benign" in l)
+        (self.root / "claims.toml").write_text(text.replace(line, line.replace('"scenario:benign"', '"scenario:never_ran"'), 1),
+                                               encoding="utf-8")
+        self.assertTrue(lr.verify(self.root))
+        # A newer run that covers the claim as it is now supersedes the old entry.
+        results = copy.deepcopy(self.results)
+        extra = dict(next(r for r in results["attack-suite.json"]["runs"] if r["weakness"] == "none"), scenario="never_ran")
+        results["attack-suite.json"]["runs"].append(extra)
+        newer = "fedcba9876543210fedcba9876543210fedcba98"
+        lr.record(self.root, self.write_run(results, self.environment(results, newer)), newer, "gha-ubuntu-24.04")
+        self.assertEqual(lr.verify(self.root), [])
+
     def test_verify_catches_a_mismatched_or_missing_directory(self):
         self.record()
         shutil.rmtree(self.root / f"results/ci/lab-{COMMIT}")

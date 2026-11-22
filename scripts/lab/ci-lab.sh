@@ -36,16 +36,33 @@ work="${RUNNER_TEMP:-$(mktemp -d)}"
 summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
 fail() { echo "ci-lab: $*" >&2; echo "**lab failed:** $*" >> "$summary"; exit 1; }
 
-# Every recorded CI evidence entry must still hold against the files it names and
-# the claims as they are now. Cheap, builds nothing, and runs in every mode, so an
-# evidence PR whose claims changed after recording fails here.
-python3 tools/lab_record.py --verify || fail "recorded CI lab evidence does not hold (tools/lab_record.py --verify)"
+# Every recorded CI evidence entry should still hold against the files it names and
+# the claims as they are now. An evidence PR (one that touches results/ci/) must pass
+# this, so evidence whose claims changed after recording cannot merge. Any other PR
+# may legitimately change a claim that has an entry (adding a scenario, say); there
+# it is a warning, and ci-record.sh treats an entry that no longer holds as stale,
+# so the next lab run on main records replacement evidence.
+verify_ok=true
+python3 tools/lab_record.py --verify > "$work/verify.json" || verify_ok=false
 
 base_sha=""
 if [ "${1:-}" = "--if-affected" ]; then
   base_sha="${2:?--if-affected needs BASE_SHA}"
   base="$(git merge-base "$base_sha" HEAD)" || fail "no merge base with $base_sha"
   changed="$(git diff --name-only --no-renames "$base" HEAD)" || fail "git diff failed"
+  evidence_pr=false
+  # An evidence PR touches results/ci/ or adds or edits a CI evidence entry.
+  if grep -q '^results/ci/' <<<"$changed" \
+     || git diff "$base" HEAD -- claims.toml | grep -qE '^[-+].*lab evidence: results/ci/'; then
+    evidence_pr=true
+  fi
+  if [ "$verify_ok" = false ]; then
+    cat "$work/verify.json"
+    if [ "$evidence_pr" = true ]; then
+      fail "this evidence PR's recorded CI lab evidence does not hold (tools/lab_record.py --verify)"
+    fi
+    echo "Warning: recorded CI lab evidence no longer holds for the claims as changed here; the next lab run on main replaces it." | tee -a "$summary"
+  fi
   binary_paths='^(crates/|Cargo\.toml$|Cargo\.lock$|\.cargo/|rust-toolchain|scripts/lab/)'
   python3 tools/claims_check.py --affected "$base" > "$work/affected.txt" || fail "claims_check --affected failed"
   cat "$work/affected.txt"
@@ -53,7 +70,7 @@ if [ "${1:-}" = "--if-affected" ]; then
     echo "The change touches files that build the shipped binary; running the lab."
   elif grep -q '^Host claims requiring root lab refresh' "$work/affected.txt"; then
     echo "A host lab claim is affected; running the lab."
-  elif grep -qE '^(Affected claims: none|No host lab claims affected)' "$work/affected.txt"; then
+  elif grep -qE '^(Affected claims: none|No host lab claims affected|No changed files relative to )' "$work/affected.txt"; then
     echo "Nothing that builds the binary changed and no host lab claim is affected; the lab is not needed." | tee -a "$summary"
     exit 0
   else
@@ -62,6 +79,10 @@ if [ "${1:-}" = "--if-affected" ]; then
 elif [ "$#" -ne 0 ]; then
   echo "usage: ci-lab.sh [--if-affected BASE_SHA]" >&2
   exit 2
+elif [ "$verify_ok" = false ]; then
+  # On main or a spike: report it; ci-record.sh records replacement evidence.
+  cat "$work/verify.json"
+  echo "Warning: recorded CI lab evidence no longer holds; this run's record job replaces it." | tee -a "$summary"
 fi
 judge_ref="${base_sha:-HEAD}"
 
