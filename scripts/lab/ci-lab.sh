@@ -191,6 +191,22 @@ if [ "$status" -eq 0 ]; then
 else
   echo "| sabotage controls | not run: an honest suite failed | |" >> "$summary"
 fi
+if [ "$status" -ne 0 ]; then
+  # Diagnostics for a runner the suites have not run on before: which syscalls fail.
+  echo "::group::diagnostics"
+  findmnt -no TARGET,FSTYPE,OPTIONS /run /tmp /sys/fs/cgroup 2>&1 || true
+  echo "apparmor_restrict_unprivileged_userns: $(cat "$userns_knob" 2>/dev/null || echo absent)"
+  echo "unprivileged_userns_clone: $(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null || echo absent)"
+  echo "max_user_namespaces: $(cat /proc/sys/user/max_user_namespaces 2>/dev/null || echo absent)"
+  if command -v strace >/dev/null || sudo apt-get install -y -q strace >/dev/null 2>&1; then
+    sudo strace -f -qq -Z -e trace=all -o "$work/strace.txt" "$default" attack-suite --only benign --repeat 1 \
+      --allow-missing-limits --out "$work/diag.json" >/dev/null 2>&1 || true
+    grep -E 'EACCES|EPERM' "$work/strace.txt" | head -40 || true
+  else
+    echo "strace is not available"
+  fi
+  echo "::endgroup::"
+fi
 sudo chown -R "$(id -u):$(id -g)" "$out"
 [ "$status" -eq 0 ] || fail "a suite or control failed"
 
