@@ -287,6 +287,45 @@ def spec_ratchets(paths, base_get, head_get):
     return out
 
 
+# ---------- data modules ----------
+
+# Lane B Python modules that a base test imports. Importing a module runs its top-level
+# code inside the importing test's process, where it could patch that test, so such a
+# module must stay pure data: a docstring and assignments of literals, nothing that
+# runs. A change that adds anything else is lane C (#125, stage 2).
+DATA_MODULES = ("tools/kernel_mutants.py",)
+
+
+def data_module_errors(path, text):
+    """Why `text` is not pure data, or [] when it is. Unparsable text is not data."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError as error:
+        return [f"{path} does not parse ({error.msg})"]
+    out = []
+    for index, node in enumerate(tree.body):
+        if index == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) \
+                and isinstance(node.value.value, str):
+            continue
+        if isinstance(node, ast.Assign) and all(isinstance(t, ast.Name) for t in node.targets):
+            try:
+                ast.literal_eval(node.value)
+                continue
+            except ValueError:
+                pass
+        out.append(f"{path}:{node.lineno} is not a literal assignment, so importing it would run code")
+    return out
+
+
+def data_module_ratchets(paths, head_get):
+    out = []
+    for path in sorted(set(paths) & set(DATA_MODULES)):
+        text = head_get(path)
+        if text is not None:
+            out.extend(data_module_errors(path, text))
+    return out
+
+
 # ---------- classify ----------
 
 def classify(paths, base_get, head_get, lanes):
@@ -294,6 +333,7 @@ def classify(paths, base_get, head_get, lanes):
     doc_cited = set(re.findall(r'"doc:([^#"]+)', head_claims)) | set(re.findall(r'"doc:([^#"]+)', base_get("claims.toml") or ""))
     by_path = {path: lane_of(path, lanes, doc_cited) for path in paths}
     escalations = ratchets(base_get, head_get) + spec_ratchets(paths, base_get, head_get)
+    escalations += data_module_ratchets(paths, head_get)
     lane = max([entry[0] for entry in by_path.values()] + ["A"], key=ORDER.get)
     if escalations:
         lane = "C"

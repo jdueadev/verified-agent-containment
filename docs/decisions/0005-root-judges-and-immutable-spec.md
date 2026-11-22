@@ -120,6 +120,29 @@ Three workflow changes, which the agent identity cannot push:
 `spec` becomes a required check only after its first green run on `main`'s
 corpus, recorded below.
 
+### Stage 2: new spec files leave lane C
+
+- `tools/test_*.py` and `crates/containment-kernel/tests/**` move from lane C to
+  lane B, and leave CODEOWNERS. GitHub requires code-owner review on `main`, and
+  CODEOWNERS must equal lane C, so a new test file can merge without the
+  maintainer only if its path pattern leaves lane C. Existing files do not
+  lose their protection. The spec ratchet sends any edit, removal or rename to
+  lane C, so `policy` needs the maintainer for it.
+- `tools/kernel_mutants.py`, the lane B module that base tests import, must stay
+  pure data: a docstring and assignments of literals. Anything that would run on
+  import is a ratchet flag. This closes the gap #127's review named, where new
+  top-level code there would run inside a base test's process.
+- Three assertions in `tools/test_policy_check.py` pinned test files to lane C,
+  and one corpus case expected a new spec file to be lane C. They are changed on
+  purpose in stage 2's pull request, which the ratchet therefore sends to the
+  maintainer. `tools/test_policy_stage2.py` pins the new lanes and the
+  data-module rule.
+
+Stage 2 merges only after `spec` has a recorded green run without an approval,
+and after `spec` is a required check. Until `spec` is required, the plain
+`check` job is the only test gate, and it runs every test in one process, where a
+new test could patch the others.
+
 ## Proof runs
 
 None yet. The first `spec` run on a throwaway pull request, and the run that
