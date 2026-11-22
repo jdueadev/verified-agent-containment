@@ -291,8 +291,12 @@ class EnforceExitTests(unittest.TestCase):
         self.assertNotEqual(promoted, self.LANES_TEXT)
         head = dict(BASE, **{"ci/lanes.toml": promoted})
         code, result = self.run_classify(["AGENTS.md", "ci/lanes.toml"], "--map-ref", "m", "--head-sha", "h1",
-                                         "--enforce", reviews=[], trees={"h": head})
+                                         "--enforce", reviews=[], trees={"h": head, "b": head})
         self.assertEqual((code, result["lane"]), (1, "C"))
+        # and the map-ref is what decides: promoting the path there makes AGENTS.md lane A.
+        code, result = self.run_classify(["AGENTS.md"], "--map-ref", "m", "--head-sha", "h1",
+                                         "--enforce", reviews=[], trees={"m": head})
+        self.assertEqual(result["paths"]["AGENTS.md"]["lane"], "A")
 
     def test_a_missing_lane_map_is_refused(self):
         with self.assertRaises(SystemExit) as stop:

@@ -306,6 +306,14 @@ def main(argv=None):
     o.add_argument("--write", action="store_true")
     sub.add_parser("invariants")
     args = parser.parse_args(argv)
+    try:
+        return run(parser, args)
+    except subprocess.CalledProcessError as error:
+        # Fail closed, but say why: the workflow shows stderr next to an empty result.
+        sys.exit(f"policy: {' '.join(error.cmd[3:])} failed: {(error.stderr or '').strip()}")
+
+
+def run(parser, args):
     if args.command == "classify" and (args.reviews or args.enforce) and not args.head_sha:
         parser.error("--reviews and --enforce need --head-sha: approval is only ever of one commit")
 
