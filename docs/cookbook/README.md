@@ -78,10 +78,36 @@ On every `scripts/check.sh` run, each snippet must:
 - fail on its mutant, at its `teeth` expectation. A run that throws does not
   count.
 
-To add one, write `snippets/<id>.json` (the `id` is the file name), add a
-`snippet` region to its recipe, run `--write`, and review the diff. Write the
+To add or change one:
+
+1. Write `snippets/<id>.json` (the `id` is the file name) and add a `snippet`
+   region to its recipe.
+2. Rebuild the simulator page with `scripts/build-page.sh`. The page embeds
+   every snippet and the interpreter, and the checker fails when the committed
+   page's copy differs from the sources. The build runs every snippet first and
+   stops if one fails.
+3. Run `python3 tools/cookbook_check.py --write`, review the diff, and commit
+   the recipe, the snippet and `web/dist/agent-containment-simulator.html`
+   together.
+
+A change to `tools/snippet_run.mjs` needs the same page rebuild. Write the
 expectations from the law, not from the output: `--write` records the output
 under the snippet, but it never turns output into an expectation.
+
+### The playground
+
+Open [`web/dist/agent-containment-simulator.html`](../../web/dist/agent-containment-simulator.html)
+in a browser and go to **Cookbook snippets**, or add `#recipe=<id>` to the
+address. Each snippet runs on the Bend kernel compiled to JavaScript, on the
+page's Rust kernel (WebAssembly), and on its mutant, with the source beside the
+results. You can edit a snippet and run it again; an edited snippet is marked
+as not checked by CI, and nothing is saved.
+
+The checker compares only the interpreter and the snippet text embedded in the
+page with their sources. It does not compare the embedded kernels: the wasm
+build is not byte-reproducible, and the page states the commit and the sha256
+of `formal/kernel.bend` it was built from instead. After a kernel change, the
+page shows the old kernels until someone rebuilds it.
 
 **Snippets are examples, not evidence.** No claim cites them, and the checker
 rejects `doc:` evidence that points into this folder. They still assert things,
