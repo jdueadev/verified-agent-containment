@@ -1,5 +1,5 @@
 # Agent guide
-<!-- throwaway lane C test for #70; reverted after the test -->
+<!-- throwaway lane C test for #70 (push after approval); reverted after the test -->
 
 Rules for any agent or person changing this repository. Where this file and
 anything else disagree, this file wins.
