@@ -1,0 +1,4 @@
+checker = "classify"
+origin = "#125 seed: twin of platforms-added"
+expect_lane = "B"
+expect_no_escalation = true

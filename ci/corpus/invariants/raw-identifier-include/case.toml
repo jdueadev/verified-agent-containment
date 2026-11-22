@@ -1,0 +1,5 @@
+checker = "invariants"
+origin = "#86 bypass 1: a raw identifier"
+twin = "pure-kernel"
+expect = "reject"
+expect_error = "uses `include`"

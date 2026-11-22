@@ -1,0 +1,5 @@
+checker = "invariants"
+origin = "#125 seed: INV-9, sabotage is never a default feature"
+twin = "pure-kernel"
+expect = "reject"
+expect_error = "`sabotage` is enabled by the default features"
