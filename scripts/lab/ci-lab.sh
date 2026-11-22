@@ -242,6 +242,29 @@ if [ "$status" -ne 0 ]; then
   echo "apparmor_restrict_unprivileged_userns: $(cat "$userns_knob" 2>/dev/null || echo absent)"
   echo "unprivileged_userns_clone: $(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null || echo absent)"
   echo "max_user_namespaces: $(cat /proc/sys/user/max_user_namespaces 2>/dev/null || echo absent)"
+  echo "runner image trimmed: $usr_note"
+  # What the sandbox_escape scan walks: the host's /usr and /lib* are bound read-only.
+  echo "files under /usr and /lib*: $(sudo find /usr /lib /lib64 /lib32 /libx32 -xdev 2>/dev/null | wc -l)"
+  echo "busiest directories:"
+  sudo find /usr /lib -xdev -type f 2>/dev/null | cut -d/ -f1-4 | sort | uniq -c | sort -rn | head -12
+  sudo python3 -I - <<'PY' || true
+import os, time
+start, files, pe = time.monotonic(), 0, 0
+for top in ("/usr", "/lib", "/lib64"):
+    for root, dirs, names in os.walk(top):
+        if root.count("/") > 12:
+            dirs[:] = []
+        for n in names:
+            path = os.path.join(root, n)
+            files += 1
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                try:
+                    with open(path, "rb") as f:
+                        pe += f.read(2) == b"MZ"
+                except OSError:
+                    pass
+print(f"scan like the agent's: {files} files, {pe} PE executables, {time.monotonic() - start:.1f}s as root without limits")
+PY
   if command -v strace >/dev/null || sudo apt-get install -y -q strace >/dev/null 2>&1; then
     sudo strace -f -qq -Z -e trace=all -o "$work/strace.txt" "$default" attack-suite --only benign --repeat 1 \
       --allow-missing-limits --out "$work/diag.json" >/dev/null 2>&1 || true
