@@ -356,6 +356,32 @@ class SnippetTests(Fixture):
                 self.put("claims.toml", CLAIMS.replace('"mutant:can_lower"]', f'"mutant:can_lower", "doc:{ref}#Nothing"]'))
                 self.assertFails("points into docs/cookbook/")
 
+    def test_doc_evidence_that_resolves_to_a_recipe(self):
+        self.put("docs/cookbookish.md", "# elsewhere\n")
+        (self.root / "docs/cookbook/link.md").symlink_to(self.root / "docs/cookbookish.md")
+        self.put("claims.toml", CLAIMS.replace('"mutant:can_lower"]', '"mutant:can_lower", "doc:docs/cookbookish.md#x"]'))
+        self.assertFails("points into docs/cookbook/")
+        self.assertFails("docs/cookbook/link.md: a recipe must be a regular file, not a symlink")
+
+    def test_check_mode_keeps_mutant_builds_out_of_target(self):
+        from unittest import mock
+        dirs = []
+
+        def build(root, names, mutants, out_dir):
+            dirs.append(out_dir)
+            return {n: out_dir / f"{n}.mjs" for n in names}
+
+        def runner(request):
+            return {"t-one": {"bend": PASS, "wasm": PASS, "mutant:can_lower": MUTANT_FAIL}}
+        with mock.patch.object(cb, "missing_tools", lambda root: []), mock.patch.object(cb, "build_mutants", build):
+            errors, _ = cb.check(self.root, runner=runner, ci=False)
+            self.assertEqual(errors, [])
+            self.assertNotEqual(dirs[-1], self.root / cb.MUTANT_JS)
+            self.assertFalse(dirs[-1].is_relative_to(self.root))
+            errors, _ = cb.check(self.root, runner=runner, ci=False, snippets_only=True, keep_mutants=True)
+            self.assertEqual(errors, [])
+            self.assertEqual(dirs[-1], self.root / cb.MUTANT_JS)
+
     def test_doc_evidence_elsewhere_is_fine(self):
         self.put("claims.toml", CLAIMS.replace('"mutant:can_lower"]', '"mutant:can_lower", "doc:docs/cookbookish.md#x"]'))
         self.assertEqual(self.errors(), [])

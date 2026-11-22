@@ -51,9 +51,12 @@ The kinds are:
 - `snippet ID`: a snippet's source and the output of running it.
 
 Every recipe has exactly one `claim` region. A recipe for a `bend-kernel` claim
-also needs at least one `law`, `mutant` and `snippet` region, so deleting a
-region's markers cannot turn a checked block back into unchecked prose. Every
-law and mutant it shows must be cited in that claim's evidence. `scripts/check.sh` runs the
+also needs at least one `law`, `mutant` and `snippet` region, so a recipe
+cannot drop all of its checked blocks. That is a floor, not a full guard: if a
+recipe has two `law` regions and one loses its markers, the text left behind
+is no longer compared, and only review catches it. Every law and mutant a
+recipe shows must be cited in that claim's evidence. A recipe must be a
+regular file, not a symlink, and no claim may use a recipe as `doc:` evidence. `scripts/check.sh` runs the
 checker without `--write`, and fails if any region differs from what it would
 generate. The prose around the regions is checked by review only.
 
@@ -70,7 +73,10 @@ strict: an unknown key or value is an error, so a typo cannot turn an
 expectation into a no-op. The one interpreter is
 [`tools/snippet_run.mjs`](../../tools/snippet_run.mjs).
 
-On every `scripts/check.sh` run, each snippet must:
+On every `scripts/check.sh` run, each snippet must do the following. If node,
+bend or the built kernels are missing, a local run prints
+`SKIPPED: cookbook snippets` and checks only the regions; that is tier T0. In
+CI a missing tool is an error.
 
 - pass on the Bend kernel compiled to JavaScript;
 - pass on the Rust kernel compiled to WebAssembly, observing the same values on

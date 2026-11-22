@@ -163,13 +163,14 @@ def doc_ref_errors(root, claims):
     the filesystem would open it, so `./`, `//`, `..` and symlinks cannot hide it."""
     out = []
     cookbook = (root / COOKBOOK).resolve()
+    recipes = {recipe.resolve() for recipe in (root / COOKBOOK).glob("*.md")}
     for cid, claim in claims.items():
         for ref in claim.get("evidence", []):
             kind, _, target = ref.partition(":")
             if kind != "doc":
                 continue
             path = (root / target.split("#", 1)[0]).resolve()
-            if path == cookbook or path.is_relative_to(cookbook):
+            if path == cookbook or path.is_relative_to(cookbook) or path in recipes:
                 out.append(f"claims.toml {cid}: {ref} points into {COOKBOOK}/; the cookbook is not evidence")
     return out
 
@@ -397,10 +398,10 @@ def missing_tools(root):
     return out
 
 
-def build_mutants(root, names, mutants):
+def build_mutants(root, names, mutants, out_dir):
     """Compile each named Bend mutant once, from a scratch copy of formal/, into
-    target/generated/cookbook/<name>.mjs (the page build reuses these files)."""
-    out_dir = root / MUTANT_JS
+    out_dir/<name>.mjs: a temporary directory when checking, target/generated/cookbook/
+    when building the page (page_inputs)."""
     out_dir.mkdir(parents=True, exist_ok=True)
     source = read(root, KERNEL)
     paths = {}
@@ -459,12 +460,13 @@ def judge(sid, snippet, results, mutant_name):
 
 # ---------- main ----------
 
-def check(root=ROOT, write=False, runner=None, toolchain=None, ci=None, snippets_only=False):
+def check(root=ROOT, write=False, runner=None, toolchain=None, ci=None, snippets_only=False, keep_mutants=False):
     """(errors, notes). runner and toolchain are injectable so the unit tests need no
     node, bend or wasm: toolchain(root, snippets, mutant names) returns
     {id: {"bend": result, "wasm": result, "mutant": result}}, or None to skip.
     snippets_only runs the snippets and skips the recipe regions and the committed
-    page, for the page build (see page_inputs)."""
+    page, for the page build (see page_inputs). Only keep_mutants writes the mutant
+    builds to target/generated/cookbook/; otherwise they live in a temporary directory."""
     assert not (write and snippets_only)
     ci = bool(os.environ.get("CI")) if ci is None else ci
     errors, notes = [], []
@@ -507,12 +509,14 @@ def check(root=ROOT, write=False, runner=None, toolchain=None, ci=None, snippets
                     notes.append(f"SKIPPED: {message}")
             else:
                 def toolchain(root_, snippets_, names):
-                    built = build_mutants(root_, set(names.values()), mutants)
-                    kernels = [{"name": "bend", "kind": "bend", "path": str(root_ / BEND_JS)},
-                               {"name": "wasm", "kind": "wasm", "path": str(root_ / WASM)}]
-                    kernels += [{"name": f"mutant:{n}", "kind": "bend", "path": str(p)} for n, p in built.items()]
-                    run = (runner or node_runner)({"kernels": kernels, "snippets": [
-                        {"id": sid, "text": snippets_[sid][1]} for sid in names]})
+                    with tempfile.TemporaryDirectory() as scratch:
+                        out_dir = root_ / MUTANT_JS if keep_mutants else Path(scratch)
+                        built = build_mutants(root_, set(names.values()), mutants, out_dir)
+                        kernels = [{"name": "bend", "kind": "bend", "path": str(root_ / BEND_JS)},
+                                   {"name": "wasm", "kind": "wasm", "path": str(root_ / WASM)}]
+                        kernels += [{"name": f"mutant:{n}", "kind": "bend", "path": str(p)} for n, p in built.items()]
+                        run = (runner or node_runner)({"kernels": kernels, "snippets": [
+                            {"id": sid, "text": snippets_[sid][1]} for sid in names]})
                     return {sid: {"bend": run[sid]["bend"], "wasm": run[sid]["wasm"], "mutant": run[sid][f"mutant:{n}"]}
                             for sid, n in names.items()}
         if toolchain is not None and runnable:
@@ -532,6 +536,9 @@ def check(root=ROOT, write=False, runner=None, toolchain=None, ci=None, snippets
     changed, rewrites = [], []
     for path in sorted((root / COOKBOOK).glob("*.md")):
         where = rel(root, path)
+        if path.is_symlink():
+            errors.append(f"{where}: a recipe must be a regular file, not a symlink")
+            continue
         text = path.read_text(encoding="utf-8")
         try:
             regions = parse_regions(text, where)
@@ -641,7 +648,7 @@ def page_inputs(root=ROOT):
     snippet has run and passed (toolchain required), and only names from BEND_MUTANTS,
     whose builds are in target/generated/cookbook/<name>.mjs. Recipe regions and the
     committed page are not checked here: the page is what is being rebuilt."""
-    errors, _ = check(root, ci=True, snippets_only=True)
+    errors, _ = check(root, ci=True, snippets_only=True, keep_mutants=True)
     if errors:
         raise CookbookError("cookbook snippets failed; the page is not built:\n" + "\n".join(errors))
     mutants = bend_mutants(read(root, "tools/kernel_mutants.py"))
