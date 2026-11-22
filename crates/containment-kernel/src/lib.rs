@@ -4,6 +4,10 @@
 //! It has no clock, I/O, allocation, or dependency beyond `core`.
 #![no_std]
 #![forbid(unsafe_code)]
+// A panic in the kernel stops the controller (release builds abort), so explicit
+// panics and unwrapping are refused. clippy::indexing_slicing follows once
+// Actions::extend has a fail-stop that is not an index panic (#56).
+#![deny(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
 /// Current containment mode, ordered from least to most contained.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -152,7 +156,7 @@ impl Actions {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = Action> + '_ {
-        self.items[..self.len].iter().filter_map(|value| *value)
+        self.items.iter().take(self.len).filter_map(|value| *value)
     }
 }
 
