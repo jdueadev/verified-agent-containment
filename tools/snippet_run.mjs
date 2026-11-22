@@ -20,8 +20,9 @@ const EVENTS = {
   agent: ["now"], reset: ["now", "signed", "counter", "from", "not_after", "ttl"],
 };
 const EXPECT = ["mode", "deadline", "clock", "counter", "actions"];
-// The Bend kernel compiled to JS rejects a Nat past 2^48 - 1, so snippets stay below it.
-const MAX_INT = 281474976710655;
+// The Bend kernel compiled to JS rejects a Nat past 2^48 - 1. Kernels add two inputs (a
+// time plus a lease or a grace period), so each input stays below 2^47.
+const MAX_INT = 140737488355327;
 const MAX_STEPS = 64;
 const MAX_ACCESS = 8;
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);

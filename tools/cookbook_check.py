@@ -249,11 +249,18 @@ def render_claim(claim):
     out = [f"> **{claim['id']}** · layer `{claim['layer']}` · Generated from "
            "[`claims.toml`](../../claims.toml); claims.toml wins. "
            "Status and evidence: [`docs/claims.md`](../claims.md).",
-           ">", f"> **Statement:** {claim['statement']}"]
+           ">", *quoted("Statement", claim["statement"])]
     if claim.get("limits"):
-        out += [">", f"> **Limits:** {claim['limits']}"]
-    out += [">", f"> **Falsifier:** {claim['falsifier']}"]
+        out += [">", *quoted("Limits", claim["limits"])]
+    out += [">", *quoted("Falsifier", claim["falsifier"])]
     return out
+
+
+def quoted(label, text):
+    """A claim field as block-quote lines, one output line per line of the value, so a
+    multi-line value is written and re-read as the same lines."""
+    lines = str(text).split("\n")
+    return [f"> **{label}:** {lines[0]}"] + [f"> {line}" if line else ">" for line in lines[1:]]
 
 
 def render_laws(names, laws):
@@ -452,10 +459,13 @@ def judge(sid, snippet, results, mutant_name):
 
 # ---------- main ----------
 
-def check(root=ROOT, write=False, runner=None, toolchain=None, ci=None):
+def check(root=ROOT, write=False, runner=None, toolchain=None, ci=None, snippets_only=False):
     """(errors, notes). runner and toolchain are injectable so the unit tests need no
     node, bend or wasm: toolchain(root, snippets, mutant names) returns
-    {id: {"bend": result, "wasm": result, "mutant": result}}, or None to skip."""
+    {id: {"bend": result, "wasm": result, "mutant": result}}, or None to skip.
+    snippets_only runs the snippets and skips the recipe regions and the committed
+    page, for the page build (see page_inputs)."""
+    assert not (write and snippets_only)
     ci = bool(os.environ.get("CI")) if ci is None else ci
     errors, notes = [], []
     claims = load_claims(root)
@@ -466,7 +476,8 @@ def check(root=ROOT, write=False, runner=None, toolchain=None, ci=None):
     snippets, snippet_errors = load_snippets(root)
     errors += snippet_errors
     page_path = root / PAGE
-    page_err, page_has_cookbook = page_errors(root, page_path.read_text(encoding="utf-8")) if page_path.is_file() else ([], False)
+    page_err, page_has_cookbook = page_errors(root, page_path.read_text(encoding="utf-8")) \
+        if page_path.is_file() and not snippets_only else ([], False)
     errors += page_err
 
     # Cross-references a snippet needs before it can run.
@@ -512,6 +523,9 @@ def check(root=ROOT, write=False, runner=None, toolchain=None, ci=None):
         if results is not None:
             for sid, name in runnable.items():
                 errors += judge(sid, snippets[sid][2], results[sid], name)
+
+    if snippets_only:
+        return errors, notes
 
     # Regions.
     shown = {}
@@ -620,6 +634,25 @@ def check(root=ROOT, write=False, runner=None, toolchain=None, ci=None):
                 path.write_text(text, encoding="utf-8", newline="\n")
             notes += [f"rewrote {c}" for c in changed]
     return errors, notes
+
+
+def page_inputs(root=ROOT):
+    """What web/build.py may embed: {snippet id: Bend mutant name}, only after every
+    snippet has run and passed (toolchain required), and only names from BEND_MUTANTS,
+    whose builds are in target/generated/cookbook/<name>.mjs. Recipe regions and the
+    committed page are not checked here: the page is what is being rebuilt."""
+    errors, _ = check(root, ci=True, snippets_only=True)
+    if errors:
+        raise CookbookError("cookbook snippets failed; the page is not built:\n" + "\n".join(errors))
+    mutants = bend_mutants(read(root, "tools/kernel_mutants.py"))
+    snippets, _ = load_snippets(root)
+    out = {}
+    for sid, (_, _, data) in snippets.items():
+        name = data["breaks"][len("mutant:"):]
+        if name not in mutants or not re.fullmatch(r"[a-z0-9_]+", name):
+            raise CookbookError(f"snippet {sid}: {data['breaks']!r} is not a Bend mutant")
+        out[sid] = name
+    return out
 
 
 def main(argv=None):

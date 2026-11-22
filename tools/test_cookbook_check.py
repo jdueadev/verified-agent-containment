@@ -393,13 +393,32 @@ class PageTests(Fixture):
         self.assertIn("simulator.html#recipe=t-one", self.get("docs/cookbook/t.md"))
         self.assertEqual(self.errors(), [])
         self.snippet({**SNIPPET, "title": "Changed"})
-        self.assertFails("block differs from the sources")
-        self.put(cb.PAGE, page.replace("return result", "return {status:'pass'}"))
-        self.assertFails("block differs from the sources")
+        self.assertFails("the /*cookbook:snippets*/ block differs from the sources")
+        self.snippet(SNIPPET)
+        self.assertEqual(self.errors(), [])
+        weakened = page.replace('return { status: steps.some((s) => s.failures.length) ? "fail" : "pass", steps };',
+                                'return { status: "pass", steps };')
+        self.assertNotEqual(weakened, page)
+        self.put(cb.PAGE, weakened)
+        self.assertFails("the /*cookbook:interpreter*/ block differs from the sources")
 
     def test_page_running_the_interpreter_without_its_blocks(self):
         self.put(cb.PAGE, "<script>const r = runSnippet(a, b);</script>")
         self.assertFails("needs exactly one /*cookbook:interpreter*/")
+
+    def test_page_inputs_skip_the_page_and_regions(self):
+        self.put(cb.PAGE, "<script>runSnippet()</script>")  # a stale page must not block its rebuild
+        self.put("docs/cookbook/t.md", self.get("docs/cookbook/t.md").replace("Nothing lowers", "Nothing ever lowers"))
+        errors, _ = cb.check(self.root, toolchain=fake(), ci=False, snippets_only=True)
+        self.assertEqual(errors, [])
+        errors, _ = cb.check(self.root, toolchain=fake(mutant=PASS), ci=False, snippets_only=True)
+        self.assertTrue(any("passes on mutant" in e for e in errors), errors)
+
+    def test_multiline_claim_text_round_trips(self):
+        self.put("claims.toml", CLAIMS.replace('statement = "Nothing lowers the mode."', 'statement = "Nothing lowers\\n\\nthe mode."'))
+        cb.check(self.root, write=True, toolchain=fake(), ci=False)
+        self.assertIn("> **Statement:** Nothing lowers\n>\n> the mode.", self.get("docs/cookbook/t.md"))
+        self.assertEqual(self.errors(), [])
 
     def test_snippet_json_is_escaped_for_a_script(self):
         self.snippet({**SNIPPET, "title": "</script><script>alert(1)</script> "})
