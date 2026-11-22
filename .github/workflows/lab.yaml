@@ -1,0 +1,128 @@
+name: lab
+
+# The root lab in CI (#53). The suites are in scripts/lab/ci-lab.sh, which
+# builds the default and sabotage binaries on this disposable runner and
+# runs the attack and live suites and the sabotage controls as root.
+#
+# On a pull request the script runs the lab only when something that builds
+# the shipped binary, or a host lab claim, is affected, and passes
+# otherwise, so `lab` can be a required check. On main it always runs.
+#
+# `lab` is a regression gate against honest mistakes, not proof against an
+# adversarial author: the code under test builds and runs here. Host code
+# is lane C for that reason (#83). When `lab` is made required, pin its
+# source to GitHub Actions.
+#
+# Evidence: on main, `record` turns a passing run into an evidence PR
+# (results/ci/lab-<sha>/ and platform entries, by tools/lab_record.py).
+# It never builds or runs host code; it only reads the lab job's artifact
+# and runs trusted tools from main. The PR edits `platforms`, so it is
+# lane C and the maintainer approves it. A GitHub App opens it (variable
+# EVIDENCE_APP_ID, secret EVIDENCE_APP_KEY), so its checks start, and a
+# ruleset lets only that App write `evidence/**` branches, so an evidence
+# PR cannot be forged. Without the App the record job fails.
+#
+# workflow_dispatch with `spike` runs thirty lab runs in parallel (AC-048):
+# ten passing runs still leave a 5% flake rate likely. Re-run it when the
+# runner image changes its kernel.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      spike:
+        description: "Thirty parallel lab runs (AC-048)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: >-
+    lab-${{ github.event.pull_request.number || github.ref }}-${{
+    inputs.spike && 'spike' || 'gate' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lab:
+    if: ${{ !inputs.spike }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Lab
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -n "$BASE_SHA" ]; then
+            scripts/lab/ci-lab.sh --if-affected "$BASE_SHA"
+          else
+            scripts/lab/ci-lab.sh
+          fi
+      - name: Keep the results for the record job
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lab-${{ github.sha }}
+          path: ${{ runner.temp }}/lab/
+          if-no-files-found: error
+          retention-days: 30
+
+  record:
+    needs: lab
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: App token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.EVIDENCE_APP_ID }}
+          private-key: ${{ secrets.EVIDENCE_APP_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: lab-${{ github.sha }}
+          path: ${{ runner.temp }}/lab
+      - name: Open the evidence PR
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          SHA: ${{ github.sha }}
+          RUN_URL: >-
+            ${{ github.server_url }}/${{ github.repository
+            }}/actions/runs/${{ github.run_id }}/attempts/${{
+            github.run_attempt }}
+        run: scripts/lab/ci-record.sh "$RUNNER_TEMP/lab" "$SHA" "$RUN_URL"
+
+  spike:
+    if: ${{ inputs.spike }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        run: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+              16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Lab, run ${{ matrix.run }} of 30
+        run: scripts/lab/ci-lab.sh
