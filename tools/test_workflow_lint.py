@@ -54,8 +54,9 @@ class Repository(unittest.TestCase):
         self.assertTrue(files)
         self.assertEqual([e for n, t in files.items() for e in wl.lint(n, t, allowed)], [])
 
-    def test_the_allowlist_names_only_evidence(self):
-        self.assertEqual(wl.load_allowed((ROOT / wl.ALLOW_FILE).read_text(encoding="utf-8")), {"evidence"})
+    def test_the_allowlist_names_exactly_evidence_and_gate(self):
+        # Each name is an environment limited to main (#137). Adding one needs the maintainer.
+        self.assertEqual(wl.load_allowed((ROOT / wl.ALLOW_FILE).read_text(encoding="utf-8")), {"evidence", "gate"})
 
 
 class Secrets(unittest.TestCase):
