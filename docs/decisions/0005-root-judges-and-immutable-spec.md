@@ -120,10 +120,83 @@ Three workflow changes, which the agent identity cannot push:
 `spec` becomes a required check only after its first green run on `main`'s
 corpus, recorded below.
 
+### Stage 2: new spec files leave lane C
+
+- `tools/test_*.py` and `crates/containment-kernel/tests/**` move from lane C to
+  lane B, and leave CODEOWNERS. GitHub requires code-owner review on `main`, and
+  CODEOWNERS must equal lane C, so a new test file can merge without the
+  maintainer only if its path pattern leaves lane C. Existing files do not
+  lose their protection. The spec ratchet sends any edit, removal or rename to
+  lane C, so `policy` needs the maintainer for it.
+- `tools/kernel_mutants.py`, the lane B module that base tests import, must stay
+  pure data: a docstring and assignments of literals. Anything that would run on
+  import is a ratchet flag. This closes the gap #127's review named, where new
+  top-level code there would run inside a base test's process.
+- Three assertions in `tools/test_policy_check.py` pinned test files to lane C,
+  and one corpus case expected a new spec file to be lane C. They are changed on
+  purpose in stage 2's pull request, which the ratchet therefore sends to the
+  maintainer. `tools/test_policy_stage2.py` pins the new lanes and the
+  data-module rule.
+
+A new test runs with full rights wherever tests run, so stage 2 also changes
+where they run:
+- `scripts/check.sh` runs the kernel tests and the tool tests last, after
+  `claims_check.py`. Under `set -e` nothing a test does can undo a verdict that
+  came before it, and no checker runs after one. Before, a new
+  `crates/containment-kernel/tests/*.rs` ran before clippy, the host tests, the
+  differentials, the mutation check and TLC, and could rewrite any of them, or
+  `check.sh` itself, which bash reads as it goes.
+- A maintainer's local `check.sh` run now executes test files nobody reviewed,
+  with that user's rights. Run it in a throwaway environment, as INV-11 asks for
+  the lab.
+
+The stage 2 review also found bypasses of the spec ratchet that were already
+open on `main`. They mattered only once CODEOWNERS stopped covering test files:
+- **A coding declaration.** A `# coding: raw_unicode_escape` or `utf-7` line
+  turned a comment into code on import, while the ratchet parsed the UTF-8 text.
+  Python spec and data files are now parsed as bytes, as the interpreter reads
+  them, and any declaration other than UTF-8 is a flag.
+- **A lone carriage return.** The gate's git reader used text mode, which turns
+  a lone CR into a newline. rustc does not end a `//` comment there, so a comment
+  could swallow an assert unseen. The reader now decodes bytes and folds only
+  CRLF, and a lone CR in Rust spec is a flag. `spec_run` also writes each base
+  Rust test file from the base commit before it runs, as it already did for
+  Python.
+- **A symbolic link.** A new spec file could link to a lane A file, so that later
+  lane A edits would change an immutable test. A symbolic link at a spec path is a
+  flag.
+- **A nested test target.** Cargo builds `tests/<dir>/main.rs` as a test target
+  that `spec` never ran on its own. Only direct `tests/<name>.rs` files are
+  allowed.
+- **Replaced data.** `kernel_mutants.py` may assign each UPPER_CASE name once,
+  to one literal, so a second `BEND_MUTANTS = []` cannot empty the list.
+
+Each of these has a corpus case and a test that fails against a gate without its
+fix. Corpus entries now compare as text whatever their extension, because some
+of them are hostile on purpose.
+
+Stage 2 merges only after `spec` has a recorded green run without an approval,
+and after `spec (base)`, `spec (new)` and `spec (corpus)` are required checks.
+Until they are, the plain `check` job is the only test gate. The green run came
+on #133, which edits no spec, after it was rebased onto #134: all three parts
+passed with no approval,
+https://github.com/jdueadev/verified-agent-containment/actions/runs/45053657403.
+
 ## Proof runs
 
-None yet. The first `spec` run on a throwaway pull request, and the run that
-makes it required, are recorded here by URL.
+- **The first runs failed, and showed why.** `spec (base)` failed on #129, #128,
+  #130 and #131: 258 of 260 base tests passed. The two failures, in
+  `test_claims_check.py`, write a lab run into `results/ci/` of the checkout,
+  which the unprivileged user may not do. #131 put the report in the log, which
+  is how this was found. #132 runs each Python module in its own copy of the
+  checkout.
+- **The approval path works.** #132 was judged by `main`'s runner, which had no
+  copies, so its first `spec` attempt failed on the same two tests. The
+  maintainer's approval re-ran it through `policy-refresh`, and attempt 2 passed:
+  https://github.com/jdueadev/verified-agent-containment/actions/runs/45052030125
+  (attempt 1: `spec (base)` failure; attempt 2: all three parts passed).
+- **A green run without an approval:** the `spec` run on the pull request that
+  adds these lines, which edits no spec. Its URL is recorded with stage 2.
 
 ## Residual risks, accepted
 

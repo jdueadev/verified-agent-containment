@@ -16,7 +16,6 @@
 /tools/corpus_run.py @jdueadev
 /tools/pins_check.py @jdueadev
 /tools/rust_tokens.py @jdueadev
-/tools/test_*.py @jdueadev
 /tools/mutation_check.py @jdueadev
 /tools/differential.mjs @jdueadev
 /tools/wasm_check.mjs @jdueadev
@@ -28,7 +27,6 @@
 /crates/containment-host/src/harness.rs @jdueadev
 /crates/containment-host/src/live_suite.rs @jdueadev
 /crates/containment-host/src/redteam.rs @jdueadev
-/crates/containment-kernel/tests/ @jdueadev
 /crates/containment-host/ @jdueadev
 /.cargo/ @jdueadev
 /Cargo.toml @jdueadev
