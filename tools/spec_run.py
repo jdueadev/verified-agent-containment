@@ -10,7 +10,8 @@ Usage:
 base  runs every spec test file the base commit has. Head-only spec files are moved out
       of the checkout first, so a new test cannot run beside the base spec. With --rust,
       each base file in crates/containment-kernel/tests/ runs first, as its own `cargo
-      test --test NAME`, before any Python child has run head code. Then each base
+      test --test NAME` of the file as the base commit has it, before any Python child
+      has run head code. Then each base
       Python test module runs in its own `python3 -I -B` process, in its own throwaway
       copy of the head checkout, so a test may write into the repository without
       reaching any other module. In that copy the module's file is rewritten from the
@@ -18,7 +19,7 @@ base  runs every spec test file the base commit has. Head-only spec files are mo
       or extension of the same name cannot stand in for it, and any such file beside it
       fails the module.
 new   runs only the head-only spec files, the same way. The workflow runs it in a
-      separate job after `base`, so nothing it does can reach the base verdict.
+      separate job from `base`, so nothing it does can reach the base verdict.
 
 --as-user USER runs every child that runs head code as that unprivileged user, through
 `sudo -n -u USER env -i`, and kills everything the user left running after each child,
@@ -312,6 +313,22 @@ def run_rust_file(head, path, target_dir, as_user=None):
     return found
 
 
+def run_rust_with_base_text(head, path, base_text, target_dir, as_user=None):
+    """Run a base Rust test file as the base commit has it, as the Python path does: the
+    ratchet compares tokens, and the file the compiler builds should be the one judged.
+    The head's file is put back afterwards, so a local run leaves the checkout as it was."""
+    source = head / path
+    original = source.read_bytes() if source.exists() else None
+    source.write_text(base_text, encoding="utf-8")
+    try:
+        return run_rust_file(head, path, target_dir, as_user)
+    finally:
+        if original is None:
+            source.unlink(missing_ok=True)
+        else:
+            source.write_bytes(original)
+
+
 def judge(expected, reported):
     """Every expected id must be reported as passed, and nothing reported may have
     failed: tests made at run time (in a loop, by a subclass) are not in the source
@@ -353,12 +370,21 @@ def run(mode, base_ref, head, rust, as_user=None):
             if text is None:
                 report["failed"][name] = "missing at base"
                 continue
+            try:
+                if name.endswith(".py"):
+                    expected = python_test_ids(Path(name).stem, text)
+                else:
+                    expected = [f"{Path(name).stem}::{t}" for t in rust_test_ids(text)]
+            except (SyntaxError, ValueError, rust_tokens.LexError) as error:
+                # A base file that cannot be read fails, and never stops the run: the
+                # approval check after it must still be reached.
+                report["failed"][name] = f"cannot read its tests: {error}"
+                continue
             if name.endswith(".py"):
-                expected = python_test_ids(Path(name).stem, text)
                 reported = run_python_module(head, name, text if mode == "base" else None, as_user, isolate=True)
+            elif mode == "base":
+                reported = run_rust_with_base_text(head, name, text, target_dir, as_user)
             else:
-                stem = Path(name).stem
-                expected = [f"{stem}::{t}" for t in rust_test_ids(text)]
                 reported = run_rust_file(head, name, target_dir, as_user)
             passed, failed = judge(expected, reported)
             if not expected:
