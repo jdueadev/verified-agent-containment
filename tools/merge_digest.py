@@ -3,7 +3,7 @@
 detective check on each merge (#71).
 
 Usage:
-  merge_digest.py collect --repo OWNER/NAME [--since ISO_DATE | --commit SHA] > merges.json
+  merge_digest.py collect --repo OWNER/NAME [--since DATE | --commit SHA | --range A..B] > merges.json
   merge_digest.py report merges.json [--fail-on-unapproved] [--title TEXT]
 
 collect  lists merge commits on main (first-parent history) since a date, or one
@@ -16,8 +16,10 @@ report   needs no network. For each merge it works out, with git and the trusted
            - the claims whose files it touched, and whether they need the lab;
            - for lane C, whether the owner approved the head commit that merged.
          It prints a Markdown digest. Alerts come first: a lane C merge that the
-         owner neither approved at its head nor authored. With
-         --fail-on-unapproved it exits 1 when there is one.
+         owner neither approved at its head nor authored and merged, a merge whose
+         tree is not the tree of the pull request head that was approved, a
+         commit with no pull request, or one that several pull requests claim.
+         With --fail-on-unapproved it exits 1 when there is one.
 
 A lane C pull request the owner authored can only have merged through the ruleset
 bypass, since nobody can approve their own pull request. Those are listed as
@@ -28,8 +30,10 @@ This reads other commits only through git and never imports or runs them.
 """
 import argparse
 import json
+import re
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -51,25 +55,51 @@ def gh_json(*args):
 
 # ---------- collect (network) ----------
 
-def collect(repo, since=None, commit=None):
+def pulls_for(repo, sha, tries=4):
+    """Pull requests whose merge commit is `sha`. The API can lag just after a merge, so
+    an empty answer is retried before it is believed."""
+    for attempt in range(tries):
+        pulls = [p for p in gh_json(f"repos/{repo}/commits/{sha}/pulls") or [] if p.get("merge_commit_sha") == sha]
+        if pulls or attempt == tries - 1:
+            return pulls
+        time.sleep(5 * (attempt + 1))
+    return []
+
+
+def fetch_pr_head(number):
+    """The approved head must be in the local object store to compare trees. A failed
+    fetch is not an error here: same_tree() then cannot read it and reports a mismatch."""
+    subprocess.run(["git", "-C", str(ROOT), "fetch", "-q", "origin", f"pull/{number}/head"],
+                   capture_output=True, check=False)
+
+
+def collect(repo, since=None, commit=None, span=None):
     if commit:
         commits = [git("rev-parse", "--verify", f"{commit}^{{commit}}").strip()]
+    elif span:
+        commits = [c for c in git("rev-list", "--first-parent", "--reverse", span).split() if c]
     else:
         commits = [c for c in git("rev-list", "--first-parent", f"--since={since}", "origin/main").split() if c]
     merges = []
     for sha in commits:
-        pulls = [p for p in gh_json(f"repos/{repo}/commits/{sha}/pulls") or [] if p.get("merge_commit_sha") == sha]
-        entry = {"sha": sha, "pr": None}
-        if pulls:
+        pulls = pulls_for(repo, sha)
+        entry = {"sha": sha, "pr": None, "pulls": [p["number"] for p in pulls]}
+        if len(pulls) == 1:
             number = pulls[0]["number"]
             pr = gh_json(f"repos/{repo}/pulls/{number}")
             reviews = gh_json("--paginate", "--slurp", f"repos/{repo}/pulls/{number}/reviews?per_page=100")
+            head = (pr.get("head") or {}).get("sha", "")
+            if head:
+                fetch_pr_head(number)
             entry["pr"] = {
                 "number": number,
                 "title": pr.get("title", ""),
                 "author": (pr.get("user") or {}).get("login", ""),
                 "merged_by": (pr.get("merged_by") or {}).get("login", ""),
-                "head_sha": (pr.get("head") or {}).get("sha", ""),
+                "merged_at": pr.get("merged_at"),
+                "base": (pr.get("base") or {}).get("ref", ""),
+                "merge_commit_sha": pr.get("merge_commit_sha", ""),
+                "head_sha": head,
                 "reviews": reviews or [],
             }
         merges.append(entry)
@@ -96,12 +126,16 @@ def analyze(merge):
     pr = merge.get("pr")
     login = owner.lstrip("@").lower()
     if pr is None:
-        state = "no pull request"
+        state = "several pull requests" if len(merge.get("pulls", [])) > 1 else "no pull request"
+    elif not pr.get("merged_at") or pr.get("base") != "main" or pr.get("merge_commit_sha") != sha:
+        state = "pull request data does not match this merge"
+    elif not same_tree(sha, pr.get("head_sha")):
+        state = "merged tree is not the pull request head's tree"
     elif result["lane"] != "C":
         state = "not needed"
     elif policy_check.approved(pr.get("reviews", []), owner, pr.get("head_sha")):
         state = "approved"
-    elif (pr.get("author") or "").lower() == login:
+    elif (pr.get("author") or "").lower() == login and (pr.get("merged_by") or "").lower() == login:
         state = "maintainer merge (bypass)"
     else:
         state = "UNAPPROVED"
@@ -113,8 +147,19 @@ def analyze(merge):
         "claims": [h["id"] for h in hits],
         "lab_claims": [h["id"] for h in hits if h["needs_lab"]],
         "approval": state,
-        "alert": state in ("UNAPPROVED", "no pull request"),
+        "alert": state not in ("approved", "not needed", "maintainer merge (bypass)"),
     }
+
+
+def same_tree(sha, head):
+    """Squash merges with branches required to be up to date make the merge commit's tree
+    exactly the pull request head's tree. Anything else did not merge what was reviewed."""
+    if not head:
+        return False
+    try:
+        return git("rev-parse", f"{sha}^{{tree}}").strip() == git("rev-parse", f"{head}^{{tree}}").strip()
+    except subprocess.CalledProcessError:
+        return False
 
 
 def stale_now():
@@ -127,9 +172,18 @@ def stale_now():
         return ["claims_check did not report (its output could not be read)"]
 
 
+def safe(text, limit=90):
+    """Text from a pull request, made inert in Markdown: no HTML or comments, no table
+    breaks, no mentions, links, emphasis or headings, one line, bounded length."""
+    text = " ".join(str(text).split())[:limit]
+    # Every rendered line starts with "- " or "| ", so a "#" can never start a heading,
+    # and "(" alone cannot make a link once "[" and "]" are escaped.
+    return re.sub(r"[\\`*_\[\]<>|@~&]", lambda m: "&#%d;" % ord(m.group()), text)
+
+
 def _pr(row):
     pr = row["pr"]
-    return f"#{pr['number']} {pr['title']}" if pr else f"`{row['sha'][:7]}` (no pull request)"
+    return f"#{int(pr['number'])} {safe(pr['title'])}" if pr else f"`{row['sha'][:7]}` (no single pull request)"
 
 
 def render(rows, stale, title):
@@ -141,7 +195,7 @@ def render(rows, stale, title):
         lines.append("These reached `main` without the owner's approval of the merged head commit:")
         lines.append("")
         for r in alerts:
-            lines.append(f"- **{_pr(r)}**, lane {r['lane']}, `{r['sha'][:7]}`: {r['approval']}")
+            lines.append(f"- **{_pr(r)}**, lane {r['lane']}, `{r['sha'][:7]}`: {safe(r['approval'])}")
     else:
         lines.append("")
         lines.append("None. Every lane C merge was approved at its head commit or is the maintainer's own.")
@@ -150,8 +204,8 @@ def render(rows, stale, title):
     if lane_b:
         lines += ["| PR | commit | claims affected | need the lab |", "|---|---|---|---|"]
         for r in lane_b:
-            lines.append(f"| {_pr(r)} | `{r['sha'][:7]}` | {', '.join(r['claims']) or 'none'} | "
-                         f"{', '.join(r['lab_claims']) or 'none'} |")
+            lines.append(f"| {_pr(r)} | `{r['sha'][:7]}` | {safe(', '.join(r['claims']), 400) or 'none'} | "
+                         f"{safe(', '.join(r['lab_claims']), 400) or 'none'} |")
     else:
         lines.append("None.")
     lines += ["", "## Lane C merges", ""]
@@ -159,7 +213,8 @@ def render(rows, stale, title):
     if lane_c:
         lines += ["| PR | commit | approval | escalated by |", "|---|---|---|---|"]
         for r in lane_c:
-            lines.append(f"| {_pr(r)} | `{r['sha'][:7]}` | {r['approval']} | {'; '.join(r['escalations']) or 'paths'} |")
+            lines.append(f"| {_pr(r)} | `{r['sha'][:7]}` | {safe(r['approval'])} | "
+                         f"{safe('; '.join(r['escalations']), 400) or 'paths'} |")
     else:
         lines.append("None.")
     escalated = [r for r in rows if r["escalations"]]
@@ -167,12 +222,12 @@ def render(rows, stale, title):
     if escalated:
         for r in escalated:
             for e in r["escalations"]:
-                lines.append(f"- {_pr(r)}: {e}")
+                lines.append(f"- {_pr(r)}: {safe(e, 300)}")
     else:
         lines.append("None.")
     lane_a = sum(r["lane"] == "A" for r in rows)
     lines += ["", f"Lane A merges: {lane_a}.", "", "## Stale rows on main now", ""]
-    lines += [f"- {s}" for s in stale] or ["None."]
+    lines += [f"- {safe(s, 300)}" for s in stale] or ["None."]
     return "\n".join(lines) + "\n"
 
 
@@ -184,13 +239,14 @@ def main(argv=None):
     group = c.add_mutually_exclusive_group(required=True)
     group.add_argument("--since")
     group.add_argument("--commit")
+    group.add_argument("--range", dest="span", help="first-parent commits in A..B, oldest first")
     r = sub.add_parser("report")
     r.add_argument("merges")
     r.add_argument("--fail-on-unapproved", action="store_true")
     r.add_argument("--title", default="Merge digest")
     args = parser.parse_args(argv)
     if args.command == "collect":
-        print(json.dumps(collect(args.repo, since=args.since, commit=args.commit), indent=2))
+        print(json.dumps(collect(args.repo, since=args.since, commit=args.commit, span=args.span), indent=2))
         return 0
     merges = json.loads(Path(args.merges).read_text(encoding="utf-8"))
     rows = [analyze(m) for m in merges]

@@ -24,56 +24,121 @@ def full(sha):
     return pc.git("rev-parse", sha).strip()
 
 
-def pr(author="jdueadev-agent", head="h1", reviews=()):
-    return {"number": 1, "title": "t", "author": author, "merged_by": "jdueadev", "head_sha": head,
-            "reviews": list(reviews)}
+def pr(sha, author="jdueadev-agent", merged_by="jdueadev-agent", head=None, reviews=(), **extra):
+    """A pull request that merged `sha`. Its head defaults to `sha` itself, whose tree is
+    by definition the merged tree."""
+    out = {"number": 1, "title": "t", "author": author, "merged_by": merged_by, "merged_at": "2026-11-22T00:00:00Z",
+           "base": "main", "merge_commit_sha": sha, "head_sha": head or sha, "reviews": list(reviews)}
+    out.update(extra)
+    return out
 
 
-def review(login, state, sha="h1"):
+def review(login, state, sha):
     return {"user": {"login": login}, "state": state, "commit_id": sha}
 
 
 class AnalyzeTests(unittest.TestCase):
+    def setUp(self):
+        self.c, self.b = full(LANE_C), full(LANE_B)
+
+    def state(self, sha, pr_data, pulls=None):
+        row = md.analyze({"sha": sha, "pr": pr_data, "pulls": pulls if pulls is not None else [1]})
+        return row["approval"], row["alert"]
+
     def test_a_lane_c_merge_approved_at_its_head_is_approved(self):
-        row = md.analyze({"sha": full(LANE_C), "pr": pr(reviews=[review("jdueadev", "APPROVED")])})
-        self.assertEqual((row["lane"], row["approval"], row["alert"]), ("C", "approved", False))
+        self.assertEqual(self.state(self.c, pr(self.c, reviews=[review("jdueadev", "APPROVED", self.c)])),
+                         ("approved", False))
 
-    def test_a_lane_c_merge_approved_at_an_older_head_is_an_alert(self):
-        row = md.analyze({"sha": full(LANE_C), "pr": pr(head="h2", reviews=[review("jdueadev", "APPROVED", "h1")])})
-        self.assertEqual((row["approval"], row["alert"]), ("UNAPPROVED", True))
+    def test_review_sequences(self):
+        cases = {
+            ("APPROVED", "DISMISSED"): ("UNAPPROVED", True),
+            ("APPROVED", "CHANGES_REQUESTED"): ("UNAPPROVED", True),
+            ("APPROVED", "COMMENTED"): ("approved", False),
+        }
+        for states, want in cases.items():
+            with self.subTest(states=states):
+                reviews = [review("jdueadev", s, self.c) for s in states]
+                self.assertEqual(self.state(self.c, pr(self.c, reviews=reviews)), want)
+        # As the API returns them with --slurp: a list of pages.
+        pages = [[review("jdueadev", "APPROVED", self.c)], [review("jdueadev", "COMMENTED", self.c)]]
+        self.assertEqual(self.state(self.c, pr(self.c, reviews=pages)), ("approved", False))
 
-    def test_approval_by_someone_else_is_an_alert(self):
-        row = md.analyze({"sha": full(LANE_C), "pr": pr(reviews=[review("jdueadev-agent", "APPROVED")])})
-        self.assertEqual((row["approval"], row["alert"]), ("UNAPPROVED", True))
+    def test_an_approval_of_an_older_head_or_by_someone_else_is_an_alert(self):
+        self.assertEqual(self.state(self.c, pr(self.c, reviews=[review("jdueadev", "APPROVED", "0" * 40)])),
+                         ("UNAPPROVED", True))
+        self.assertEqual(self.state(self.c, pr(self.c, reviews=[review("jdueadev-agent", "APPROVED", self.c)])),
+                         ("UNAPPROVED", True))
 
-    def test_the_maintainers_own_lane_c_pr_is_a_bypass_merge_not_an_alert(self):
-        row = md.analyze({"sha": full(LANE_C), "pr": pr(author="JDueaDev")})
-        self.assertEqual((row["approval"], row["alert"]), ("maintainer merge (bypass)", False))
+    def test_a_bypass_merge_needs_the_owner_as_author_and_merger(self):
+        self.assertEqual(self.state(self.c, pr(self.c, author="JDueaDev", merged_by="jdueadev")),
+                         ("maintainer merge (bypass)", False))
+        self.assertEqual(self.state(self.c, pr(self.c, author="jdueadev", merged_by="jdueadev-agent")),
+                         ("UNAPPROVED", True))
 
-    def test_a_commit_with_no_pull_request_is_an_alert_in_any_lane(self):
-        for sha in (LANE_C, LANE_B):
+    def test_the_merged_tree_must_be_the_approved_heads_tree(self):
+        other = full(LANE_B)
+        reviews = [review("jdueadev", "APPROVED", other)]
+        self.assertEqual(self.state(self.c, pr(self.c, head=other, reviews=reviews)),
+                         ("merged tree is not the pull request head's tree", True))
+
+    def test_pull_request_data_must_match_the_merge(self):
+        for extra in ({"merge_commit_sha": "f" * 40}, {"merged_at": None}, {"base": "release"}):
+            with self.subTest(extra=extra):
+                approval, alert = self.state(self.c, pr(self.c, **extra))
+                self.assertEqual((approval, alert), ("pull request data does not match this merge", True))
+
+    def test_no_pull_request_or_several_are_alerts_in_any_lane(self):
+        for sha in (self.c, self.b):
             with self.subTest(sha=sha):
-                row = md.analyze({"sha": full(sha), "pr": None})
-                self.assertEqual((row["approval"], row["alert"]), ("no pull request", True))
+                self.assertEqual(self.state(sha, None, pulls=[]), ("no pull request", True))
+                self.assertEqual(self.state(sha, None, pulls=[1, 2]), ("several pull requests", True))
 
     def test_a_lane_b_merge_lists_its_claims_and_needs_no_approval(self):
-        row = md.analyze({"sha": full(LANE_B), "pr": pr()})
+        row = md.analyze({"sha": self.b, "pr": pr(self.b), "pulls": [1]})
         self.assertEqual((row["lane"], row["approval"], row["alert"]), ("B", "not needed", False))
         self.assertIn("R-DIFF-01", row["claims"])
 
+    def test_a_lane_b_merge_with_different_content_is_still_an_alert(self):
+        self.assertEqual(self.state(self.b, pr(self.b, head=self.c)),
+                         ("merged tree is not the pull request head's tree", True))
+
     def test_the_lane_map_is_the_one_before_the_merge(self):
-        # #84 put crates/containment-host/** in lane C. Judged by the map before it, a
-        # host-only change is lane B, so the change that moves a path cannot escape review
-        # by moving it first; a later change to that path is judged by the new map.
-        parent_map = pc.reader(full(LANE_C) + "^")(pc.LANES_FILE)
-        _, lanes = pc.load_lanes(parent_map)
+        _, lanes = pc.load_lanes(pc.reader(self.c + "^")(pc.LANES_FILE))
         self.assertEqual(pc.lane_of("crates/containment-host/src/sandbox.rs", lanes)[0], "B")
-        _, after = pc.load_lanes(pc.reader(full(LANE_C))(pc.LANES_FILE))
+        _, after = pc.load_lanes(pc.reader(self.c)(pc.LANES_FILE))
         self.assertEqual(pc.lane_of("crates/containment-host/src/sandbox.rs", after)[0], "C")
 
     def test_a_merge_before_the_lane_map_is_not_judged(self):
-        row = md.analyze({"sha": full(BEFORE_MAP), "pr": pr()})
+        row = md.analyze({"sha": full(BEFORE_MAP), "pr": pr(full(BEFORE_MAP)), "pulls": [1]})
         self.assertEqual((row["lane"], row["alert"]), ("-", False))
+
+
+class CollectTests(unittest.TestCase):
+    def collect(self, answers):
+        calls = []
+
+        def fake(*args):
+            calls.append(args)
+            return answers(args)
+        with mock.patch.object(md, "gh_json", fake), mock.patch.object(md.time, "sleep", lambda s: None), \
+                mock.patch.object(md, "fetch_pr_head", lambda number: None):
+            return md.collect("o/r", commit=LANE_C), calls
+
+    def test_only_a_pull_request_that_merged_this_commit_counts(self):
+        sha = full(LANE_C)
+        merges, _ = self.collect(lambda a: [{"number": 9, "merge_commit_sha": "f" * 40}] if "pulls" in a[0] else None)
+        self.assertEqual((merges[0]["pr"], merges[0]["pulls"]), (None, []))
+
+    def test_several_pull_requests_are_kept_as_several(self):
+        sha = full(LANE_C)
+        merges, _ = self.collect(lambda a: [{"number": 1, "merge_commit_sha": sha},
+                                            {"number": 2, "merge_commit_sha": sha}] if a[0].endswith("/pulls") else None)
+        self.assertEqual((merges[0]["pr"], merges[0]["pulls"]), (None, [1, 2]))
+
+    def test_an_empty_lookup_is_retried(self):
+        merges, calls = self.collect(lambda a: [] if a[0].endswith("/pulls") else None)
+        self.assertEqual(sum(1 for c in calls if c[0].endswith("/pulls")), 4)
+        self.assertIsNone(merges[0]["pr"])
 
 
 class ReportTests(unittest.TestCase):
@@ -88,7 +153,8 @@ class ReportTests(unittest.TestCase):
         return code, out.getvalue()
 
     def test_alerts_come_first_and_fail_only_when_asked(self):
-        merges = [{"sha": full(LANE_C), "pr": pr()}, {"sha": full(LANE_B), "pr": pr()}]
+        merges = [{"sha": full(LANE_C), "pr": pr(full(LANE_C)), "pulls": [1]},
+                  {"sha": full(LANE_B), "pr": pr(full(LANE_B)), "pulls": [1]}]
         code, text = self.run_report(merges)
         self.assertEqual(code, 0)
         self.assertLess(text.index("## Alerts"), text.index("## Lane B merges"))
@@ -98,8 +164,17 @@ class ReportTests(unittest.TestCase):
         code, _ = self.run_report(merges, "--fail-on-unapproved")
         self.assertEqual(code, 1)
 
+    def test_pull_request_text_cannot_hide_or_forge_rows(self):
+        hostile = 'x <!-- | @jdueadev [None.](http://e) **ok**\n## Alerts'
+        merges = [{"sha": full(LANE_C), "pulls": [1], "pr": pr(full(LANE_C), title=hostile)}]
+        _, text = self.run_report(merges)
+        for raw in ("<!--", "@jdueadev", "](", "**ok", "\n## Alerts\n\nNone"):
+            self.assertNotIn(raw, text.split("## Lane B")[0].replace("## Alerts\n\nThese", ""), raw)
+        self.assertEqual(text.count("\n## Alerts"), 0 if text.startswith("## Alerts") else 1)
+
     def test_a_clean_week_says_so_and_passes(self):
-        merges = [{"sha": full(LANE_C), "pr": pr(reviews=[review("jdueadev", "APPROVED")])}]
+        merges = [{"sha": full(LANE_C), "pulls": [1],
+                   "pr": pr(full(LANE_C), reviews=[review("jdueadev", "APPROVED", full(LANE_C))])}]
         code, text = self.run_report(merges, "--fail-on-unapproved")
         self.assertEqual(code, 0)
         self.assertIn("None. Every lane C merge was approved", text)
