@@ -122,8 +122,19 @@ corpus, recorded below.
 
 ## Proof runs
 
-None yet. The first `spec` run on a throwaway pull request, and the run that
-makes it required, are recorded here by URL.
+- **The first runs failed, and showed why.** `spec (base)` failed on #129, #128,
+  #130 and #131: 258 of 260 base tests passed. The two failures, in
+  `test_claims_check.py`, write a lab run into `results/ci/` of the checkout,
+  which the unprivileged user may not do. #131 put the report in the log, which
+  is how this was found. #132 runs each Python module in its own copy of the
+  checkout.
+- **The approval path works.** #132 was judged by `main`'s runner, which had no
+  copies, so its first `spec` attempt failed on the same two tests. The
+  maintainer's approval re-ran it through `policy-refresh`, and attempt 2 passed:
+  https://github.com/jdueadev/verified-agent-containment/actions/runs/45052030125
+  (attempt 1: `spec (base)` failure; attempt 2: all three parts passed).
+- **A green run without an approval:** the `spec` run on the pull request that
+  adds these lines, which edits no spec. Its URL is recorded with stage 2.
 
 ## Residual risks, accepted
 
