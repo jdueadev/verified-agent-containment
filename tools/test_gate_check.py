@@ -397,6 +397,9 @@ class Main(unittest.TestCase):
             batch = gc.judged_in_child(HEAD)
         self.assertEqual(batch["head_sha"], HEAD)
         self.assertTrue(all(v["conclusion"] == "failure" for v in batch["verdicts"]))
+        # The child's own judged() caught the KeyError and wrote a clean batch; a crashed
+        # child would say "in the sweep failed" instead.
+        self.assertIn("Judging this commit failed (KeyError)", batch["verdicts"][0]["summary"])
 
     def test_sweep_heads_lists_open_prs_from_this_repository_whatever_their_base(self):
         prs = [dict(PR), dict(PR, base={"ref": "evil", "sha": OLD}, head={"sha": OLD, "ref": "x", "repo": {"full_name": REPO}}),
