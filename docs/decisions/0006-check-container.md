@@ -71,8 +71,8 @@ entrypoint fails unless:
 It also fails if `check.sh` printed `SKIPPED` or a unit test was skipped. A passing run ends with
 `Tier: T1 (container, image sha256:...) at HEAD <sha> (clean | uncommitted
 changes), scripts/check.sh <args>`. A locally built image has no registry
-digest, so "the image digest" in `AGENTS.md` is the image id, the digest of its
-configuration. The wrapper runs the image by that id, so the id reported is the
+digest, so `AGENTS.md` asks for the image id that line prints, the digest of
+the image's configuration (`sha256:...`). The wrapper runs the image by that id, so the id reported is the
 image that ran.
 
 ### Trust in downloads
