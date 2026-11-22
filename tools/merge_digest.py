@@ -88,6 +88,7 @@ def collect(repo, since=None, commit=None, span=None):
             number = pulls[0]["number"]
             pr = gh_json(f"repos/{repo}/pulls/{number}")
             reviews = gh_json("--paginate", "--slurp", f"repos/{repo}/pulls/{number}/reviews?per_page=100")
+            commits = gh_json("--paginate", "--slurp", f"repos/{repo}/pulls/{number}/commits?per_page=100")
             head = (pr.get("head") or {}).get("sha", "")
             if head:
                 fetch_pr_head(number)
@@ -101,6 +102,7 @@ def collect(repo, since=None, commit=None, span=None):
                 "merge_commit_sha": pr.get("merge_commit_sha", ""),
                 "head_sha": head,
                 "reviews": reviews or [],
+                "commits": commits or [],
             }
         merges.append(entry)
     return merges
@@ -117,11 +119,20 @@ def analyze(merge):
         return {"sha": sha, "pr": merge.get("pr"), "lane": "-", "escalations": [], "claims": [],
                 "lab_claims": [], "approval": "first parent could not be resolved", "alert": True}
     paths = [p for p in git("diff", "--name-only", "--no-renames", parent, sha).splitlines() if p]
+    pr = merge.get("pr")
     lanes_text = policy_check.reader(parent)(policy_check.LANES_FILE)
     if lanes_text is None:
-        # Merged before the lane map existed (#58): there is no lane to judge it by.
-        return {"sha": sha, "pr": merge.get("pr"), "lane": "-", "escalations": [], "claims": [],
-                "lab_claims": [], "approval": "before the lane map", "alert": False}
+        # Only history from before the lane map existed (#58) has no lane to judge it by.
+        # A parent whose history once had the map has lost it, and that is an alert:
+        # otherwise one merge deleting ci/lanes.toml would end every later check.
+        ever = git("log", "-1", "--format=%H", parent, "--", policy_check.LANES_FILE).strip()
+        problem = pull_request_problem(merge, sha)
+        if ever:
+            state = problem or "the lane map is missing before this merge"
+        else:
+            state = problem or "before the lane map"
+        return {"sha": sha, "pr": pr, "lane": "-", "escalations": [], "claims": [],
+                "lab_claims": [], "approval": state, "alert": bool(ever or problem)}
     owner, lanes = policy_check.load_lanes(lanes_text)
     result = policy_check.classify(paths, policy_check.reader(parent), policy_check.reader(sha), lanes)
     claims_text = policy_check.reader(sha)("claims.toml") or ""
@@ -133,22 +144,19 @@ def analyze(merge):
         # A merge that leaves claims.toml unreadable is itself something to report; it
         # must not stop the digest from listing every other merge.
         hits, claims_error = [], f"claims.toml at this merge cannot be read: {error}"
-    pr = merge.get("pr")
     login = owner.lstrip("@").lower()
+    problem = pull_request_problem(merge, sha)
     if claims_error:
         state = claims_error
-    elif pr is None:
-        state = "several pull requests" if len(merge.get("pulls", [])) > 1 else "no pull request"
-    elif not pr.get("merged_at") or pr.get("base") != "main" or pr.get("merge_commit_sha") != sha:
-        state = "pull request data does not match this merge"
-    elif not same_tree(sha, pr.get("head_sha")):
-        state = "merged tree is not the pull request head's tree"
+    elif problem:
+        state = problem
     elif result["lane"] != "C":
         state = "not needed"
     elif policy_check.approved(pr.get("reviews", []), owner, pr.get("head_sha")):
         state = "approved"
     elif (pr.get("author") or "").lower() == login and (pr.get("merged_by") or "").lower() == login:
-        state = "maintainer merge (bypass)"
+        state = ("maintainer merge (bypass)" if owner_commits_only(pr.get("commits"), login)
+                 else "maintainer merge (bypass) of commits not proven to be the owner's")
     else:
         state = "UNAPPROVED"
     return {
@@ -161,6 +169,36 @@ def analyze(merge):
         "approval": state,
         "alert": state not in ("approved", "not needed", "maintainer merge (bypass)"),
     }
+
+
+def pull_request_problem(merge, sha):
+    """Why the pull request data cannot vouch for this merge, or None."""
+    pr = merge.get("pr")
+    if pr is None:
+        return "several pull requests" if len(merge.get("pulls", [])) > 1 else "no pull request"
+    if not pr.get("merged_at") or pr.get("base") != "main" or pr.get("merge_commit_sha") != sha:
+        return "pull request data does not match this merge"
+    if not same_tree(sha, pr.get("head_sha")):
+        return "merged tree is not the pull request head's tree"
+    return None
+
+
+def owner_commits_only(commits, login):
+    """True when every commit on the pull request was authored and committed by the owner
+    with a signature GitHub verified. Another identity with write access could otherwise
+    push to the owner's branch before the owner merges it through the bypass. A commit
+    made in the web UI or through the API is committed by `web-flow`, whose signature
+    covers whatever author the caller named, so it does not count as proof."""
+    flat = [c for page in commits or [] for c in (page if isinstance(page, list) else [page])]
+    if not flat:
+        return False
+    for c in flat:
+        author = ((c.get("author") or {}).get("login") or "").lower()
+        committer = ((c.get("committer") or {}).get("login") or "").lower()
+        verified = ((c.get("commit") or {}).get("verification") or {}).get("verified") is True
+        if author != login or committer != login or not verified:
+            return False
+    return True
 
 
 def same_tree(sha, head):
@@ -189,8 +227,23 @@ def safe(text, limit=90):
     breaks, no mentions, links, emphasis or headings, one line, bounded length."""
     text = " ".join(str(text).split())[:limit]
     # Every rendered line starts with "- " or "| ", so a "#" can never start a heading,
-    # and "(" alone cannot make a link once "[" and "]" are escaped.
-    return re.sub(r"[\\`*_\[\]<>|@~&]", lambda m: "&#%d;" % ord(m.group()), text)
+    # and "(" alone cannot make a link once "[" and "]" are escaped. An HTML entity does
+    # not stop a mention: GitHub renders "&#64;name" as a mention. A word joiner after
+    # "@" and "#", and inside "://", "www." and "GH-", stops mentions, issue references
+    # and autolinks while the text still reads the same.
+    out = []
+    for ch in text:
+        if ch in "\\`*_[]<>|~&":
+            out.append("&#%d;" % ord(ch))
+        elif ch in "@#":
+            out.append(ch + WORD_JOINER)
+        else:
+            out.append(ch)
+    text = "".join(out).replace("://", ":/" + WORD_JOINER + "/")
+    return re.sub(r"(?i)(www|\bgh-)(\.?)", lambda m: m.group(1) + WORD_JOINER + m.group(2), text)
+
+
+WORD_JOINER = "&#8288;"
 
 
 def _pr(row):
@@ -198,7 +251,7 @@ def _pr(row):
     return f"#{int(pr['number'])} {safe(pr['title'])}" if pr else f"`{row['sha'][:7]}` (no single pull request)"
 
 
-def render(rows, stale, title):
+def render(rows, stale, title, stale_at="main"):
     lines = [f"# {title}", ""]
     alerts = [r for r in rows if r["alert"]]
     lines.append("## Alerts")
@@ -238,7 +291,7 @@ def render(rows, stale, title):
     else:
         lines.append("None.")
     lane_a = sum(r["lane"] == "A" for r in rows)
-    lines += ["", f"Lane A merges: {lane_a}.", "", "## Stale rows on main now", ""]
+    lines += ["", f"Lane A merges: {lane_a}.", "", f"## Stale rows at {stale_at}", ""]
     lines += [f"- {safe(s, 300)}" for s in stale] or ["None."]
     return "\n".join(lines) + "\n"
 
@@ -262,7 +315,8 @@ def main(argv=None):
         return 0
     merges = json.loads(Path(args.merges).read_text(encoding="utf-8"))
     rows = [analyze(m) for m in merges]
-    print(render(rows, stale_now(), args.title), end="")
+    at = git("rev-parse", "--short", "HEAD").strip()
+    print(render(rows, stale_now(), args.title, stale_at=f"`{at}` (the checkout this report ran from)"), end="")
     if args.fail_on_unapproved and any(r["alert"] for r in rows):
         print("merge_digest: a lane C change reached main without the owner's approval", file=sys.stderr)
         return 1

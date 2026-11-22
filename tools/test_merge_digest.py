@@ -3,6 +3,7 @@
 this repository's history (check.yml checks out the full history), with review data
 supplied by the test, so each approval state has a case that produces it."""
 import contextlib
+import html
 import io
 import json
 import sys
@@ -41,6 +42,15 @@ def review(login, state, sha):
     return {"user": {"login": login}, "state": state, "commit_id": sha}
 
 
+def commit(author="jdueadev", committer="jdueadev", verified=True):
+    """One entry of GET /pulls/N/commits, reduced to the fields the digest reads."""
+    return {"author": {"login": author}, "committer": {"login": committer},
+            "commit": {"verification": {"verified": verified}}}
+
+
+OWNERS_OWN = [[commit()]]  # as the API returns it with --slurp: a list of pages
+
+
 class AnalyzeTests(unittest.TestCase):
     def setUp(self):
         self.c, self.b = full(LANE_C), full(LANE_B)
@@ -74,10 +84,25 @@ class AnalyzeTests(unittest.TestCase):
                          ("UNAPPROVED", True))
 
     def test_a_bypass_merge_needs_the_owner_as_author_and_merger(self):
-        self.assertEqual(self.state(self.c, pr(self.c, author="JDueaDev", merged_by="jdueadev")),
+        self.assertEqual(self.state(self.c, pr(self.c, author="JDueaDev", merged_by="jdueadev", commits=OWNERS_OWN)),
                          ("maintainer merge (bypass)", False))
         self.assertEqual(self.state(self.c, pr(self.c, author="jdueadev", merged_by="jdueadev-agent")),
                          ("UNAPPROVED", True))
+
+    def test_a_bypass_merge_needs_every_commit_verified_as_the_owners(self):
+        bad = "maintainer merge (bypass) of commits not proven to be the owner's"
+        cases = {
+            "no commits listed": [],
+            "one commit by another identity": [[commit(), commit(author="jdueadev-agent", committer="jdueadev-agent")]],
+            "the owner as author but someone else as committer": [[commit(committer="jdueadev-agent")]],
+            "made in the web UI or through the API": [[commit(committer="web-flow")]],
+            "unsigned": [[commit(verified=False)]],
+            "a second page with a stranger": [[commit()], [commit(author="someone", committer="someone")]],
+        }
+        for name, commits in cases.items():
+            with self.subTest(name=name):
+                data = pr(self.c, author="jdueadev", merged_by="jdueadev", commits=commits)
+                self.assertEqual(self.state(self.c, data), (bad, True))
 
     def test_the_merged_tree_must_be_the_approved_heads_tree(self):
         other = full(LANE_B)
@@ -127,6 +152,28 @@ class AnalyzeTests(unittest.TestCase):
         row = md.analyze({"sha": full(BEFORE_MAP), "pr": pr(full(BEFORE_MAP)), "pulls": [1]})
         self.assertEqual((row["lane"], row["alert"]), ("-", False))
 
+    def test_a_lost_lane_map_is_an_alert_not_a_free_pass(self):
+        # The parent of a lane B merge, as if a merge before it had deleted ci/lanes.toml.
+        real = pc.reader
+
+        def reader(ref):
+            get = real(ref)
+            return lambda path: None if path == pc.LANES_FILE else get(path)
+        with mock.patch.object(md.policy_check, "reader", reader):
+            row = md.analyze({"sha": self.b, "pr": pr(self.b), "pulls": [1]})
+            self.assertEqual((row["lane"], row["alert"]), ("-", True))
+            self.assertIn("lane map is missing", row["approval"])
+            row = md.analyze({"sha": self.b, "pr": None, "pulls": []})
+            self.assertEqual((row["approval"], row["alert"]), ("no pull request", True))
+
+    def test_a_merge_before_the_lane_map_still_needs_its_pull_request(self):
+        sha = full(BEFORE_MAP)
+        for data, pulls, want in ((None, [], "no pull request"), (None, [1, 2], "several pull requests"),
+                                  (pr(sha, head=full(LANE_B)), [1], "merged tree is not the pull request head's tree")):
+            with self.subTest(want=want):
+                row = md.analyze({"sha": sha, "pr": data, "pulls": pulls})
+                self.assertEqual((row["approval"], row["alert"]), (want, True))
+
     def test_a_parentless_commit_is_an_alert(self):
         sha = root_commit()
         pr_data = pr(sha)
@@ -156,6 +203,22 @@ class CollectTests(unittest.TestCase):
         merges, _ = self.collect(lambda a: [{"number": 1, "merge_commit_sha": sha},
                                             {"number": 2, "merge_commit_sha": sha}] if a[0].endswith("/pulls") else None)
         self.assertEqual((merges[0]["pr"], merges[0]["pulls"]), (None, [1, 2]))
+
+    def test_the_pull_requests_commits_are_collected(self):
+        sha = full(LANE_C)
+
+        def answers(a):
+            if a[0].endswith("/pulls"):
+                return [{"number": 7, "merge_commit_sha": sha}]
+            if "/commits?" in a[-1]:
+                return OWNERS_OWN
+            if "/reviews?" in a[-1]:
+                return [[]]
+            return {"head": {"sha": sha}, "user": {"login": "jdueadev"}}
+        merges, calls = self.collect(answers)
+        self.assertEqual(merges[0]["pr"]["commits"], OWNERS_OWN)
+        self.assertTrue(any(c[:2] == ("--paginate", "--slurp") and c[-1].startswith("repos/o/r/pulls/7/commits")
+                            for c in calls))
 
     def test_an_empty_lookup_is_retried(self):
         merges, calls = self.collect(lambda a: [] if a[0].endswith("/pulls") else None)
@@ -193,6 +256,25 @@ class ReportTests(unittest.TestCase):
         for raw in ("<!--", "@jdueadev", "](", "**ok", "\n## Alerts\n\nNone"):
             self.assertNotIn(raw, text.split("## Lane B")[0].replace("## Alerts\n\nThese", ""), raw)
         self.assertEqual(text.count("\n## Alerts"), 0 if text.startswith("## Alerts") else 1)
+
+    def test_pull_request_text_cannot_mention_reference_or_link(self):
+        hostile = "ping @octocat, see #1, o/r#2 and GH-3, at https://e.com or www.e.com, mail a@b.com"
+        merges = [{"sha": full(LANE_C), "pulls": [1], "pr": pr(full(LANE_C), title=hostile)}]
+        _, text = self.run_report(merges)
+        lines = [line for line in text.splitlines() if "ping" in line]
+        self.assertEqual(len(lines), 2)  # the alert and the lane C row
+        # Read it as GitHub renders it: entities decoded, the digest's own "#1 " link removed.
+        shown = html.unescape("\n".join(lines)).replace("**#1 ", "**").replace("| #1 ", "| ")
+        self.assertIn("ping", shown)
+        self.assertNotRegex(shown, r"[@#]\w")
+        self.assertNotRegex(shown, r"(?i)gh-\w")
+        for raw in ("://", "www."):
+            self.assertNotIn(raw, shown)
+
+    def test_stale_rows_say_which_commit_they_describe(self):
+        _, text = self.run_report([])
+        self.assertIn("## Stale rows at `", text)
+        self.assertNotIn("Stale rows on main now", text)
 
     def test_a_clean_week_says_so_and_passes(self):
         merges = [{"sha": full(LANE_C), "pulls": [1],
