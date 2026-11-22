@@ -13,11 +13,13 @@ git clone https://github.com/bendlang/bend /tmp/bend
 git -C /tmp/bend checkout 0e2f38f
 printf '#!/bin/sh\nexec bun /tmp/bend/bend2/main.ts "$@"\n' | sudo tee /usr/local/bin/bend >/dev/null
 sudo chmod +x /usr/local/bin/bend
-scripts/check.sh          # proofs, tests, differential, wasm, mutation (with law witnesses), claims check
+scripts/check.sh          # proofs, tests, differential, wasm, mutation (with law witnesses), cookbook, claims check
 scripts/verdict.sh        # Lean recheck; needs Lean v4.34.0, or BENDTT set to a built kernel
 ```
 
 `scripts/check.sh` ends with `python3 tools/claims_check.py --strict`, which fails if any row of [`claims.toml`](../claims.toml) has evidence that no longer holds, if any host claim is stale, if `results/attack-suite.json` is not a full unwaived dual-binary run (`timed_repeat >= 30`, no cgroup waiver), or if [`claims.md`](claims.md) is out of date (`--write` regenerates it). Pass `--no-strict` to keep all proof, test, differential, mutation, TLA+, and coverage checks mandatory while treating host lab staleness as a warning.
+
+Before the claims check it runs `python3 tools/cookbook_check.py`. That keeps the generated blocks in [`cookbook/`](cookbook/README.md) equal to their sources, and runs every cookbook snippet on the Bend kernel, on the wasm kernel and on the mutant it names. Snippets are examples, not evidence. `--write` regenerates the blocks.
 
 To check locally which claims your current edits invalidate before running the root lab:
 

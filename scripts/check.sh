@@ -33,6 +33,9 @@ bun tools/differential.mjs target/generated/kernel.mjs target/generated/differen
 scripts/build-wasm.sh
 node tools/wasm_check.mjs target/wasm32-unknown-unknown/release/containment_wasm.wasm target/generated/differential.jsonl | tee results/wasm-differential.json
 python3 tools/mutation_check.py target/generated/kernel.mjs results/mutation-check.json
+# Cookbook recipes match their sources, and every snippet passes on the Bend and wasm
+# kernels and fails on its mutant (#105). Never run with --write here.
+python3 tools/cookbook_check.py
 if command -v java >/dev/null && [ -f "${TLA2TOOLS:-/opt/tla/tla2tools.jar}" ]; then tools/tla_check.sh; else echo "SKIPPED: TLC (java or tla2tools.jar missing)" >&2; fi
 python3 -m unittest discover -s tools -p 'test_*.py'
 python3 tools/claims_check.py $STRICT

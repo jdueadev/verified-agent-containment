@@ -21,6 +21,9 @@
 /tools/law_audit.mjs @jdueadev
 /tools/tla_check.sh @jdueadev
 /tools/generate_proof.py @jdueadev
+/tools/cookbook_check.py @jdueadev
+/tools/snippet_run.mjs @jdueadev
+/tools/snippet_node.mjs @jdueadev
 /tools/lab_record.py @jdueadev
 /crates/containment-host/src/harness.rs @jdueadev
 /crates/containment-host/src/live_suite.rs @jdueadev

@@ -40,6 +40,10 @@ C = [
   "tools/law_audit.mjs",
   "tools/tla_check.sh",
   "tools/generate_proof.py",
+  # The cookbook checker and its snippet interpreter, which the page inlines (#105).
+  "tools/cookbook_check.py",
+  "tools/snippet_run.mjs",
+  "tools/snippet_node.mjs",
   # Writes lab evidence from a CI run (#53).
   "tools/lab_record.py",
   # The attack harness, live suite, red-team runner and the kernel law tests

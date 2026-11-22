@@ -1,0 +1,31 @@
+{
+  "id": "k-mono-01-repeat-restrict",
+  "claim": "K-MONO-01",
+  "recipe": "k-mono-01",
+  "title": "A second restrict does not lower containment",
+  "note": "Restrict twice, then try a renewal. No step may move the mode below Restrict or hand back the secret.",
+  "breaks": "mutant:restrict_can_lower",
+  "teeth": {"step": 2, "field": "mode"},
+  "config": {"max_lease": 2500, "freeze_grace": 4000},
+  "start": {"mode": "run", "deadline": 2000, "clock": 0, "counter": 0},
+  "steps": [
+    {
+      "note": "The classifier asks for Restrict: secrets are revoked and egress narrowed.",
+      "event": {"type": "classifier", "now": 100, "level": "restrict"},
+      "expect": {"mode": "restrict", "actions": ["revoke_secrets", "narrow_egress"]},
+      "access": [{"kind": "secret", "granted": true, "baseline": true, "allowed": false}]
+    },
+    {
+      "note": "It asks again. Already in Restrict, nothing changes and nothing is restored.",
+      "event": {"type": "classifier", "now": 200, "level": "restrict"},
+      "expect": {"mode": "restrict", "actions": []},
+      "access": [{"kind": "secret", "granted": true, "baseline": true, "allowed": false}]
+    },
+    {
+      "note": "A renewal extends the lease but is not a reset: the mode stays Restrict.",
+      "event": {"type": "renew", "now": 300, "ttl": 2000},
+      "expect": {"mode": "restrict", "actions": []},
+      "access": [{"kind": "secret", "granted": true, "baseline": true, "allowed": false}]
+    }
+  ]
+}
