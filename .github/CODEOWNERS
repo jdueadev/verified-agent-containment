@@ -21,6 +21,7 @@
 /tools/law_audit.mjs @jdueadev
 /tools/tla_check.sh @jdueadev
 /tools/generate_proof.py @jdueadev
+/tools/lab_record.py @jdueadev
 /crates/containment-host/src/harness.rs @jdueadev
 /crates/containment-host/src/live_suite.rs @jdueadev
 /crates/containment-host/src/redteam.rs @jdueadev
@@ -38,5 +39,6 @@
 /results/live-suite* @jdueadev
 /results/linux-vm/ @jdueadev
 /results/wsl2/ @jdueadev
+/results/ci/ @jdueadev
 /results/redteam/ @jdueadev
 /results/formal-verdict.json @jdueadev

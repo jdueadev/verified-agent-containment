@@ -40,6 +40,8 @@ C = [
   "tools/law_audit.mjs",
   "tools/tla_check.sh",
   "tools/generate_proof.py",
+  # Writes lab evidence from a CI run (#53).
+  "tools/lab_record.py",
   # The attack harness, live suite, red-team runner and the kernel law tests
   # decide what "passed" means. Weakening an assertion keeps its name, so no
   # ratchet can see it; these files need the maintainer.
@@ -69,6 +71,7 @@ C = [
   "results/live-suite*",
   "results/linux-vm/**",
   "results/wsl2/**",
+  "results/ci/**",
   "results/redteam/**",
   "results/formal-verdict.json",
 ]

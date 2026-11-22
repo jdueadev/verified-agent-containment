@@ -77,7 +77,8 @@ class LaneTests(unittest.TestCase):
         for path in (".github/workflows/check.yml", "ci/lanes.toml", "scripts/check.sh", "tools/claims_check.py",
                      "tools/policy_check.py", "tools/test_policy_check.py", "AGENTS.md", ".github/CODEOWNERS",
                      "results/wsl2/lab-cd7172f/attack-suite.json", "results/attack-suite.json",
-                     "results/formal-verdict.json", "docs/decisions/0001-agent-workflow.md"):
+                     "results/formal-verdict.json", "docs/decisions/0001-agent-workflow.md",
+                     "results/ci/lab-0123456/attack-suite.json", "tools/lab_record.py"):
             self.assertEqual(self.lane(path), "C", path)
 
     def test_host_code_and_build_inputs_are_lane_c(self):
