@@ -52,7 +52,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          POLICY_ENFORCE: ${{ vars.POLICY_ENFORCE }}
         run: python3 tools/gate_check.py judge --head-sha "$HEAD_SHA" --out "$GITHUB_OUTPUT"
 
   post:

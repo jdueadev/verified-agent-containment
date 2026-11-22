@@ -18,23 +18,31 @@ whose head is that commit:
 
 - gate/policy does not come from a workflow run. judge runs main's own
   checkers against the head: `policy_check.py classify` (with the PR's reviews,
-  and with --enforce when POLICY_ENFORCE is "true", the same arguments as
+  and always with --enforce, because gate/policy is the authority; otherwise the arguments of
   policy.yml), `policy_check.py invariants --ref` and `workflow_lint.py --ref`.
   They read the head through git and run none of its code. A `policy` run can't
   be trusted: `pull_request_target` takes policy.yml from the PR's base, and
   nothing in a run says which base it was.
 - gate/check and gate/spec (base|new|corpus) have to come from runs, because
-  those jobs run the head's code. A run qualifies only when all of these hold:
-  - its workflow path, workflow id and event are main's check.yml or
-    spec.yml on `pull_request`;
-  - its head is this repository;
-  - its head branch is the PR's head branch;
-  - its head commit is the PR's head.
+  those jobs run the head's code. Nothing in a run's API record says which
+  base it used, and three rounds of review broke every heuristic for it:
+  requiring every run, the head branch's PR history, and branch renames. So a
+  run counts only if it proves its base. check.yml and spec.yml each have a
+  `gate-attestation` job that runs no head code, mints a GitHub OIDC token
+  with audience `gate`, and uploads it as an artifact. judge verifies the
+  token's RS256 signature against GitHub's published key set. Then it checks
+  the claims GitHub sets from the event:
+  - `repository` is this repository and `event_name` is `pull_request`;
+  - `base_ref` is `main` and `ref` is this PR's `refs/pull/N/merge`;
+  - `head_ref` is the PR's head branch;
+  - `run_id` is the run's id, and `workflow_ref` is main's workflow file.
 
-  The run itself can't show which base it ran against. So if any pull request
-  from that head branch, open or closed, ever targeted a branch other than
-  main, every one of these contexts fails. Pull requests can't be deleted, so
-  that history can't be hidden.
+  A run without a valid proof is ignored, never counted. The proof is bound to
+  the run, not the attempt, because a re-run reuses the original event and
+  `rerun --failed` does not repeat the attestation job. Expiry is not
+  enforced: the proof attests a fact, it is not a login. A run must also have
+  main's workflow path and id, `pull_request` as its event, this repository as
+  its head, and the PR's head commit.
 - Each of those contexts is one required job, and the job is judged, not the
   run. `evidence-freshness` isn't required, and main may carry stale claims.
   Success needs at least one qualifying run, and every qualifying run's latest
@@ -59,9 +67,14 @@ What this rests on:
 - The ruleset's up-to-date rule. A head that predates a change to main's
   workflows looks unchanged against its merge base, but it can't merge until
   it is brought up to date, and that makes a new commit.
-- The base guards in check.yml and spec.yml, for runs from the same branch.
+- GitHub's OIDC issuer and its key set. Fetching the keys is retried, and any
+  failure fails every context.
 """
 import argparse
+import base64
+import hashlib
+import hmac
+import io
 import json
 import os
 import re
@@ -69,6 +82,8 @@ import subprocess
 import sys
 import time
 import urllib.parse
+import urllib.request
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -85,6 +100,13 @@ RUN_WORKFLOWS = {
 POLICY = "gate/policy"
 CONTEXTS = [c for jobs in RUN_WORKFLOWS.values() for c in jobs] + [POLICY]
 WAIT_SECONDS, POLL_SECONDS = 40 * 60, 30
+ISSUER = "https://token.actions.githubusercontent.com"
+JWKS_URL = ISSUER + "/.well-known/jwks"
+AUDIENCE = "gate"
+PROOF_PREFIX = "gate-attestation-"
+SUMMARY_LIMIT = 1000
+# DER prefix of a SHA-256 DigestInfo, for PKCS#1 v1.5 signatures (RFC 8017, section 9.2).
+SHA256_INFO = bytes.fromhex("3031300d060960864801650304020105000420")
 
 
 def verdict(context, status, conclusion, summary):
@@ -104,33 +126,99 @@ def qualifying(runs, repo, pr, workflow_ids):
         path = run.get("path")
         if (path in RUN_WORKFLOWS and run.get("event") == "pull_request"
                 and run.get("workflow_id") == workflow_ids.get(path)
-                and run.get("head_sha") == pr["head"]["sha"] and run.get("head_branch") == pr["head"]["ref"]
+                and run.get("head_sha") == pr["head"]["sha"]
                 and (run.get("head_repository") or {}).get("full_name") == repo):
             out[path].append(run)
     return out
+
+
+def b64url(text):
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def verify_rs256(token, keys):
+    """The claims of a JWT whose RS256 signature verifies under one of `keys` (a JWKS),
+    or ValueError. Only RS256 is accepted; the header cannot pick another algorithm."""
+    try:
+        head64, body64, sig64 = token.strip().split(".")
+        header = json.loads(b64url(head64))
+    except (ValueError, json.JSONDecodeError) as error:
+        raise ValueError(f"not a JWT: {error}") from error
+    if header.get("alg") != "RS256":
+        raise ValueError(f"algorithm {header.get('alg')!r}, not RS256")
+    found = [k for k in keys.get("keys", []) if k.get("kid") == header.get("kid") and k.get("kty") == "RSA"]
+    if len(found) != 1:
+        raise ValueError(f"no single key with kid {header.get('kid')!r}")
+    n = int.from_bytes(b64url(found[0]["n"]), "big")
+    e = int.from_bytes(b64url(found[0]["e"]), "big")
+    size = (n.bit_length() + 7) // 8
+    signature = b64url(sig64)
+    if size < 256 or len(signature) != size:
+        raise ValueError("bad signature length")
+    digest = hashlib.sha256(f"{head64}.{body64}".encode("ascii")).digest()
+    wanted = b"\x00\x01" + b"\xff" * (size - len(SHA256_INFO) - len(digest) - 3) + b"\x00" + SHA256_INFO + digest
+    got = pow(int.from_bytes(signature, "big"), e, n).to_bytes(size, "big")
+    if not hmac.compare_digest(got, wanted):
+        raise ValueError("signature does not verify")
+    return json.loads(b64url(body64))
+
+
+def proof_problem(claims, run, pr, repo, path):
+    """Why these claims do not prove that `run` judged `pr` against main, or None."""
+    aud = claims.get("aud")
+    wanted = {
+        "iss": ISSUER, "repository": repo, "event_name": "pull_request", "base_ref": "main",
+        "ref": f"refs/pull/{pr['number']}/merge", "head_ref": pr["head"]["ref"], "run_id": str(run["id"]),
+    }
+    wrong = [k for k, v in wanted.items() if claims.get(k) != v]
+    if not (aud == AUDIENCE or (isinstance(aud, list) and AUDIENCE in aud)):
+        wrong.append("aud")
+    if not str(claims.get("workflow_ref", "")).startswith(f"{repo}/{path}@"):
+        wrong.append("workflow_ref")
+    return f"claims {', '.join(wrong)} do not match" if wrong else None
+
+
+def proven(by_path, pr, repo, proofs_of, keys):
+    """Keep only the runs whose proof verifies. `proofs_of(run)` returns the tokens a
+    run uploaded. Returns ({path: [run]}, {path: [(run id, why)]})."""
+    kept, ignored = {}, {}
+    for path, runs in by_path.items():
+        kept[path], ignored[path] = [], []
+        for run in runs:
+            reasons = []
+            for token in proofs_of(run):
+                try:
+                    problem = proof_problem(verify_rs256(token, keys), run, pr, repo, path)
+                except ValueError as error:
+                    problem = str(error)
+                if problem is None:
+                    kept[path].append(run)
+                    break
+                reasons.append(problem)
+            else:
+                ignored[path].append((run["id"], "; ".join(reasons) or "no proof"))
+    return kept, ignored
 
 
 def touches_workflows(path):
     return path == ".github" or path.startswith(".github/")
 
 
-def verdicts(pr, runs_by_path, jobs_by_run, changed_paths, reviews, owner, other_bases, policy):
-    """Every context's verdict. `jobs_by_run` maps a run id to its latest attempt's jobs;
-    `other_bases` lists other branches the head branch has had PRs into; `policy` is
-    (passed, summary) from main's checkers."""
+def verdicts(pr, runs_by_path, jobs_by_run, changed_paths, reviews, owner, policy, ignored=None):
+    """Every context's verdict. `runs_by_path` holds only proven runs; `jobs_by_run` maps
+    a run id to its latest attempt's jobs; `policy` is (passed, summary) from main's
+    checkers; `ignored` lists runs left out for want of a proof."""
     changed = sorted(p for p in changed_paths if touches_workflows(p))
     approved = policy_check.approved(reviews, owner, pr["head"]["sha"])
     out = []
     for path, jobs in RUN_WORKFLOWS.items():
         runs = sorted(runs_by_path.get(path, []), key=lambda r: r["id"])
+        skipped = (ignored or {}).get(path, [])
+        note = f" Ignored {len(skipped)} run(s) without a valid proof of base main." if skipped else ""
         for context, job_name in jobs.items():
-            if other_bases:
-                out.append(verdict(context, "completed", "failure",
-                                   f"Branch `{pr['head']['ref']}` has had pull requests into "
-                                   f"{', '.join(sorted(other_bases))}. A run can't show which base it used, "
-                                   "so no run on this branch counts. Push the change on a new branch."))
-                continue
-            out.append(run_verdict(context, job_name, runs, jobs_by_run, changed, approved, owner))
+            v = run_verdict(context, job_name, runs, jobs_by_run, changed, approved, owner)
+            v["summary"] += note
+            out.append(v)
     passed, summary = policy
     out.append(verdict(POLICY, "completed", "success" if passed else "failure", summary))
     return out
@@ -198,11 +286,35 @@ def open_pr_into_main(repo, head_sha):
     return prs[0] if prs else None
 
 
-def other_bases(repo, pr):
-    owner = repo.split("/")[0]
-    head = urllib.parse.quote(f"{owner}:{pr['head']['ref']}", safe="")
-    return {p["base"]["ref"] for p in pages(f"repos/{repo}/pulls?head={head}&state=all&per_page=100")
-            if p["base"]["ref"] != "main"}
+def proofs_of(repo):
+    """A function from a run to the tokens its gate-attestation job uploaded, any attempt."""
+    def tokens(run):
+        out = []
+        for artifact in pages(f"repos/{repo}/actions/runs/{run['id']}/artifacts?per_page=100"):
+            if not artifact.get("name", "").startswith(PROOF_PREFIX) or artifact.get("expired"):
+                continue
+            data = subprocess.run(["gh", "api", f"repos/{repo}/actions/artifacts/{artifact['id']}/zip"],
+                                  capture_output=True, check=True).stdout
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                names = archive.namelist()
+                if names != ["gate-attestation.jwt"]:
+                    continue
+                if archive.getinfo(names[0]).file_size > 16384:
+                    continue
+                out.append(archive.read(names[0]).decode("ascii", "replace"))
+        return out
+    return tokens
+
+
+def signing_keys(tries=3, sleep=time.sleep):
+    for attempt in range(tries):
+        try:
+            with urllib.request.urlopen(JWKS_URL, timeout=20) as response:
+                return json.loads(response.read())
+        except (OSError, ValueError):
+            if attempt == tries - 1:
+                raise
+            sleep(5)
 
 
 def fetch_head(pr):
@@ -251,15 +363,17 @@ def judge(head_sha, now=time.monotonic, sleep=time.sleep):
         if not going or now() >= deadline:
             break
         sleep(POLL_SECONDS)
+    by_path, ignored = proven(by_path, pr, repo, proofs_of(repo), signing_keys())
     jobs = {r["id"]: pages(f"repos/{repo}/actions/runs/{r['id']}/jobs?filter=latest&per_page=100")
             for rs in by_path.values() for r in rs if r.get("status") == "completed"}
     reviews = pages(f"repos/{repo}/pulls/{pr['number']}/reviews?per_page=100")
     merge_base = fetch_head(pr)
     reviews_file = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / f"gate-reviews-{head_sha}.json"
     reviews_file.write_text(json.dumps(reviews), encoding="utf-8")
-    policy = policy_result(pr, merge_base, reviews_file, os.environ.get("POLICY_ENFORCE") == "true")
+    # Always enforcing: gate/policy is the authority, whatever POLICY_ENFORCE says.
+    policy = policy_result(pr, merge_base, reviews_file, True)
     return pr["number"], verdicts(pr, by_path, jobs, changed_paths(merge_base, head_sha), reviews, owner,
-                                  other_bases(repo, pr), policy)
+                                  policy, ignored)
 
 
 # ---------- posting ----------
@@ -287,30 +401,43 @@ def checked_verdicts(text, head_sha):
 
 
 def post(data, app_id, repo):
+    """Failures first, and every context is attempted even if one write fails, so a
+    failed write cannot leave the contexts after it standing on an old success."""
     head = data["head_sha"]
     where = f"PR #{data['pr']}. " if data["pr"] else ""
-    for v in data["verdicts"]:
-        name = urllib.parse.quote(v["context"], safe="")
-        mine = [c for c in pages(f"repos/{repo}/commits/{head}/check-runs?check_name={name}"
-                                 f"&app_id={app_id}&filter=all&per_page=100")
-                if str((c.get("app") or {}).get("id")) == str(app_id) and c.get("name") == v["context"]]
-        status, conclusion, summary = v["status"], v["conclusion"], v["summary"]
-        if mine and status == "in_progress":
-            # A completed run is not moved back to in_progress. "Not decided yet" is posted
-            # as a failure, so it blocks and cannot leave an earlier success standing.
-            status, conclusion, summary = "completed", "failure", "Not decided yet: " + summary
-        body = {"name": v["context"], "head_sha": head, "status": status,
-                "output": {"title": v["context"], "summary": where + summary}}
-        if status == "completed":
-            body["conclusion"] = conclusion
-        if not mine:
-            gh("--method", "POST", f"repos/{repo}/check-runs", "--input", "-", data=body)
-        for run in mine:
-            # One check run per context, kept current. More than one means two creates raced.
-            # Every copy gets the same verdict, so none of them can disagree.
-            gh("--method", "PATCH", f"repos/{repo}/check-runs/{run['id']}", "--input", "-",
-               data={k: b for k, b in body.items() if k != "head_sha"})
-        print(f"{v['context']}: {status} {conclusion or ''}")
+    errors = []
+    for v in sorted(data["verdicts"], key=lambda v: v["conclusion"] != "failure"):
+        try:
+            post_one(v, head, where, app_id, repo)
+        except subprocess.CalledProcessError as error:
+            errors.append(f"{v['context']}: {error.stderr or error}")
+    if errors:
+        raise RuntimeError("; ".join(errors))
+
+
+def post_one(v, head, where, app_id, repo):
+    name = urllib.parse.quote(v["context"], safe="")
+    mine = [c for c in pages(f"repos/{repo}/commits/{head}/check-runs?check_name={name}"
+                             f"&app_id={app_id}&filter=all&per_page=100")
+            if str((c.get("app") or {}).get("id")) == str(app_id) and c.get("name") == v["context"]]
+    status, conclusion, summary = v["status"], v["conclusion"], v["summary"]
+    if mine and status == "in_progress":
+        # A completed run is not moved back to in_progress. "Not decided yet" is posted
+        # as a failure, so it blocks and cannot leave an earlier success standing.
+        status, conclusion, summary = "completed", "failure", "Not decided yet: " + summary
+    summary = (where + summary)[:SUMMARY_LIMIT]
+    body = {"name": v["context"], "head_sha": head, "status": status,
+            "output": {"title": v["context"], "summary": summary}}
+    if status == "completed":
+        body["conclusion"] = conclusion
+    if not mine:
+        gh("--method", "POST", f"repos/{repo}/check-runs", "--input", "-", data=body)
+    for run in mine:
+        # One check run per context, kept current. More than one means two creates raced.
+        # Every copy gets the same verdict, so none of them can disagree.
+        gh("--method", "PATCH", f"repos/{repo}/check-runs/{run['id']}", "--input", "-",
+           data={k: b for k, b in body.items() if k != "head_sha"})
+    print(f"{v['context']}: {status} {conclusion or ''}")
 
 
 def main(argv=None):

@@ -40,9 +40,9 @@ def green():
     return runs, jobs
 
 
-def judge(runs, jobs, paths=("src/x.rs",), reviews=(), other=(), policy=POLICY_OK):
+def judge(runs, jobs, paths=("src/x.rs",), reviews=(), policy=POLICY_OK):
     by_path = gc.qualifying(runs, REPO, PR, IDS)
-    out = gc.verdicts(PR, by_path, jobs, list(paths), list(reviews), OWNER, set(other), policy)
+    out = gc.verdicts(PR, by_path, jobs, list(paths), list(reviews), OWNER, policy)
     return {v["context"]: v for v in out}
 
 
@@ -111,7 +111,6 @@ class Verdicts(unittest.TestCase):
             run(42, ".github/workflows/check.yml", event="pull_request_target"),
             run(43, ".github/workflows/check.yml", repo="fork/r"),
             run(44, ".github/workflows/check.yml", sha=OLD),
-            run(45, ".github/workflows/check.yml", branch="planted"),          # same commit, other branch
             dict(run(46, ".github/workflows/check.yml"), path=".github/workflows/x.yml"),
             dict(run(47, ".github/workflows/check.yml"), path=".github/workflows/policy.yml"),
         ]
@@ -121,13 +120,6 @@ class Verdicts(unittest.TestCase):
             jobs[r["id"]] = [{"name": "check", "conclusion": "success"}]
         self.assertEqual(judge(runs, jobs)["gate/check"]["status"], "in_progress")
         self.assertEqual(gc.qualifying(runs, REPO, PR, IDS)[".github/workflows/check.yml"], [])
-
-    def test_a_branch_that_ever_targeted_another_base_counts_no_runs(self):
-        result = judge(*green(), other={"probe-base"})
-        for context in RUN_CONTEXTS:
-            self.assertEqual(result[context]["conclusion"], "failure", context)
-            self.assertIn("probe-base", result[context]["summary"])
-        self.assertEqual(result[gc.POLICY]["conclusion"], "success")
 
     def test_policy_comes_from_mains_checkers(self):
         result = judge(*green(), policy=(False, "classify failed"))
@@ -209,6 +201,27 @@ class Post(unittest.TestCase):
             gc.post(data, "123", REPO)
         return calls
 
+    def test_failures_go_first_and_one_failed_write_does_not_stop_the_rest(self):
+        data = good()
+        data["verdicts"][-1] = dict(data["verdicts"][-1], conclusion="failure", summary="x" * 5000)
+        order, calls = [], []
+
+        def pages(path):
+            return []
+
+        def gh(*args, data=None):
+            order.append(data["name"])
+            calls.append(data)
+            if data["name"] == "gate/check":
+                raise subprocess.CalledProcessError(1, "gh", stderr="boom")
+
+        with mock.patch.object(gc, "pages", pages), mock.patch.object(gc, "gh", gh), \
+                redirect_stdout(io.StringIO()), self.assertRaises(RuntimeError):
+            gc.post(data, "123", REPO)
+        self.assertEqual(order[0], data["verdicts"][-1]["context"])
+        self.assertEqual(sorted(order), sorted(gc.CONTEXTS))
+        self.assertLessEqual(max(len(c["output"]["summary"]) for c in calls), gc.SUMMARY_LIMIT)
+
     def test_creates_once_then_updates_in_place(self):
         existing = {"gate/check": [{"id": 5, "name": "gate/check", "app": {"id": 123}},
                                    {"id": 6, "name": "gate/check", "app": {"id": 999}},
@@ -284,7 +297,7 @@ class Judge(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def fake(self, prs, runs_seq, jobs, other=()):
+    def fake(self, prs, runs_seq, jobs):
         state = {"runs": list(runs_seq)}
 
         def gh(path, *rest, data=None):
@@ -301,7 +314,9 @@ class Judge(unittest.TestCase):
 
         return mock.patch.multiple(gc, gh=gh, pages=pages, fetch_head=lambda pr: OLD,
                                    changed_paths=lambda base, head: ["src/x"],
-                                   other_bases=lambda repo, pr: set(other),
+                                   proofs_of=lambda repo: (lambda run: ["proof"]),
+                                   signing_keys=lambda: {},
+                                   proven=lambda by_path, *a: (by_path, {}),
                                    policy_result=lambda *a: POLICY_OK)
 
     def test_no_open_pull_request_into_main_from_this_repository_posts_nothing(self):
@@ -365,13 +380,128 @@ class PolicyResult(unittest.TestCase):
             self.assertTrue(gc.policy_result(PR, "c" * 40, "r.json", False)[0])
 
 
+def openssl(*args, data=None):
+    return subprocess.run(["openssl", *args], input=data, capture_output=True, check=True).stdout
+
+
+class Proof(unittest.TestCase):
+    """Tokens are signed by openssl, so the verifier is not checked against itself."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        key = Path(cls.tmp.name) / "key.pem"
+        openssl("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(key))
+        cls.key = key
+        modulus = openssl("rsa", "-in", str(key), "-noout", "-modulus").decode().strip().split("=", 1)[1]
+        n = bytes.fromhex(modulus)
+        cls.jwks = {"keys": [{"kty": "RSA", "kid": "k1", "alg": "RS256", "n": cls.b64(n),
+                              "e": cls.b64((65537).to_bytes(3, "big"))}]}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    @staticmethod
+    def b64(data):
+        return gc.base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+    def token(self, header=None, **changes):
+        claims = {"iss": gc.ISSUER, "aud": "gate", "repository": REPO, "event_name": "pull_request",
+                  "base_ref": "main", "ref": "refs/pull/7/merge", "head_ref": "topic", "run_id": "10",
+                  "run_attempt": "1", "workflow_ref": f"{REPO}/.github/workflows/check.yml@refs/pull/7/merge"}
+        claims.update(changes)
+        head = self.b64(json.dumps(header or {"alg": "RS256", "kid": "k1", "typ": "JWT"}).encode())
+        body = self.b64(json.dumps(claims).encode())
+        signature = openssl("dgst", "-sha256", "-sign", str(self.key), data=f"{head}.{body}".encode())
+        return f"{head}.{body}.{self.b64(signature)}"
+
+    def check(self, token, run_id=10, path=".github/workflows/check.yml"):
+        return gc.proof_problem(gc.verify_rs256(token, self.jwks), {"id": run_id}, PR, REPO, path)
+
+    def test_a_proof_from_this_run_on_this_pr_into_main_verifies(self):
+        self.assertIsNone(self.check(self.token()))
+        self.assertIsNone(self.check(self.token(aud=["other", "gate"])))
+
+    def test_a_reran_attempt_keeps_its_runs_proof(self):
+        # rerun --failed does not repeat the attestation job; the proof is bound to the run.
+        self.assertIsNone(self.check(self.token(run_attempt="1")))
+
+    def test_claims_that_do_not_prove_main_are_refused(self):
+        for change in ({"base_ref": "probe-base"},                       # a PR into another branch
+                       {"ref": "refs/pull/8/merge"},                     # another PR
+                       {"head_ref": "renamed"},                          # a renamed branch's old runs
+                       {"run_id": "11"},                                 # another run's proof
+                       {"event_name": "pull_request_target"}, {"repository": "fork/r"},
+                       {"aud": "other"}, {"iss": "https://example.invalid"},
+                       {"workflow_ref": f"{REPO}/.github/workflows/x.yml@refs/pull/7/merge"},
+                       {"workflow_ref": f"other/r/.github/workflows/check.yml@refs/pull/7/merge"}):
+            with self.subTest(change=change):
+                self.assertIsNotNone(self.check(self.token(**change)))
+
+    def test_spec_proofs_name_spec_yml(self):
+        token = self.token(workflow_ref=f"{REPO}/.github/workflows/spec.yml@refs/pull/7/merge")
+        self.assertIsNone(self.check(token, path=".github/workflows/spec.yml"))
+        self.assertIsNotNone(self.check(token))
+
+    def test_bad_signatures_and_headers_are_refused(self):
+        good = self.token()
+        head, body, sig = good.split(".")
+        forged_body = self.b64(json.dumps({"base_ref": "main"}).encode())
+        cases = {
+            "altered payload": f"{head}.{forged_body}.{sig}",
+            "altered signature": f"{head}.{body}.{sig[:-4]}AAAA",
+            "unknown kid": self.token(header={"alg": "RS256", "kid": "k2"}),
+            "alg none": self.b64(json.dumps({"alg": "none", "kid": "k1"}).encode()) + f".{body}.",
+            "alg HS256": self.token(header={"alg": "HS256", "kid": "k1"}),
+            "not a JWT": "abc",
+            "short signature": f"{head}.{body}.{self.b64(b'x' * 10)}",
+        }
+        for label, token in cases.items():
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                gc.verify_rs256(token, self.jwks)
+
+    def test_proven_keeps_runs_with_a_valid_proof_and_says_why_others_are_left_out(self):
+        runs = {".github/workflows/check.yml": [{"id": 10}, {"id": 11}, {"id": 12}],
+                ".github/workflows/spec.yml": []}
+        tokens = {10: ["junk", self.token()],                            # a bad token, then a good one
+                  11: [self.token(run_id="11", base_ref="probe-base")],  # the base was changed later
+                  12: []}
+        kept, ignored = gc.proven(runs, PR, REPO, lambda run: tokens[run["id"]], self.jwks)
+        self.assertEqual(kept[".github/workflows/check.yml"], [{"id": 10}])
+        reasons = dict(ignored[".github/workflows/check.yml"])
+        self.assertIn("base_ref", reasons[11])
+        self.assertEqual(reasons[12], "no proof")
+
+    def test_runs_without_proof_leave_the_context_undecided(self):
+        runs, jobs = green()
+        by_path = gc.qualifying(runs, REPO, PR, IDS)
+        kept, ignored = gc.proven(by_path, PR, REPO, lambda run: [], self.jwks)
+        result = {v["context"]: v for v in gc.verdicts(PR, kept, jobs, [], [], OWNER, POLICY_OK, ignored)}
+        self.assertEqual(result["gate/check"]["status"], "in_progress")
+        self.assertIn("without a valid proof", result["gate/check"]["summary"])
+
+
+class SigningKeys(unittest.TestCase):
+    def test_retries_then_fails_closed(self):
+        calls = []
+
+        def urlopen(url, timeout):
+            calls.append(url)
+            raise OSError("down")
+
+        with mock.patch.object(gc.urllib.request, "urlopen", urlopen), self.assertRaises(OSError):
+            gc.signing_keys(tries=3, sleep=lambda s: None)
+        self.assertEqual(calls, [gc.JWKS_URL] * 3)
+
+
 class Repository(unittest.TestCase):
     def test_the_gate_workflow_passes_the_lint_and_names_its_triggers(self):
         text = (ROOT / ".github/workflows/gate.yml").read_text(encoding="utf-8")
         allowed = wl.load_allowed((ROOT / wl.ALLOW_FILE).read_text(encoding="utf-8"))
         self.assertEqual(wl.lint("gate.yml", text, allowed), [])
         for needle in ("workflows: [check, spec, policy, policy-refresh]", "environment: gate",
-                       "permission-checks: write", "if: always()", "POLICY_ENFORCE: ${{ vars.POLICY_ENFORCE }}"):
+                       "permission-checks: write", "if: always()"):
             self.assertIn(needle, text)
 
     def test_the_judged_jobs_exist_in_their_workflows(self):
@@ -382,6 +512,13 @@ class Repository(unittest.TestCase):
         for text in (check, spec):
             self.assertIn("\n  pull_request:\n", text)
             self.assertIn("Only pull requests into main", text)
+            # The proof job: its own job, OIDC only there, audience gate, the artifact judge reads.
+            job = text.split("\n  gate-attestation:\n", 1)[1].split("\n  evidence-freshness:\n")[0]
+            self.assertIn("      id-token: write\n", job)
+            self.assertIn("audience=gate", job)
+            self.assertIn("name: gate-attestation-${{ github.run_attempt }}", job)
+            self.assertNotIn("actions/checkout", job)
+            self.assertEqual(text.count("id-token: write"), 1)
 
 
 if __name__ == "__main__":
