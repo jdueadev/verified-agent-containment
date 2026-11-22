@@ -11,9 +11,11 @@ name: gate
 # The verdict rules are in tools/gate_check.py.
 #
 # Two jobs, so the key never shares a job with pull request data: `judge` has
-# no secret and only reads (it fetches the pull request's commits to list the
-# paths it changes, and runs none of them). `post` holds the key and only
-# writes the verdicts `judge` produced, after checking their shape.
+# no secret and only reads. It fetches the pull request's commits so main's
+# checkers can read them through git, and runs none of their code. `post`
+# holds the key and only writes the verdicts `judge` produced, after checking
+# their shape. If `judge` dies, `post` still runs and fails every context, so
+# an earlier success is never left standing.
 
 on:
   workflow_run:
@@ -50,11 +52,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          POLICY_ENFORCE: ${{ vars.POLICY_ENFORCE }}
         run: python3 tools/gate_check.py judge --head-sha "$HEAD_SHA" --out "$GITHUB_OUTPUT"
 
   post:
     needs: judge
-    if: needs.judge.outputs.verdicts != ''
+    if: always()
     environment: gate
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -79,4 +82,6 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           APP_ID: ${{ vars.GATE_APP_ID }}
           VERDICTS: ${{ needs.judge.outputs.verdicts }}
-        run: python3 tools/gate_check.py post --app-id "$APP_ID"
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          JUDGE_RESULT: ${{ needs.judge.result }}
+        run: python3 tools/gate_check.py post --app-id "$APP_ID" --head-sha "$HEAD_SHA" --judge-result "$JUDGE_RESULT"

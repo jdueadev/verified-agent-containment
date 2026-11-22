@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Unit tests for tools/gate_check.py. Each rule has a case that makes it fire."""
+import io
 import json
 import os
+import subprocess
 import sys
+import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -15,31 +19,31 @@ ROOT = Path(__file__).resolve().parent.parent
 REPO = "o/r"
 HEAD = "a" * 40
 OLD = "b" * 40
-IDS = {".github/workflows/check.yml": 1, ".github/workflows/spec.yml": 2, ".github/workflows/policy.yml": 3}
+IDS = {".github/workflows/check.yml": 1, ".github/workflows/spec.yml": 2}
 PR = {"number": 7, "state": "open", "base": {"ref": "main", "sha": OLD},
-      "head": {"sha": HEAD, "repo": {"full_name": REPO}}}
+      "head": {"sha": HEAD, "ref": "topic", "repo": {"full_name": REPO}}}
 OWNER = "@owner"
 SPEC_JOBS = ["spec (base)", "spec (new)", "spec (corpus)"]
+POLICY_OK = (True, "ok")
+RUN_CONTEXTS = [c for c in gc.CONTEXTS if c != gc.POLICY]
 
 
-def run(i, path, event=None, status="completed", sha=HEAD, repo=REPO, wid=None):
-    event = event or gc.WORKFLOWS[path][0]
-    return {"id": i, "path": path, "event": event, "status": status, "head_sha": sha,
+def run(i, path, event="pull_request", status="completed", sha=HEAD, repo=REPO, wid=None, branch="topic"):
+    return {"id": i, "path": path, "event": event, "status": status, "head_sha": sha, "head_branch": branch,
             "head_repository": {"full_name": repo}, "workflow_id": IDS[path] if wid is None else wid}
 
 
 def green():
-    runs = [run(10, ".github/workflows/check.yml"), run(20, ".github/workflows/spec.yml"),
-            run(30, ".github/workflows/policy.yml")]
+    runs = [run(10, ".github/workflows/check.yml"), run(20, ".github/workflows/spec.yml")]
     jobs = {10: [{"name": "check", "conclusion": "success"}, {"name": "evidence-freshness", "conclusion": "failure"}],
-            20: [{"name": n, "conclusion": "success"} for n in SPEC_JOBS],
-            30: [{"name": "policy", "conclusion": "success"}]}
+            20: [{"name": n, "conclusion": "success"} for n in SPEC_JOBS]}
     return runs, jobs
 
 
-def judge(runs, jobs, paths=("src/x.rs",), reviews=()):
-    by_path = gc.qualifying(runs, REPO, HEAD, IDS)
-    return {v["context"]: v for v in gc.verdicts(PR, by_path, jobs, list(paths), list(reviews), OWNER)}
+def judge(runs, jobs, paths=("src/x.rs",), reviews=(), other=(), policy=POLICY_OK):
+    by_path = gc.qualifying(runs, REPO, PR, IDS)
+    out = gc.verdicts(PR, by_path, jobs, list(paths), list(reviews), OWNER, set(other), policy)
+    return {v["context"]: v for v in out}
 
 
 def review(state, commit=HEAD, user="owner"):
@@ -65,8 +69,9 @@ class Verdicts(unittest.TestCase):
 
     def test_no_run_yet_is_in_progress(self):
         runs, jobs = green()
-        result = judge([r for r in runs if r["id"] != 30], jobs)
-        self.assertEqual((result["gate/policy"]["status"], result["gate/policy"]["conclusion"]), ("in_progress", None))
+        result = judge([r for r in runs if r["id"] != 20], jobs)
+        self.assertEqual((result["gate/spec (base)"]["status"], result["gate/spec (base)"]["conclusion"]),
+                         ("in_progress", None))
 
     def test_a_run_still_going_is_in_progress(self):
         runs, jobs = green()
@@ -74,14 +79,12 @@ class Verdicts(unittest.TestCase):
         self.assertEqual(judge(runs, jobs)["gate/check"]["status"], "in_progress")
 
     def test_every_qualifying_run_must_pass(self):
-        # A second run of check.yml on the same commit, from a PR into another branch,
-        # fails at the base guard. The runs API cannot tell the two apart.
         runs, jobs = green()
         runs.append(run(12, ".github/workflows/check.yml"))
         jobs[12] = [{"name": "check", "conclusion": "failure"}]
         self.assertEqual(judge(runs, jobs)["gate/check"]["conclusion"], "failure")
 
-    def test_a_cancelled_run_is_ignored_when_another_run_counts(self):
+    def test_a_cancelled_run_is_skipped_when_another_run_counts(self):
         runs, jobs = green()
         runs.append(run(9, ".github/workflows/check.yml"))
         jobs[9] = [{"name": "check", "conclusion": "cancelled"}]
@@ -92,7 +95,7 @@ class Verdicts(unittest.TestCase):
         jobs[10] = [{"name": "check", "conclusion": "cancelled"}]
         self.assertEqual(judge(runs, jobs)["gate/check"]["conclusion"], "failure")
 
-    def test_skipped_or_missing_or_doubled_jobs_fail(self):
+    def test_skipped_missing_or_doubled_jobs_fail(self):
         for jobs10 in ([{"name": "check", "conclusion": "skipped"}], [],
                        [{"name": "check", "conclusion": "success"}] * 2):
             with self.subTest(jobs10=jobs10):
@@ -101,30 +104,49 @@ class Verdicts(unittest.TestCase):
                 self.assertEqual(judge(runs, jobs)["gate/check"]["conclusion"], "failure")
 
     def test_runs_that_do_not_qualify_are_ignored(self):
-        # Each look-alike run is green; none of them may stand in for the missing real one.
+        # Each look-alike run is green; none may stand in for the missing real one.
         look_alikes = [
             run(40, ".github/workflows/check.yml", wid=99),                    # a branch-only file
             run(41, ".github/workflows/check.yml", event="push"),
-            run(42, ".github/workflows/check.yml", repo="fork/r"),
-            run(43, ".github/workflows/check.yml", sha=OLD),
-            dict(run(44, ".github/workflows/check.yml"), path=".github/workflows/x.yml"),
-            run(45, ".github/workflows/policy.yml", event="pull_request"),
+            run(42, ".github/workflows/check.yml", event="pull_request_target"),
+            run(43, ".github/workflows/check.yml", repo="fork/r"),
+            run(44, ".github/workflows/check.yml", sha=OLD),
+            run(45, ".github/workflows/check.yml", branch="planted"),          # same commit, other branch
+            dict(run(46, ".github/workflows/check.yml"), path=".github/workflows/x.yml"),
+            dict(run(47, ".github/workflows/check.yml"), path=".github/workflows/policy.yml"),
         ]
         runs, jobs = green()
         runs = [r for r in runs if r["id"] != 10] + look_alikes
         for r in look_alikes:
-            jobs[r["id"]] = [{"name": "check", "conclusion": "success"}, {"name": "policy", "conclusion": "success"}]
-        result = judge(runs, jobs)
-        self.assertEqual(result["gate/check"]["status"], "in_progress")
-        self.assertEqual(result["gate/policy"]["conclusion"], "success")  # run 30, not 45
-        self.assertEqual(gc.qualifying(runs, REPO, HEAD, IDS)[".github/workflows/policy.yml"], [runs[1]])
+            jobs[r["id"]] = [{"name": "check", "conclusion": "success"}]
+        self.assertEqual(judge(runs, jobs)["gate/check"]["status"], "in_progress")
+        self.assertEqual(gc.qualifying(runs, REPO, PR, IDS)[".github/workflows/check.yml"], [])
+
+    def test_a_branch_that_ever_targeted_another_base_counts_no_runs(self):
+        result = judge(*green(), other={"probe-base"})
+        for context in RUN_CONTEXTS:
+            self.assertEqual(result[context]["conclusion"], "failure", context)
+            self.assertIn("probe-base", result[context]["summary"])
+        self.assertEqual(result[gc.POLICY]["conclusion"], "success")
+
+    def test_policy_comes_from_mains_checkers(self):
+        result = judge(*green(), policy=(False, "classify failed"))
+        self.assertEqual((result[gc.POLICY]["conclusion"], result[gc.POLICY]["summary"]),
+                         ("failure", "classify failed"))
+        self.assertEqual(result["gate/check"]["conclusion"], "success")
 
 
 class WorkflowChanges(unittest.TestCase):
     def test_a_workflow_change_needs_the_owners_approval_of_this_head(self):
-        result = judge(*green(), paths=[".github/workflows/check.yml"])
-        self.assertTrue(all(v["conclusion"] == "failure" for v in result.values()))
-        self.assertIn("needs @owner's approval", result["gate/check"]["summary"])
+        for path in (".github/workflows/check.yml", ".github"):
+            with self.subTest(path=path):
+                result = judge(*green(), paths=[path])
+                self.assertTrue(all(result[c]["conclusion"] == "failure" for c in RUN_CONTEXTS))
+                self.assertIn("needs @owner's approval", result["gate/check"]["summary"])
+
+    def test_a_lookalike_path_is_not_a_workflow_change(self):
+        self.assertEqual(judge(*green(), paths=[".github-notes", "docs/.github/x"])["gate/check"]["conclusion"],
+                         "success")
 
     def test_an_approval_of_this_head_passes(self):
         result = judge(*green(), paths=[".github/workflows/check.yml"], reviews=[review("APPROVED")])
@@ -132,7 +154,8 @@ class WorkflowChanges(unittest.TestCase):
 
     def test_approvals_that_do_not_count_fail(self):
         for reviews in ([review("APPROVED", commit=OLD)], [review("APPROVED", user="someone")],
-                        [review("APPROVED"), review("CHANGES_REQUESTED")], [review("COMMENTED")]):
+                        [review("APPROVED"), review("CHANGES_REQUESTED")], [review("APPROVED"), review("DISMISSED")],
+                        [review("COMMENTED")]):
             with self.subTest(reviews=reviews):
                 result = judge(*green(), paths=[".github/x"], reviews=reviews)
                 self.assertEqual(result["gate/check"]["conclusion"], "failure")
@@ -144,99 +167,175 @@ class WorkflowChanges(unittest.TestCase):
         self.assertEqual(result["gate/check"]["conclusion"], "failure")
 
 
-class PostInput(unittest.TestCase):
-    def good(self):
-        verdicts = [{"context": c, "status": "completed", "conclusion": "success", "summary": "s"} for c in gc.CONTEXTS]
-        return {"head_sha": HEAD, "pr": 7, "verdicts": verdicts}
+def good():
+    verdicts = [{"context": c, "status": "completed", "conclusion": "success", "summary": "s"} for c in gc.CONTEXTS]
+    return {"head_sha": HEAD, "pr": 7, "verdicts": verdicts}
 
+
+class PostInput(unittest.TestCase):
     def test_good_verdicts_pass(self):
-        self.assertEqual(gc.checked_verdicts(json.dumps(self.good())), self.good())
+        self.assertEqual(gc.checked_verdicts(json.dumps(good()), HEAD), good())
+        self.assertEqual(gc.checked_verdicts(json.dumps(dict(good(), pr=None)), HEAD)["pr"], None)
 
     def test_anything_judge_cannot_produce_is_refused(self):
         bad = []
-        d = self.good(); d["extra"] = 1; bad.append(d)
-        d = self.good(); d["head_sha"] = "main"; bad.append(d)
-        d = self.good(); d["pr"] = "7"; bad.append(d)
-        d = self.good(); d["verdicts"][0]["context"] = "check"; bad.append(d)
-        d = self.good(); d["verdicts"][0]["conclusion"] = "neutral"; bad.append(d)
-        d = self.good(); d["verdicts"][0]["status"] = "in_progress"; bad.append(d)
-        d = self.good(); d["verdicts"].pop(); bad.append(d)
-        d = self.good(); d["verdicts"].append(dict(d["verdicts"][0])); bad.append(d)
-        d = self.good(); d["verdicts"][0]["details_url"] = "x"; bad.append(d)
+        d = good(); d["extra"] = 1; bad.append(d)
+        d = good(); d["head_sha"] = OLD; bad.append(d)                 # not the triggering commit
+        d = good(); d["pr"] = "7"; bad.append(d)
+        d = good(); d["verdicts"][0]["context"] = "check"; bad.append(d)
+        d = good(); d["verdicts"][0]["conclusion"] = "neutral"; bad.append(d)
+        d = good(); d["verdicts"][0]["status"] = "in_progress"; bad.append(d)
+        d = good(); d["verdicts"].pop(); bad.append(d)
+        d = good(); d["verdicts"].append(dict(d["verdicts"][0])); bad.append(d)
+        d = good(); d["verdicts"][0]["details_url"] = "x"; bad.append(d)
         for d in bad:
             with self.subTest(d=str(d)[:80]), self.assertRaises(ValueError):
-                gc.checked_verdicts(json.dumps(d))
+                gc.checked_verdicts(json.dumps(d), HEAD)
 
 
 class Post(unittest.TestCase):
-    def test_creates_once_then_updates_in_place(self):
-        data = PostInput().good()
+    def capture(self, existing, data):
         calls = []
-        existing = {"gate/check": [{"id": 5, "app": {"id": 123}}, {"id": 6, "app": {"id": 999}}]}
 
         def pages(path):
-            calls.append(("GET", path))
+            calls.append(("GET", path, None))
             name = next(c for c in gc.CONTEXTS if f"check_name={gc.urllib.parse.quote(c, safe='')}&" in path)
             return existing.get(name, [])
 
         def gh(*args, data=None):
             calls.append((args[1], args[2], data))
 
-        with mock.patch.object(gc, "pages", pages), mock.patch.object(gc, "gh", gh):
+        with mock.patch.object(gc, "pages", pages), mock.patch.object(gc, "gh", gh), redirect_stdout(io.StringIO()):
             gc.post(data, "123", REPO)
+        return calls
+
+    def test_creates_once_then_updates_in_place(self):
+        existing = {"gate/check": [{"id": 5, "name": "gate/check", "app": {"id": 123}},
+                                   {"id": 6, "name": "gate/check", "app": {"id": 999}},
+                                   {"id": 8, "name": "gate/other", "app": {"id": 123}}]}
+        calls = self.capture(existing, good())
         writes = [c for c in calls if c[0] != "GET"]
-        self.assertEqual([w[1] for w in writes if w[0] == "PATCH"], [f"repos/{REPO}/check-runs/5"])
+        patches = [w for w in writes if w[0] == "PATCH"]
+        self.assertEqual([w[1] for w in patches], [f"repos/{REPO}/check-runs/5"])
+        self.assertNotIn("head_sha", patches[0][2])
         self.assertEqual(len([w for w in writes if w[0] == "POST"]), len(gc.CONTEXTS) - 1)
-        self.assertNotIn("head_sha", writes[0][2] if writes[0][0] == "PATCH" else {})
         self.assertTrue(any("check_name=gate%2Fspec%20%28base%29&app_id=123" in c[1] for c in calls if c[0] == "GET"))
+
+    def test_an_undecided_verdict_never_moves_a_completed_run_back(self):
+        data = good()
+        data["verdicts"][0] = {"context": "gate/check", "status": "in_progress", "conclusion": None, "summary": "wait"}
+        calls = self.capture({"gate/check": [{"id": 5, "name": "gate/check", "app": {"id": 123}}]}, data)
+        patch = next(c for c in calls if c[0] == "PATCH")[2]
+        self.assertEqual((patch["status"], patch["conclusion"]), ("completed", "failure"))
+        create = self.capture({}, data)
+        first = next(c for c in create if c[0] == "POST" and c[2]["name"] == "gate/check")[2]
+        self.assertEqual(first["status"], "in_progress")
+        self.assertNotIn("conclusion", first)
+
+
+class Main(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": REPO})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = gc.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_a_judge_error_fails_every_context(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(gc, "judge", side_effect=RuntimeError("two open pull requests")):
+            out = Path(tmp) / "out"
+            code, _, err = self.run_main(["judge", "--head-sha", HEAD, "--out", str(out)])
+            data = json.loads(out.read_text().split("=", 1)[1])
+        self.assertEqual(code, 0)
+        self.assertIn("two open pull requests", err)
+        self.assertEqual(gc.checked_verdicts(json.dumps(data), HEAD)["pr"], None)
+        self.assertTrue(all(v["conclusion"] == "failure" for v in data["verdicts"]))
+
+    def test_no_pull_request_writes_an_empty_output(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(gc, "judge", return_value=(None, [])):
+            out = Path(tmp) / "out"
+            self.run_main(["judge", "--head-sha", HEAD, "--out", str(out)])
+            self.assertEqual(out.read_text(), "verdicts=\n")
+
+    def test_post_without_verdicts_after_a_failed_judge_fails_every_context(self):
+        posted = []
+        with mock.patch.dict(os.environ, {"VERDICTS": ""}), \
+                mock.patch.object(gc, "post", lambda data, app, repo: posted.append(data)):
+            self.run_main(["post", "--app-id", "1", "--head-sha", HEAD, "--judge-result", "failure"])
+            self.run_main(["post", "--app-id", "1", "--head-sha", HEAD, "--judge-result", "cancelled"])
+            self.run_main(["post", "--app-id", "1", "--head-sha", HEAD, "--judge-result", "success"])
+        self.assertEqual(len(posted), 2)
+        self.assertTrue(all(v["conclusion"] == "failure" for d in posted for v in d["verdicts"]))
+
+    def test_post_refuses_verdicts_for_another_commit(self):
+        with mock.patch.dict(os.environ, {"VERDICTS": json.dumps(dict(good(), head_sha=OLD))}), \
+                mock.patch.object(gc, "post", lambda *a: self.fail("posted")), self.assertRaises(SystemExit):
+            self.run_main(["post", "--app-id", "1", "--head-sha", HEAD, "--judge-result", "success"])
 
 
 class Judge(unittest.TestCase):
     def setUp(self):
-        self.env = mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": REPO})
-        self.env.start()
-        self.addCleanup(self.env.stop)
+        patcher = mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": REPO, "RUNNER_TEMP": tempfile.gettempdir()})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
-    def fake(self, prs, runs_seq, jobs):
+    def fake(self, prs, runs_seq, jobs, other=()):
         state = {"runs": list(runs_seq)}
 
         def gh(path, *rest, data=None):
-            if path.endswith("/pulls"):
-                return prs
             return {"id": IDS[".github/workflows/" + path.rsplit("/", 1)[1]]}
 
         def pages(path):
+            if "/commits/" in path and path.split("?")[0].endswith("/pulls"):
+                return prs
             if "/actions/runs?" in path:
                 return state["runs"].pop(0) if len(state["runs"]) > 1 else state["runs"][0]
-            if path.endswith("/jobs?filter=latest&per_page=100"):
+            if "/jobs?filter=latest" in path:
                 return jobs[int(path.split("/runs/")[1].split("/")[0])]
             return []
 
-        return mock.patch.multiple(gc, gh=gh, pages=pages, changed_paths=lambda pr: ["src/x"])
+        return mock.patch.multiple(gc, gh=gh, pages=pages, fetch_head=lambda pr: OLD,
+                                   changed_paths=lambda base, head: ["src/x"],
+                                   other_bases=lambda repo, pr: set(other),
+                                   policy_result=lambda *a: POLICY_OK)
 
     def test_no_open_pull_request_into_main_from_this_repository_posts_nothing(self):
         for pr in (dict(PR, state="closed"), dict(PR, base={"ref": "other", "sha": OLD}),
-                   dict(PR, head={"sha": HEAD, "repo": {"full_name": "fork/r"}}),
-                   dict(PR, head={"sha": OLD, "repo": {"full_name": REPO}})):
+                   dict(PR, head={"sha": HEAD, "ref": "topic", "repo": {"full_name": "fork/r"}}),
+                   dict(PR, head={"sha": OLD, "ref": "topic", "repo": {"full_name": REPO}})):
             with self.subTest(pr=pr), self.fake([pr], [[]], {}):
                 self.assertEqual(gc.judge(HEAD), (None, []))
 
+    def test_two_open_pull_requests_into_main_raise(self):
+        with self.fake([PR, dict(PR, number=8)], [[]], {}), self.assertRaises(RuntimeError):
+            gc.judge(HEAD)
+
     def test_waits_for_runs_still_going_then_judges(self):
         runs, jobs = green()
-        going = [dict(r, status="in_progress") if r["id"] == 30 else r for r in runs]
+        going = [dict(r, status="in_progress") if r["id"] == 20 else r for r in runs]
         clock, slept = [0.0], []
+
+        def sleep(seconds):
+            slept.append(seconds)
+            clock[0] += seconds
+
         with self.fake([PR], [going, runs], jobs):
-            pr, result = gc.judge(HEAD, now=lambda: clock[0], sleep=lambda s: (slept.append(s), clock.__setitem__(0, clock[0] + s)))
-        self.assertEqual(slept, [gc.POLL_SECONDS])
+            number, result = gc.judge(HEAD, now=lambda: clock[0], sleep=sleep)
+        self.assertEqual((number, slept), (7, [gc.POLL_SECONDS]))
         self.assertTrue(all(v["conclusion"] == "success" for v in result))
 
     def test_stops_waiting_at_the_deadline(self):
         runs, jobs = green()
-        going = [dict(r, status="in_progress") if r["id"] == 30 else r for r in runs]
+        going = [dict(r, status="in_progress") if r["id"] == 20 else r for r in runs]
         clock = [0.0]
         with self.fake([PR], [going], jobs):
-            pr, result = gc.judge(HEAD, now=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + s))
-        self.assertEqual({v["context"]: v["status"] for v in result}["gate/policy"], "in_progress")
+            _, result = gc.judge(HEAD, now=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + s))
+        self.assertEqual({v["context"]: v["status"] for v in result}["gate/spec (base)"], "in_progress")
         self.assertGreaterEqual(clock[0], gc.WAIT_SECONDS)
 
     def test_refuses_a_head_that_is_not_a_commit_id(self):
@@ -244,25 +343,45 @@ class Judge(unittest.TestCase):
             gc.judge("main")
 
 
+class PolicyResult(unittest.TestCase):
+    def test_runs_mains_checkers_with_policy_ymls_arguments(self):
+        seen = []
+
+        def fake_run(cmd, **kw):
+            seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1 if "invariants" in cmd else 0, "", "")
+
+        with mock.patch.object(gc.subprocess, "run", fake_run):
+            passed, summary = gc.policy_result(PR, "c" * 40, "reviews.json", True)
+        self.assertFalse(passed)
+        self.assertIn("invariants", summary)
+        classify = next(c for c in seen if "classify" in c)
+        for arg in ("--base", "c" * 40, "--map-ref", OLD, "--head", HEAD, "--head-sha", "--reviews", "--enforce"):
+            self.assertIn(arg, classify)
+        self.assertTrue(any("--ref" in c and "invariants" in c for c in seen))
+        self.assertTrue(any(c[1].endswith("workflow_lint.py") and "--ref" in c for c in seen))
+        with mock.patch.object(gc.subprocess, "run",
+                               lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", "")):
+            self.assertTrue(gc.policy_result(PR, "c" * 40, "r.json", False)[0])
+
+
 class Repository(unittest.TestCase):
-    def test_the_gate_workflow_passes_the_lint_and_names_the_jobs_it_judges(self):
+    def test_the_gate_workflow_passes_the_lint_and_names_its_triggers(self):
         text = (ROOT / ".github/workflows/gate.yml").read_text(encoding="utf-8")
         allowed = wl.load_allowed((ROOT / wl.ALLOW_FILE).read_text(encoding="utf-8"))
         self.assertEqual(wl.lint("gate.yml", text, allowed), [])
-        self.assertIn("workflows: [check, spec, policy, policy-refresh]", text)
-        self.assertIn("environment: gate", text)
-        self.assertIn("permission-checks: write", text)
+        for needle in ("workflows: [check, spec, policy, policy-refresh]", "environment: gate",
+                       "permission-checks: write", "if: always()", "POLICY_ENFORCE: ${{ vars.POLICY_ENFORCE }}"):
+            self.assertIn(needle, text)
 
     def test_the_judged_jobs_exist_in_their_workflows(self):
         check = (ROOT / ".github/workflows/check.yml").read_text(encoding="utf-8")
         spec = (ROOT / ".github/workflows/spec.yml").read_text(encoding="utf-8")
-        policy = (ROOT / ".github/workflows/policy.yml").read_text(encoding="utf-8")
         self.assertIn("\n  check:\n", check)
         self.assertIn("part: [base, new, corpus]", spec)
-        self.assertIn("\n  policy:\n", policy)
-        self.assertIn("pull_request_target:", policy)
         for text in (check, spec):
             self.assertIn("\n  pull_request:\n", text)
+            self.assertIn("Only pull requests into main", text)
 
 
 if __name__ == "__main__":
