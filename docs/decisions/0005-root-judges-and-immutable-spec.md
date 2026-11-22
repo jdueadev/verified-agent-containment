@@ -70,13 +70,23 @@ attack harness is a separate program built from the root (stage 3).
   can run the invariants from base against the head. `check.sh` still runs them
   on the working tree.
 - The spec ratchet, as above.
-- `tools/spec_run.py`, the logic of a `spec` check. It runs from a base checkout.
-  It takes the spec files and test ids from the base commit, parks head-only spec
-  outside the checkout, clears `__pycache__`, and runs each base Python module in
-  its own `python3 -I -B` process and each kernel test file as its own
-  `cargo test --test`. The verdict is per test id, never an exit code: every id
-  the base source defines must be reported as passed, and any failure reported
-  counts. A red base run passes only when the owner approved exactly this head.
+- `tools/spec_run.py`, the logic of a `spec` check. It runs from a base checkout
+  and takes the spec files and test ids from the base commit.
+  - Head-only spec is parked outside the checkout.
+  - Kernel test files run first, each as its own `cargo test --test`, before any
+    Python child has run head code.
+  - Each base Python module then runs in its own `python3 -I -B` process. Before
+    each one, its file is rewritten from the base commit and `__pycache__` is
+    cleared. The child loads it by path, and a package or extension of the same
+    name beside it fails the module.
+  - In the workflow, every child runs as an unprivileged user that cannot write
+    to either checkout, and everything that user left running is killed after
+    each child.
+  - The verdict is per test id, never an exit code. Every id the base source
+    defines must be reported as passed, and any failure reported counts. Rust
+    results are read only from the lines before libtest's `failures:` section,
+    where a panic message could imitate them.
+  - A red base run passes only when the owner approved exactly this head.
 - `ci/corpus/` and `tools/corpus_run.py`. Each case is a pair of trees that
   `classify` or `invariants` must reject, with an accept twin, run as a black box
   in a new git repository. The run fails on an unknown checker, a missing twin, a
@@ -98,12 +108,14 @@ attack harness is a separate program built from the root (stage 3).
 
 ### What the maintainer pushes
 
-Two workflow changes, which the agent identity cannot push:
+Three workflow changes, which the agent identity cannot push:
 - a `spec` workflow that runs `spec_run.py base`, `spec_run.py new` and
   `corpus_run.py` from a base checkout, as three fresh jobs, with head code run
   as an unprivileged user;
 - a `policy` step that runs `invariants --ref` on the head from base. Its failure
-  is not cleared by an approval.
+  is not cleared by an approval;
+- a `policy-refresh` step that re-runs a failed `spec` run after a review, so
+  that an approval can turn a red base spec green.
 
 `spec` becomes a required check only after its first green run on `main`'s
 corpus, recorded below.
@@ -117,10 +129,15 @@ makes it required, are recorded here by URL.
 
 - **New spec that looks strict but tests the wrong thing.** Immutability protects
   old spec, not the quality of new spec.
-- **A module the base spec imports can still patch its own test process.**
-  Per-process isolation keeps a new test away from the base spec, but not the
-  code under test away from its own tests. This is why the judges, which are that
-  code, stay root.
+- **Code a base test imports runs inside that test's process.** Per-module
+  processes, rewriting each module from base, and an unprivileged user keep one
+  module from changing another. They cannot keep the code under test from
+  patching its own tests. This is why the judges, which are that code, stay root,
+  and why a lane B module that a base test imports, such as `kernel_mutants.py`,
+  is still a way in. The ratchets see edits to its entries, not new top-level code.
+- **The corpus is easy to recognise.** Its repositories have one author, fixed
+  commit messages and tiny trees. A checker could be strict only there. This
+  matters only once checkers leave the root.
 - **Workflows trusted by permission.** For `pull_request`, GitHub takes the
   workflow from the PR's merge ref. `spec` cannot be skipped only because the
   agent identity has no Workflows permission and forks need the maintainer. If
