@@ -37,6 +37,12 @@ whose head is that commit:
   - `head_ref` is the PR's head branch;
   - `run_id` is the run's id, and `workflow_ref` is main's workflow file.
 
+  The token's `sha` claim is the merge commit the run checked out. judge
+  fetches it and requires that its second parent is the PR's head, that its
+  first parent is a commit on main, and that its `.github` tree is that
+  parent's. The only exception is a `.github` change the owner has approved at
+  this head. So the code that ran is main's, plus the head.
+
   A run without a valid proof is ignored, never counted. The proof is bound to
   the run, not the attempt, because a re-run reuses the original event and
   `rerun --failed` does not repeat the attestation job. Expiry is not
@@ -55,8 +61,14 @@ whose head is that commit:
   this head, the rule `policy` uses.
 
 Any error, or more than one open pull request into main with this head, makes
-every context fail for that commit. A result that was posted earlier is never
-left standing because judging went wrong.
+every context fail for that commit. If no open pull request into main has
+this head, for example because one was retargeted or closed, the gate's
+existing check runs on it are set to failure, and none are created. A
+result posted earlier is never left standing because judging went wrong or
+the pull request moved. The `gate-events` workflow brings a retarget to main,
+a close or a reopen here. Whether a retarget away from main is seen depends
+on the new base's copy of that workflow, which is why the stale results get
+updated whenever this workflow next runs for that head.
 
 judge waits, up to its deadline, for qualifying runs that are still going.
 After an approval, policy-refresh re-runs `policy` and `spec`, and when it
@@ -144,6 +156,8 @@ def verify_rs256(token, keys):
         header = json.loads(b64url(head64))
     except (ValueError, json.JSONDecodeError) as error:
         raise ValueError(f"not a JWT: {error}") from error
+    if not isinstance(header, dict) or not isinstance(keys, dict):
+        raise ValueError("not a JWT header or key set")
     if header.get("alg") != "RS256":
         raise ValueError(f"algorithm {header.get('alg')!r}, not RS256")
     found = [k for k in keys.get("keys", []) if k.get("kid") == header.get("kid") and k.get("kty") == "RSA"]
@@ -153,8 +167,8 @@ def verify_rs256(token, keys):
     e = int.from_bytes(b64url(found[0]["e"]), "big")
     size = (n.bit_length() + 7) // 8
     signature = b64url(sig64)
-    if size < 256 or len(signature) != size:
-        raise ValueError("bad signature length")
+    if size < 256 or len(signature) != size or int.from_bytes(signature, "big") >= n:
+        raise ValueError("bad signature length or value")
     digest = hashlib.sha256(f"{head64}.{body64}".encode("ascii")).digest()
     wanted = b"\x00\x01" + b"\xff" * (size - len(SHA256_INFO) - len(digest) - 3) + b"\x00" + SHA256_INFO + digest
     got = pow(int.from_bytes(signature, "big"), e, n).to_bytes(size, "big")
@@ -178,19 +192,26 @@ def proof_problem(claims, run, pr, repo, path):
     return f"claims {', '.join(wrong)} do not match" if wrong else None
 
 
-def proven(by_path, pr, repo, proofs_of, keys):
+def proven(by_path, pr, repo, proofs_of, keys, binding=lambda claims: None):
     """Keep only the runs whose proof verifies. `proofs_of(run)` returns the tokens a
-    run uploaded. Returns ({path: [run]}, {path: [(run id, why)]})."""
+    run uploaded; `binding(claims)` checks the merge commit that ran. Returns
+    ({path: [run]}, {path: [(run id, why)]}). Anything odd about a proof, or about
+    fetching it, makes that proof count for nothing; it never stops the judging."""
     kept, ignored = {}, {}
     for path, runs in by_path.items():
         kept[path], ignored[path] = [], []
         for run in runs:
             reasons = []
-            for token in proofs_of(run):
+            try:
+                tokens = proofs_of(run)
+            except Exception as error:  # noqa: BLE001  a broken artifact is no proof
+                tokens, reasons = [], [f"proof unreadable: {type(error).__name__}"]
+            for token in tokens:
                 try:
-                    problem = proof_problem(verify_rs256(token, keys), run, pr, repo, path)
-                except ValueError as error:
-                    problem = str(error)
+                    claims = verify_rs256(token, keys)
+                    problem = proof_problem(claims, run, pr, repo, path) or binding(claims)
+                except Exception as error:  # noqa: BLE001
+                    problem = f"bad proof: {type(error).__name__}: {error}"[:200]
                 if problem is None:
                     kept[path].append(run)
                     break
@@ -198,6 +219,28 @@ def proven(by_path, pr, repo, proofs_of, keys):
             else:
                 ignored[path].append((run["id"], "; ".join(reasons) or "no proof"))
     return kept, ignored
+
+
+def merge_problem(claims, pr, workflows_approved, git=None):
+    """Why the merge commit a run checked out (its `sha` claim) is not main plus this
+    head, or None. `workflows_approved`: the head changes .github and the owner
+    approved this head, so a .github difference is allowed."""
+    git = git or globals()["git"]
+    sha = claims.get("sha")
+    if not isinstance(sha, str) or not SHA.fullmatch(sha):
+        return "no merge commit in the proof"
+    git("fetch", "--quiet", "--no-tags", "origin", sha)
+    parents = git("rev-list", "--parents", "-n", "1", sha).split()[1:]
+    if len(parents) != 2 or parents[1] != pr["head"]["sha"]:
+        return f"merge commit {sha[:12]} is not a merge of this head"
+    try:
+        git("merge-base", "--is-ancestor", parents[0], "HEAD")  # HEAD: this checkout of main
+    except subprocess.CalledProcessError:
+        return f"merge commit {sha[:12]} was not made on main"
+    tree = lambda commit: git("rev-parse", "--verify", "--quiet", f"{commit}:.github").strip()
+    if tree(sha) != tree(parents[0]) and not workflows_approved:
+        return f"merge commit {sha[:12]} ran .github files that are not main's"
+    return None
 
 
 def touches_workflows(path):
@@ -291,7 +334,8 @@ def proofs_of(repo):
     def tokens(run):
         out = []
         for artifact in pages(f"repos/{repo}/actions/runs/{run['id']}/artifacts?per_page=100"):
-            if not artifact.get("name", "").startswith(PROOF_PREFIX) or artifact.get("expired"):
+            if (not artifact.get("name", "").startswith(PROOF_PREFIX) or artifact.get("expired")
+                    or not 0 < int(artifact.get("size_in_bytes") or 0) <= 65536):
                 continue
             data = subprocess.run(["gh", "api", f"repos/{repo}/actions/artifacts/{artifact['id']}/zip"],
                                   capture_output=True, check=True).stdout
@@ -346,13 +390,14 @@ def policy_result(pr, merge_base, reviews_file, enforce):
 
 
 def judge(head_sha, now=time.monotonic, sleep=time.sleep):
-    """(pr number or None, verdicts). No open PR into main: (None, [])."""
+    """(pr number or None, verdicts). With no open PR into main, the verdicts are all
+    failures with pr None, which post only applies to check runs that already exist."""
     repo = os.environ["GITHUB_REPOSITORY"]
     if not SHA.fullmatch(head_sha):
         raise ValueError(f"not a commit id: {head_sha!r}")
     pr = open_pr_into_main(repo, head_sha)
     if pr is None:
-        return None, []
+        return None, all_failed("No open pull request into main has this head commit.")
     owner, _ = policy_check.load_lanes((ROOT / policy_check.LANES_FILE).read_text(encoding="utf-8"))
     workflow_ids = {p: gh(f"repos/{repo}/actions/workflows/{p.rsplit('/', 1)[1]}")["id"] for p in RUN_WORKFLOWS}
     deadline = now() + WAIT_SECONDS
@@ -363,17 +408,19 @@ def judge(head_sha, now=time.monotonic, sleep=time.sleep):
         if not going or now() >= deadline:
             break
         sleep(POLL_SECONDS)
-    by_path, ignored = proven(by_path, pr, repo, proofs_of(repo), signing_keys())
-    jobs = {r["id"]: pages(f"repos/{repo}/actions/runs/{r['id']}/jobs?filter=latest&per_page=100")
-            for rs in by_path.values() for r in rs if r.get("status") == "completed"}
     reviews = pages(f"repos/{repo}/pulls/{pr['number']}/reviews?per_page=100")
     merge_base = fetch_head(pr)
+    changed = changed_paths(merge_base, head_sha)
+    workflows_approved = any(touches_workflows(p) for p in changed) and policy_check.approved(reviews, owner, head_sha)
+    by_path, ignored = proven(by_path, pr, repo, proofs_of(repo), signing_keys(),
+                              lambda claims: merge_problem(claims, pr, workflows_approved))
+    jobs = {r["id"]: pages(f"repos/{repo}/actions/runs/{r['id']}/jobs?filter=latest&per_page=100")
+            for rs in by_path.values() for r in rs if r.get("status") == "completed"}
     reviews_file = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / f"gate-reviews-{head_sha}.json"
     reviews_file.write_text(json.dumps(reviews), encoding="utf-8")
     # Always enforcing: gate/policy is the authority, whatever POLICY_ENFORCE says.
     policy = policy_result(pr, merge_base, reviews_file, True)
-    return pr["number"], verdicts(pr, by_path, jobs, changed_paths(merge_base, head_sha), reviews, owner,
-                                  policy, ignored)
+    return pr["number"], verdicts(pr, by_path, jobs, changed, reviews, owner, policy, ignored)
 
 
 # ---------- posting ----------
@@ -408,14 +455,16 @@ def post(data, app_id, repo):
     errors = []
     for v in sorted(data["verdicts"], key=lambda v: v["conclusion"] != "failure"):
         try:
-            post_one(v, head, where, app_id, repo)
+            # Without a pull request into main, only existing check runs are updated (to
+            # failure); creating gate results for a commit no PR into main has is noise.
+            post_one(v, head, where, app_id, repo, create=data["pr"] is not None)
         except subprocess.CalledProcessError as error:
             errors.append(f"{v['context']}: {error.stderr or error}")
     if errors:
         raise RuntimeError("; ".join(errors))
 
 
-def post_one(v, head, where, app_id, repo):
+def post_one(v, head, where, app_id, repo, create=True):
     name = urllib.parse.quote(v["context"], safe="")
     mine = [c for c in pages(f"repos/{repo}/commits/{head}/check-runs?check_name={name}"
                              f"&app_id={app_id}&filter=all&per_page=100")
@@ -430,7 +479,7 @@ def post_one(v, head, where, app_id, repo):
             "output": {"title": v["context"], "summary": summary}}
     if status == "completed":
         body["conclusion"] = conclusion
-    if not mine:
+    if not mine and create:
         gh("--method", "POST", f"repos/{repo}/check-runs", "--input", "-", data=body)
     for run in mine:
         # One check run per context, kept current. More than one means two creates raced.
@@ -457,13 +506,8 @@ def main(argv=None):
         except Exception as error:  # noqa: BLE001  every failure must fail the contexts
             print(f"gate_check: judging failed: {error} {getattr(error, 'stderr', '') or ''}".strip(), file=sys.stderr)
             pr, result = 0, all_failed(f"Judging this commit failed ({type(error).__name__}); see the gate run's log.")
-        if pr is None:
-            print(f"No open pull request into main has head {args.head_sha}.")
-            line = ""
-        else:
-            print(json.dumps(result, indent=2))
-            line = json.dumps({"head_sha": args.head_sha, "pr": pr or None, "verdicts": result},
-                              separators=(",", ":"))
+        print(json.dumps({"pr": pr or None, "verdicts": result}, indent=2))
+        line = json.dumps({"head_sha": args.head_sha, "pr": pr or None, "verdicts": result}, separators=(",", ":"))
         if args.out:
             with open(args.out, "a", encoding="utf-8") as handle:
                 handle.write(f"verdicts={line}\n")
@@ -473,10 +517,8 @@ def main(argv=None):
             raise ValueError("--app-id must be a number")
         text = os.environ.get("VERDICTS", "")
         if not text:
-            if args.judge_result == "success":
-                print("judge found no open pull request into main; nothing to post.")
-                return 0
-            # judge itself died: fail every context on this commit.
+            # judge itself died (it always writes verdicts otherwise): fail every context
+            # on this commit that already has a check run.
             text = json.dumps({"head_sha": args.head_sha, "pr": None,
                                "verdicts": all_failed(f"The judge job ended '{args.judge_result}'.")})
         post(checked_verdicts(text, args.head_sha), args.app_id, os.environ["GITHUB_REPOSITORY"])

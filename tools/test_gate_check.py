@@ -222,6 +222,13 @@ class Post(unittest.TestCase):
         self.assertEqual(sorted(order), sorted(gc.CONTEXTS))
         self.assertLessEqual(max(len(c["output"]["summary"]) for c in calls), gc.SUMMARY_LIMIT)
 
+    def test_without_a_pr_only_existing_runs_are_updated(self):
+        data = dict(good(), pr=None, verdicts=gc.all_failed("gone"))
+        calls = self.capture({"gate/check": [{"id": 5, "name": "gate/check", "app": {"id": 123}}]}, data)
+        writes = [c for c in calls if c[0] != "GET"]
+        self.assertEqual([(w[0], w[1]) for w in writes], [("PATCH", f"repos/{REPO}/check-runs/5")])
+        self.assertEqual(writes[0][2]["conclusion"], "failure")
+
     def test_creates_once_then_updates_in_place(self):
         existing = {"gate/check": [{"id": 5, "name": "gate/check", "app": {"id": 123}},
                                    {"id": 6, "name": "gate/check", "app": {"id": 999}},
@@ -269,11 +276,13 @@ class Main(unittest.TestCase):
         self.assertEqual(gc.checked_verdicts(json.dumps(data), HEAD)["pr"], None)
         self.assertTrue(all(v["conclusion"] == "failure" for v in data["verdicts"]))
 
-    def test_no_pull_request_writes_an_empty_output(self):
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(gc, "judge", return_value=(None, [])):
+    def test_no_pull_request_writes_failures_with_no_pr(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(gc, "judge", return_value=(None, gc.all_failed("no PR"))):
             out = Path(tmp) / "out"
             self.run_main(["judge", "--head-sha", HEAD, "--out", str(out)])
-            self.assertEqual(out.read_text(), "verdicts=\n")
+            data = gc.checked_verdicts(out.read_text().split("=", 1)[1], HEAD)
+        self.assertIsNone(data["pr"])
 
     def test_post_without_verdicts_after_a_failed_judge_fails_every_context(self):
         posted = []
@@ -281,8 +290,8 @@ class Main(unittest.TestCase):
                 mock.patch.object(gc, "post", lambda data, app, repo: posted.append(data)):
             self.run_main(["post", "--app-id", "1", "--head-sha", HEAD, "--judge-result", "failure"])
             self.run_main(["post", "--app-id", "1", "--head-sha", HEAD, "--judge-result", "cancelled"])
-            self.run_main(["post", "--app-id", "1", "--head-sha", HEAD, "--judge-result", "success"])
         self.assertEqual(len(posted), 2)
+        self.assertTrue(all(d["pr"] is None for d in posted))
         self.assertTrue(all(v["conclusion"] == "failure" for d in posted for v in d["verdicts"]))
 
     def test_post_refuses_verdicts_for_another_commit(self):
@@ -319,12 +328,17 @@ class Judge(unittest.TestCase):
                                    proven=lambda by_path, *a: (by_path, {}),
                                    policy_result=lambda *a: POLICY_OK)
 
-    def test_no_open_pull_request_into_main_from_this_repository_posts_nothing(self):
+    def test_no_open_pull_request_into_main_fails_every_context_without_a_pr(self):
+        # A retarget or a close must not leave an earlier success standing; post only
+        # updates existing check runs when pr is None.
         for pr in (dict(PR, state="closed"), dict(PR, base={"ref": "other", "sha": OLD}),
                    dict(PR, head={"sha": HEAD, "ref": "topic", "repo": {"full_name": "fork/r"}}),
                    dict(PR, head={"sha": OLD, "ref": "topic", "repo": {"full_name": REPO}})):
             with self.subTest(pr=pr), self.fake([pr], [[]], {}):
-                self.assertEqual(gc.judge(HEAD), (None, []))
+                number, result = gc.judge(HEAD)
+                self.assertIsNone(number)
+                self.assertEqual(sorted(v["context"] for v in result), sorted(gc.CONTEXTS))
+                self.assertTrue(all(v["conclusion"] == "failure" for v in result))
 
     def test_two_open_pull_requests_into_main_raise(self):
         with self.fake([PR, dict(PR, number=8)], [[]], {}), self.assertRaises(RuntimeError):
@@ -481,6 +495,112 @@ class Proof(unittest.TestCase):
         self.assertEqual(result["gate/check"]["status"], "in_progress")
         self.assertIn("without a valid proof", result["gate/check"]["summary"])
 
+    def test_odd_headers_and_out_of_range_signatures_are_refused(self):
+        good = self.token()
+        head, body, sig = good.split(".")
+        list_header = self.b64(b"[]") + f".{body}.{sig}"
+        n = int.from_bytes(gc.b64url(self.jwks["keys"][0]["n"]), "big")
+        too_big = self.b64((n + 1).to_bytes(256, "big"))
+        for token in (list_header, f"{head}.{body}.{too_big}"):
+            with self.subTest(token=token[:20]), self.assertRaises(ValueError):
+                gc.verify_rs256(token, self.jwks)
+
+    def test_a_broken_artifact_or_binding_is_no_proof_and_does_not_stop_judging(self):
+        runs = {".github/workflows/check.yml": [{"id": 10}, {"id": 11}], ".github/workflows/spec.yml": []}
+
+        def proofs(run):
+            if run["id"] == 11:
+                raise gc.zipfile.BadZipFile("junk")
+            return [self.token()]
+
+        kept, ignored = gc.proven(runs, PR, REPO, proofs, self.jwks, binding=lambda c: None)
+        self.assertEqual(kept[".github/workflows/check.yml"], [{"id": 10}])
+        self.assertIn("unreadable", dict(ignored[".github/workflows/check.yml"])[11])
+        kept, ignored = gc.proven(runs, PR, REPO, lambda r: [self.token()], self.jwks,
+                                  binding=lambda c: "ran other .github files")
+        self.assertEqual(kept[".github/workflows/check.yml"], [])
+
+
+class MergeBinding(unittest.TestCase):
+    """merge_problem against a real repository: main, a head, and merges of them."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = self.tmp.name
+
+        def raw(*a):
+            return subprocess.run(["git", "-C", self.dir, *a], capture_output=True, text=True, check=True).stdout
+
+        self.raw = raw
+        raw("init", "-q", "-b", "main")
+        raw("config", "user.email", "t@example.invalid")
+        raw("config", "user.name", "t")
+        self.write(".github/workflows/check.yml", "honest\n")
+        self.main1 = self.commit("main 1")
+        raw("switch", "-q", "-c", "topic")
+        self.write("src.txt", "change\n")
+        self.head = self.commit("head")
+        raw("switch", "-q", "main")
+        self.write("other.txt", "main moves\n")
+        self.main2 = self.commit("main 2")
+        raw("switch", "-q", "-c", "planted", self.main1)
+        self.write(".github/workflows/check.yml", "stub\n")
+        self.planted = self.commit("planted")
+        raw("switch", "-q", "main")
+        self.pr = dict(PR, head=dict(PR["head"], sha=self.head))
+
+    def write(self, path, text):
+        target = Path(self.dir) / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+
+    def commit(self, message):
+        self.raw("add", "-A")
+        self.raw("commit", "-q", "-m", message)
+        return self.raw("rev-parse", "HEAD").strip()
+
+    def merge(self, base):
+        tree = self.raw("merge-tree", "--write-tree", base, self.head).split()[0]
+        return self.raw("commit-tree", tree, "-p", base, "-p", self.head, "-m", "merge").strip()
+
+    def git(self, *a):
+        if a[0] == "fetch":
+            return ""
+        return self.raw(*a)
+
+    def problem(self, sha, approved=False):
+        return gc.merge_problem({"sha": sha}, self.pr, approved, git=self.git)
+
+    def test_a_merge_of_the_head_into_main_binds(self):
+        self.assertIsNone(self.problem(self.merge(self.main2)))
+        self.assertIsNone(self.problem(self.merge(self.main1)))
+
+    def test_a_merge_into_a_planted_base_is_refused(self):
+        self.assertIn("not made on main", self.problem(self.merge(self.planted)))
+
+    def test_a_merge_of_another_head_is_refused(self):
+        other = self.raw("commit-tree", self.raw("rev-parse", f"{self.main2}^{{tree}}").strip(),
+                         "-p", self.main2, "-p", self.planted, "-m", "x").strip()
+        self.assertIn("not a merge of this head", self.problem(other))
+        self.assertIn("not a merge of this head", self.problem(self.main2))
+
+    def test_github_files_that_are_not_mains_need_an_approved_change(self):
+        tree = self.raw("merge-tree", "--write-tree", self.main2, self.head).split()[0]
+        self.write("x", "")
+        self.raw("switch", "-q", "-c", "scratch", self.main2)
+        self.raw("read-tree", tree)
+        Path(self.dir, ".github/workflows/check.yml").write_text("changed in the merge\n")
+        self.raw("add", ".github/workflows/check.yml")
+        changed = self.raw("write-tree").strip()
+        self.raw("switch", "-q", "-f", "main")
+        sha = self.raw("commit-tree", changed, "-p", self.main2, "-p", self.head, "-m", "m").strip()
+        self.assertIn("not main's", self.problem(sha))
+        self.assertIsNone(self.problem(sha, approved=True))
+
+    def test_no_merge_commit_in_the_proof_is_refused(self):
+        self.assertEqual(gc.merge_problem({}, self.pr, False, git=self.git), "no merge commit in the proof")
+
 
 class SigningKeys(unittest.TestCase):
     def test_retries_then_fails_closed(self):
@@ -500,9 +620,16 @@ class Repository(unittest.TestCase):
         text = (ROOT / ".github/workflows/gate.yml").read_text(encoding="utf-8")
         allowed = wl.load_allowed((ROOT / wl.ALLOW_FILE).read_text(encoding="utf-8"))
         self.assertEqual(wl.lint("gate.yml", text, allowed), [])
-        for needle in ("workflows: [check, spec, policy, policy-refresh]", "environment: gate",
+        for needle in ("workflows: [check, spec, policy, policy-refresh, gate-events]", "environment: gate",
                        "permission-checks: write", "if: always()"):
             self.assertIn(needle, text)
+
+    def test_gate_events_brings_retargets_closes_and_reopens_to_the_gate(self):
+        text = (ROOT / ".github/workflows/gate-events.yml").read_text(encoding="utf-8")
+        self.assertIn("name: gate-events\n", text)
+        self.assertIn("pull_request_target:\n    types: [edited, closed, reopened]\n", text)
+        self.assertNotIn("actions/checkout", text)
+        self.assertNotIn("secrets", text.lower().replace("# ", ""))
 
     def test_the_judged_jobs_exist_in_their_workflows(self):
         check = (ROOT / ".github/workflows/check.yml").read_text(encoding="utf-8")

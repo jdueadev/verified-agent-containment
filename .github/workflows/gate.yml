@@ -19,7 +19,7 @@ name: gate
 
 on:
   workflow_run:
-    workflows: [check, spec, policy, policy-refresh]
+    workflows: [check, spec, policy, policy-refresh, gate-events]
     types: [completed]
 
 permissions:
