@@ -42,17 +42,18 @@ for name, title, effect, law in SHOWCASE:
     fallbacks.append(f"{name}(){{{fallback(gen / f'variants/{name}.js')}}}")
 kernels = {"safe": b64(gen / "kernel.opt.wasm"), "variants": variants}
 
-# The cookbook panel (#106). The checker runs first: it builds the Bend kernel's mutants
-# into target/generated/cookbook/, and the page is not built if any snippet fails. The
-# interpreter and the snippets go in as the exact blocks the checker compares with the
-# committed page, so the page cannot run a different interpreter than scripts/check.sh.
+# The cookbook panel (#106). cookbook_check.page_inputs runs every snippet first (on the
+# Bend kernel, the wasm kernel and its mutant) and stops the build if any fails; it
+# returns only mutant names from BEND_MUTANTS, whose builds it leaves in
+# target/generated/cookbook/. The interpreter and the snippets go in as the exact blocks
+# the checker compares with the committed page, so the page cannot run a different
+# interpreter than scripts/check.sh. Recipe regions are left to scripts/check.sh: one of
+# them, the snippet's link to this page, can only be regenerated once the page exists.
 subprocess.run(["bend", "formal/kernel.bend", "-o", str(gen / "kernel.mjs")], cwd=root, check=True, stdout=subprocess.DEVNULL)
-errors, notes = cookbook.check(root, ci=True)
-# Recipe regions are scripts/check.sh's job, and one of them (the snippet's link to this
-# page) can only be regenerated once this page exists. Every other error stops the build.
-errors = [e for e in errors if "is out of date; run python3 tools/cookbook_check.py --write" not in e]
-if errors:
-    raise SystemExit("cookbook check failed; the page is not built:\n" + "\n".join(errors))
+try:
+    recipes = cookbook.page_inputs(root)
+except cookbook.CookbookError as err:
+    raise SystemExit(str(err)) from err
 blocks = cookbook.page_blocks(root)
 
 def bend_module(path):
@@ -62,13 +63,13 @@ def bend_module(path):
         raise SystemExit(f"{path}: cannot inline this module")
     return "function(){" + js.replace("export default ", "return ", 1) + "}"
 
-snippets = {sid: json.loads(text) for sid, (_, text, _) in cookbook.load_snippets(root)[0].items()}
 bend = {"safe": bend_module(gen / "kernel.mjs")}
-for data in snippets.values():
-    name = data["breaks"]
-    bend[name] = bend_module(root / cookbook.MUTANT_JS / f"{name.split(':', 1)[1]}.mjs")
+for name in sorted(set(recipes.values())):
+    bend[f"mutant:{name}"] = bend_module(root / cookbook.MUTANT_JS / f"{name}.mjs")
 built = subprocess.run(["git", "describe", "--always", "--dirty", "--abbrev=7"], cwd=root, capture_output=True, text=True).stdout.strip() or "unknown"
 evidence["built"] = built
+# A content hash survives the squash merge that a commit id from a branch does not.
+evidence["kernel_sha256"] = hashlib.sha256((root / "formal/kernel.bend").read_bytes()).hexdigest()
 
 values = {
     "KERNELS_JSON": cookbook.script_json(kernels),
@@ -76,7 +77,7 @@ values = {
     "FALLBACKS_JS": ",\n".join(fallbacks),
     "COOKBOOK_INTERPRETER": blocks[cookbook.PAGE_INTERPRETER[0]],
     "COOKBOOK_SNIPPETS": blocks[cookbook.PAGE_SNIPPETS[0]],
-    "COOKBOOK_BEND_JS": "{" + ",\n".join(f"{json.dumps(name)}:{js}" for name, js in bend.items()) + "}",
+    "COOKBOOK_BEND_JS": "{" + ",\n".join(f"{cookbook.script_json(name)}:{js}" for name, js in bend.items()) + "}",
 }
 page = (root / "web/template.html").read_text()
 # One pass, so text inserted for one placeholder is never scanned for another.
@@ -84,4 +85,4 @@ page = re.sub(r"__([A-Z_]+)__", lambda m: values[m.group(1)], page)
 out = Path(sys.argv[1] if len(sys.argv) > 1 else root / "web/dist/agent-containment-simulator.html")
 out.parent.mkdir(parents=True, exist_ok=True)
 out.write_text(page)
-print(json.dumps({"out": str(out), "bytes": out.stat().st_size, "variants": len(variants), "recipes": len(snippets), "proof_current": current, "built": built}))
+print(json.dumps({"out": str(out), "bytes": out.stat().st_size, "variants": len(variants), "recipes": len(recipes), "proof_current": current, "built": built}))

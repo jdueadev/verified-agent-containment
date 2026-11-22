@@ -40,6 +40,23 @@ Three steps of [`scripts/check.sh`](../../scripts/check.sh), in order:
 [`results/wasm-differential.json`](../../results/wasm-differential.json). Those
 files are output that `check` regenerates on every run, not lab artifacts.
 
+## How the claim is judged
+
+[`tools/claims_check.py`](../../tools/claims_check.py), the last step of
+`scripts/check.sh`, turns those files into the claim's row in
+[`docs/claims.md`](../claims.md). For each item in the claim's `evidence`:
+
+- `diff:rust-bend` and `diff:rust-wasm` count as caught only if
+  `results/differential.json` and `results/wasm-differential.json` record zero
+  mismatches;
+- each `rust-mutant:NAME` counts only if `results/mutation-check.json` records
+  that mutant as rejected.
+
+A `tested` claim needs at least one such falsifier, and every one it cites must
+hold (rule CI-3 in the checker's header). Otherwise `check` fails. The checker
+also requires every Rust mutant in the repository to be cited by some claim
+(CI-2), so a mutant cannot sit unused.
+
 ## Watch the control
 
 A differential that never fails proves nothing, so the mutation check

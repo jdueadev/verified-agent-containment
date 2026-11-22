@@ -19,33 +19,73 @@ def verdicts(page):
 
 
 def cookbook(page):
-    """The cookbook panel: every committed snippet passes on both kernels and is caught by
-    its mutant at its teeth expectation; an invalid edit is reported, not thrown."""
+    """The cookbook panel (#106): every committed snippet passes on both kernels and is
+    caught by its mutant at its teeth expectation; "Caught" needs a Bend pass; invalid or
+    edited input is reported, never thrown, never saved and never put in the URL."""
     out = {}
+    url = page.url
     ids = page.evaluate("[...document.querySelectorAll('#cbList button')].map(b => b.dataset.id)")
     out["recipes_match_files"] = sorted(ids) == SNIPPET_FILES and len(ids) > 0
-    out["runs"] = {}
+    runs_ok = True
     for sid in ids:
         page.click(f"#cb-{sid}")
         page.click("#cbRunAll")
         page.wait_for_function("document.querySelectorAll('#cbVerdicts .cbverdict').length === 3", timeout=10000)
         v = verdicts(page)
-        out["runs"][sid] = v
-        ok = len(v) == 3 and v[0].startswith("Pass") and v[1].startswith("Pass") and v[2].startswith("Caught") and not v[2].startswith("Caught elsewhere")
-        out["runs_ok"] = out.get("runs_ok", True) and ok
-    page.fill("#cbSource", "{ not json")
+        out.setdefault("runs", {})[sid] = v
+        runs_ok = runs_ok and v[0].startswith("Pass") and v[1].startswith("Pass") and v[2].startswith("Caught") and not v[2].startswith("Caught elsewhere")
+    out["runs_ok"] = runs_ok
+    # Measured with a step table on screen, the widest state of the panel.
+    out["overflow_with_table"] = page.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth")
+    sid = ids[0]
+    page.click(f"#cb-{sid}")
+    original = page.input_value("#cbSource")
+    snippet = json.loads(original)
+    # An edit that the Bend kernel fails: the mutant's failure then means nothing.
+    broken = json.loads(original)
+    step = broken["steps"][broken["teeth"]["step"] - 1]
+    step.setdefault("expect", {})["mode"] = "kill" if step.get("expect", {}).get("mode") != "kill" else "run"
+    page.fill("#cbSource", json.dumps(broken))
     out["edited_banner"] = page.is_visible("#cbEdited")
     page.click("#cbRunAll")
+    page.wait_for_function("document.querySelectorAll('#cbVerdicts .cbverdict').length === 3", timeout=10000)
+    v = verdicts(page)
+    out["not_meaningful_without_bend_pass"] = v[0].startswith("Fail") and v[2].startswith("Not meaningful")
+    # A mutant this page has no build of is reported, never shown as caught.
+    other = dict(snippet, breaks="mutant:no_such_mutant")
+    page.fill("#cbSource", json.dumps(other))
+    page.click("#cbMutant")
+    page.wait_for_function("document.querySelectorAll('#cbVerdicts .cbverdict').length === 2", timeout=10000)
+    out["unknown_mutant_reported"] = "no build of mutant:no_such_mutant" in page.inner_text("#cbVerdicts")
+    # Invalid input: reported, and the old verdicts are gone.
+    page.fill("#cbSource", "{ not json")
+    out["stale_cleared_on_edit"] = page.evaluate("document.querySelectorAll('#cbVerdicts .cbverdict').length") == 0
+    page.click("#cbRunAll")
     page.wait_for_selector("#cbErrors:not([hidden])", timeout=4000)
-    out["invalid_reported"] = "Not JSON" in page.inner_text("#cbErrors")
+    out["invalid_reported"] = "Not JSON" in page.inner_text("#cbErrors") and page.evaluate("document.querySelectorAll('#cbVerdicts .cbverdict').length") == 0
     page.fill("#cbSource", '{"id": "x"}')
     page.click("#cbRunAll")
     out["schema_reported"] = "missing" in page.inner_text("#cbErrors")
     page.click("#cbReset")
-    out["reset"] = not page.is_visible("#cbEdited") and not page.url.endswith("x")
+    out["reset_restores_committed_text"] = page.input_value("#cbSource") == original and not page.is_visible("#cbEdited")
+    out["url_unchanged"] = page.url == url
     out["not_evidence_label"] = "not evidence" in page.inner_text("#cookbook")
-    out["ok"] = all(out[k] for k in ("recipes_match_files", "runs_ok", "edited_banner", "invalid_reported", "schema_reported", "reset", "not_evidence_label"))
+    out["rdiff_link"] = page.get_attribute("#cbBuilt a", "href") or ""
+    keys = ("recipes_match_files", "runs_ok", "edited_banner", "not_meaningful_without_bend_pass", "unknown_mutant_reported",
+            "stale_cleared_on_edit", "invalid_reported", "schema_reported", "reset_restores_committed_text", "url_unchanged",
+            "not_evidence_label", "rdiff_link")
+    out["ok"] = all(out[k] for k in keys) and out["overflow_with_table"] <= 0
     return out
+
+
+def deep_link(browser, sid):
+    """#recipe=<id> opens that recipe."""
+    page = browser.new_page()
+    page.goto(tmp.as_uri() + "#recipe=" + sid)
+    page.wait_for_function("document.querySelector('#cbList button[aria-selected=\"true\"]') !== null")
+    ok = page.get_attribute('#cbList button[aria-selected="true"]', "data-id") == sid
+    page.close()
+    return ok
 
 
 def mode(page):
@@ -101,6 +141,9 @@ def run(browser, native, scheme, width, full):
 with sync_playwright() as p:
     browser = p.chromium.launch()
     ok = [run(browser, True, "light", 1280, True), run(browser, True, "dark", 400, False), run(browser, False, "light", 1280, True)]
+    linked = deep_link(browser, SNIPPET_FILES[0]) if SNIPPET_FILES else False
+    report.append({"deep_link": linked})
+    ok.append(linked)
     browser.close()
 print(json.dumps(report, indent=1))
 sys.exit(0 if all(ok) else 1)
