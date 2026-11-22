@@ -97,6 +97,10 @@ def git(*args):
                           encoding="utf-8", check=True).stdout
 
 
+def git_bytes(*args):
+    return subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, check=True).stdout
+
+
 def reader(ref):
     """Read files of one commit. A path the commit does not contain reads as None;
     any other git failure (an unknown ref, a broken repository) is raised. Treating
@@ -106,7 +110,11 @@ def reader(ref):
 
     def get(path):
         try:
-            return git("show", f"{commit}:{path}").replace("\r\n", "\n")
+            # Bytes, decoded strictly, with only CRLF folded: text mode would turn a lone
+            # CR into a newline, and rustc does not end a `//` comment at a lone CR, so
+            # the ratchets would see code that the compiler skips (#125, stage 2 review).
+            # A file that is not UTF-8 raises, which fails closed.
+            return git_bytes("show", f"{commit}:{path}").decode("utf-8").replace("\r\n", "\n")
         except subprocess.CalledProcessError:
             if git("ls-tree", "--name-only", commit, "--", path).strip():
                 raise
@@ -235,25 +243,72 @@ def ratchets(base_get, head_get):
 # Equal means equal code: Python compares by ast, Rust by the lexer's code tokens, so
 # reformatting or a changed comment is not an edit. Everything else compares as text.
 SPEC_PATTERNS = ("tools/test_*.py", "crates/containment-kernel/tests/**", "ci/corpus/**")
+KERNEL_TESTS = "crates/containment-kernel/tests/"
+
+
+def spec_links(ref, paths):
+    """Spec paths that are symbolic links at `ref`. A link to a file in a freer lane
+    would let later edits to that file change an immutable test unseen."""
+    spec = [p for p in paths if is_spec(p)]
+    if not spec:
+        return []
+    out = git("ls-tree", "-z", f"{ref}^{{commit}}", "--", *spec)
+    return sorted(entry.split("\t", 1)[1] for entry in out.split("\0")
+                  if "\t" in entry and entry.split(" ", 1)[0] == "120000")
 
 
 def is_spec(path):
     return any(lane_match(path, pattern) for pattern in SPEC_PATTERNS)
 
 
+def declared_encoding(text):
+    """The source encoding Python would use for this file (PEP 263), normalised."""
+    import io
+    import tokenize
+    try:
+        name, _ = tokenize.detect_encoding(io.BytesIO(text.encode("utf-8")).readline)
+    except SyntaxError as error:
+        return f"an unknown one ({error.msg})"
+    return name.lower().replace("_", "-")
+
+
+def python_ast(text):
+    """The ast as the interpreter would build it. A coding declaration other than UTF-8
+    is refused: `# coding: raw_unicode_escape` or `utf-7` can turn a comment into code
+    on import while UTF-8 text shows only the comment (#125, stage 2 review). The bytes
+    are parsed, as the interpreter reads them, so anything else that depends on the
+    declaration is seen the same way."""
+    declared = declared_encoding(text)
+    if declared not in ("utf-8", "utf-8-sig"):
+        raise ValueError(f"declares the source encoding {declared}, which is not UTF-8")
+    try:
+        return ast.parse(text.encode("utf-8"))
+    except SyntaxError as error:
+        raise ValueError(f"does not parse ({error.msg})") from error
+
+
+def rust_tokens_strict(text):
+    """Code tokens, refusing a lone CR: rustc ends a `//` comment only at a newline, so
+    a CR in a comment can hide code from a reader that treats it as a line break."""
+    if "\r" in text.replace("\r\n", ""):
+        raise ValueError("contains a carriage return that does not end a line")
+    try:
+        return rust_tokens.code_tokens(text)
+    except rust_tokens.LexError as error:
+        raise ValueError(f"cannot be lexed ({error})") from error
+
+
 def spec_form(path, text):
     """What has to stay equal. Raises ValueError when the text cannot be read, which the
-    caller treats as an edit: an unreadable head file is never the same as its base."""
+    caller treats as an edit: an unreadable head file is never the same as its base.
+    Corpus entries are data, often hostile on purpose, so they compare as text whatever
+    their extension."""
+    if path.startswith("ci/corpus/"):
+        return text
     if path.endswith(".py"):
-        try:
-            return ast.dump(ast.parse(text))
-        except SyntaxError as error:
-            raise ValueError(f"does not parse ({error.msg})") from error
+        return ast.dump(python_ast(text))
     if path.endswith(".rs"):
-        try:
-            return rust_tokens.code_tokens(text)
-        except rust_tokens.LexError as error:
-            raise ValueError(f"cannot be lexed ({error})") from error
+        return rust_tokens_strict(text)
     return text
 
 
@@ -262,6 +317,11 @@ def spec_ratchets(paths, base_get, head_get):
     the diff is read with --no-renames, so the old path is gone at head."""
     out = []
     for path in sorted(p for p in paths if is_spec(p)):
+        # Cargo also builds tests/<dir>/main.rs as a test target, which `spec` does not
+        # run on its own. Only direct tests/<name>.rs files are spec there.
+        rest = path[len(KERNEL_TESTS):] if path.startswith(KERNEL_TESTS) else None
+        if rest is not None and ("/" in rest or not rest.endswith(".rs")) and head_get(path) is not None:
+            out.append(f"spec {path} is not a direct {KERNEL_TESTS}<name>.rs file")
         old = base_get(path)
         if old is None:
             continue
@@ -299,21 +359,27 @@ DATA_MODULES = ("tools/kernel_mutants.py",)
 def data_module_errors(path, text):
     """Why `text` is not pure data, or [] when it is. Unparsable text is not data."""
     try:
-        tree = ast.parse(text)
-    except SyntaxError as error:
-        return [f"{path} does not parse ({error.msg})"]
-    out = []
+        tree = python_ast(text)
+    except ValueError as error:
+        return [f"{path} {error}"]
+    out, seen = [], set()
     for index, node in enumerate(tree.body):
         if index == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) \
                 and isinstance(node.value.value, str):
             continue
-        if isinstance(node, ast.Assign) and all(isinstance(t, ast.Name) for t in node.targets):
+        # One plain upper-case name per assignment, each assigned once: a second
+        # `BEND_MUTANTS = []` or `X = BEND_MUTANTS = []` would empty a list that the
+        # mutant ratchet reads from its first assignment.
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) \
+                and re.fullmatch(r"[A-Z][A-Z0-9_]*", node.targets[0].id) and node.targets[0].id not in seen:
             try:
                 ast.literal_eval(node.value)
+                seen.add(node.targets[0].id)
                 continue
             except ValueError:
                 pass
-        out.append(f"{path}:{node.lineno} is not a literal assignment, so importing it would run code")
+        out.append(f"{path}:{node.lineno} is not a single literal assignment of a new UPPER_CASE name, "
+                   "so importing it could run code or replace data")
     return out
 
 
@@ -328,12 +394,13 @@ def data_module_ratchets(paths, head_get):
 
 # ---------- classify ----------
 
-def classify(paths, base_get, head_get, lanes):
+def classify(paths, base_get, head_get, lanes, head_links=()):
     head_claims = head_get("claims.toml") or ""
     doc_cited = set(re.findall(r'"doc:([^#"]+)', head_claims)) | set(re.findall(r'"doc:([^#"]+)', base_get("claims.toml") or ""))
     by_path = {path: lane_of(path, lanes, doc_cited) for path in paths}
     escalations = ratchets(base_get, head_get) + spec_ratchets(paths, base_get, head_get)
     escalations += data_module_ratchets(paths, head_get)
+    escalations += [f"spec {path} is a symbolic link" for path in head_links]
     lane = max([entry[0] for entry in by_path.values()] + ["A"], key=ORDER.get)
     if escalations:
         lane = "C"
@@ -547,7 +614,7 @@ def run(parser, args):
         quoted = [p for p in paths if p.startswith('"')]
         if quoted:
             sys.exit(f"policy: paths with unusual characters cannot be classified: {quoted}")
-        result = classify(paths, base_get, head_get, lanes)
+        result = classify(paths, base_get, head_get, lanes, spec_links(args.head, paths))
         needs_owner = result["lane"] == "C" or args.fork
         reviews = json.loads(Path(args.reviews).read_text(encoding="utf-8")) if args.reviews else []
         result["fork"] = args.fork

@@ -34,8 +34,10 @@ kernel test (`crates/containment-kernel/tests/`) or a corpus entry
 (`ci/corpus/`) that `main` already has: add new spec in new files. If a check
 fails, the change is wrong or the claim is, and the maintainer decides which.
 *Enforced by:* the ratchets in `tools/policy_check.py`, which move such a
-change to lane C. The spec ratchet compares by code, not text, so reformatting
-or a comment is not an edit (`docs/decisions/0005-root-judges-and-immutable-spec.md`).
+change to lane C. The spec ratchet compares code as the interpreter or compiler
+reads it, so reformatting or a comment is not an edit, but a source-encoding
+declaration other than UTF-8, a carriage return that does not end a line, or a
+symbolic link always is (`docs/decisions/0005-root-judges-and-immutable-spec.md`).
 
 **INV-3. A checker is part of the proof.** Workflows, `scripts/`, the checker
 and verifier tools, the attack harness and suites, the existing tool and kernel
@@ -44,8 +46,9 @@ purpose, in a change that says so. Loosening an assertion in a scenario weakens
 evidence exactly as deleting the scenario would.
 *Enforced by:* lane C in `ci/lanes.toml` and `.github/CODEOWNERS`. An existing
 test file is protected by the spec ratchet (INV-2) instead. A new one is lane B:
-`spec` runs it on its own, after the base branch's spec has passed against the
-same head (`docs/decisions/0005-root-judges-and-immutable-spec.md`).
+`spec` runs it in a job of its own, apart from the job that runs the base
+branch's spec against the same head, and `check` runs it only after everything
+else has been judged (`docs/decisions/0005-root-judges-and-immutable-spec.md`).
 
 **INV-4. The classifier stops at Hold.** Nothing that originates from System
 One, including its silence, may renew a lease, grant access, start the Freeze
