@@ -34,15 +34,21 @@ kernel test (`crates/containment-kernel/tests/`) or a corpus entry
 (`ci/corpus/`) that `main` already has: add new spec in new files. If a check
 fails, the change is wrong or the claim is, and the maintainer decides which.
 *Enforced by:* the ratchets in `tools/policy_check.py`, which move such a
-change to lane C. The spec ratchet compares by code, not text, so reformatting
-or a comment is not an edit (`docs/decisions/0005-root-judges-and-immutable-spec.md`).
+change to lane C. The spec ratchet compares code as the interpreter or compiler
+reads it, so reformatting or a comment is not an edit, but a source-encoding
+declaration other than UTF-8, a carriage return that does not end a line, or a
+symbolic link always is (`docs/decisions/0005-root-judges-and-immutable-spec.md`).
 
 **INV-3. A checker is part of the proof.** Workflows, `scripts/`, the checker
-and verifier tools, the attack harness and suites, the kernel law tests, `ci/`
-and this file are the trusted base. Change them only on purpose, in a change
-that says so. Loosening an assertion in a scenario weakens evidence exactly as
-deleting the scenario would.
-*Enforced by:* lane C in `ci/lanes.toml` and `.github/CODEOWNERS`.
+and verifier tools, the attack harness and suites, the existing tool and kernel
+law tests, `ci/` and this file are the trusted base. Change them only on
+purpose, in a change that says so. Loosening an assertion in a scenario weakens
+evidence exactly as deleting the scenario would.
+*Enforced by:* lane C in `ci/lanes.toml` and `.github/CODEOWNERS`. An existing
+test file is protected by the spec ratchet (INV-2) instead. A new one is lane B:
+`spec` runs it in a job of its own, apart from the job that runs the base
+branch's spec against the same head, and `check` runs it only after everything
+else has been judged (`docs/decisions/0005-root-judges-and-immutable-spec.md`).
 
 **INV-4. The classifier stops at Hold.** Nothing that originates from System
 One, including its silence, may renew a lease, grant access, start the Freeze
@@ -94,9 +100,10 @@ branch, so a change cannot reclassify itself.
 - **Lane A, free:** documentation, the web demo, examples. Merges on a green
   `check`.
 - **Lane B, evidence-carrying:** kernel and wasm source, formal model,
-  claims, lint configuration. Merges when `check` and `policy` (which runs
-  the ratchets) are green. Its lab evidence is refreshed on `main` after the
-  merge.
+  claims, lint configuration, and new test files (`tools/test_*.py`,
+  `crates/containment-kernel/tests/`). Merges when `check`, `policy` (which
+  runs the ratchets) and `spec` (the base branch's tests, run against the
+  head) are green. Its lab evidence is refreshed on `main` after the merge.
 - **Lane C, trusted base:** everything INV-3 names, the host crate and the
   inputs that build it (`Cargo.toml`, `Cargo.lock`, `.cargo/`, the toolchain
   pin, the kernel's manifest and build script), lab results, any path the
@@ -149,7 +156,7 @@ No merge rests on a local result. The `check` workflow is the gate.
    - touches the rules or the gate: `AGENTS.md`, `CLAUDE.md`, `ci/`,
      `.github/`, `docs/decisions/`, `tools/policy_check.py`;
    - touches what decides "passed": `scripts/check.sh`,
-     `tools/mutation_check.py`, `crates/containment-kernel/tests/`, the
+     `tools/mutation_check.py`, an existing kernel law test, the
      harness, live suite or red-team runner, or lab results;
    - crosses a trust boundary: kernel events, controller, gateway, reset,
      sandbox isolation, the claims schema;
