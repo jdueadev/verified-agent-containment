@@ -134,6 +134,30 @@ if [ -e "$userns_knob" ]; then
     || fail "could not allow unprivileged user namespaces for System One"
 fi
 userns_after="$(cat "$userns_knob" 2>/dev/null || echo absent)"
+# The sandbox mounts the host's /usr read-only, and the sandbox_escape scenario
+# reads the header of every executable the agent can see (no_windows_images_
+# reachable). Hosted runner images carry tens of GB of preinstalled SDKs under
+# /usr/local and /usr/share (Android, .NET, Swift, ...), so that scan outlasts the
+# harness's wait, and .NET ships PE images. After the build, those trees are
+# removed from this disposable runner so its /usr is like a stock install, as on
+# the WSL2 and Linux VM labs. The check is unchanged; what was removed is recorded.
+usr_before="$(sudo du -sxh /usr 2>/dev/null | cut -f1)"
+trimmed=()
+for tree in /usr/local /usr/share/dotnet /usr/share/swift /usr/share/miniconda /usr/share/sbt \
+            /usr/share/kotlinc /usr/share/az_* /usr/lib/jvm /usr/lib/google-cloud-sdk /usr/lib/firefox; do
+  [ -e "$tree" ] || continue
+  if [ "$tree" = /usr/local ]; then
+    sudo find /usr/local -mindepth 1 -maxdepth 1 -exec rm -rf {} + || fail "could not trim $tree"
+  else
+    sudo rm -rf "$tree" || fail "could not trim $tree"
+  fi
+  trimmed+=("$tree")
+done
+hash -r
+command -v python3 >/dev/null || fail "python3 is gone after trimming the runner image"
+usr_after="$(sudo du -sxh /usr 2>/dev/null | cut -f1)"
+usr_note="/usr $usr_before -> $usr_after; removed: ${trimmed[*]:-nothing}"
+
 # The controller copies itself into /run/verified-agent-containment and executes
 # the copy, and hosted runners mount /run noexec (execve returns EACCES). Only
 # that one directory gets a fresh tmpfs that allows exec; the rest of /run keeps
@@ -157,6 +181,7 @@ fi
   echo "cpus: $(nproc)"
   echo "kernel.apparmor_restrict_unprivileged_userns: $userns_before -> $userns_after"
   echo "run directory: $run_note"
+  echo "runner image trimmed: $usr_note"
   echo "rust-toolchain channel: $pin"
   sed 's/^/rustc: /' <<<"$rustc_vv"
   echo "cargo: $cargo_v"
@@ -175,6 +200,7 @@ fi
   echo "- cgroup controllers: \`$(cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null || echo none)\`"
   echo "- apparmor_restrict_unprivileged_userns: $userns_before -> $userns_after"
   echo "- run directory: $run_note"
+  echo "- runner image trimmed: $usr_note"
   echo "- default build sha256: \`$default_sha\`"
   echo "- sabotage build sha256: \`$sabotage_sha\`"
   echo
