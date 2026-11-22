@@ -30,9 +30,14 @@ Read them there; this page does not copy host code.
 
 - **Read back and re-drive.** The `enforcer` method of the controller's
   shared state takes each queued action, performs it, and records whether it
-  was confirmed. A failed action is retried from the reconcile path in the same
-  order. If enforcement stays unconfirmed for longer than `ACTUATOR_FAIL_STOP`,
-  the controller calls `fail_stop("enforcement could not be confirmed")`.
+  was confirmed. Two paths retry a failure. A failed `RecreateSandbox` or
+  `ThawProcesses` goes back to the front of the queue. Any other failed action
+  is not requeued: the enforcer moves on to the next one, and when the queue is
+  empty its reconcile step (`drive`) re-applies the frozen or killed state the
+  kernel asked for. So a Kill plan whose freeze fails goes on to the kill, and
+  the frozen state is driven again afterwards. If enforcement stays unconfirmed
+  for longer than `ACTUATOR_FAIL_STOP`, the controller calls
+  `fail_stop("enforcement could not be confirmed")`.
 - **Watch the enforcer itself.** The tick thread started in the controller's
   run loop checks the enforcer's heartbeat on every tick. If the enforcer has
   not beaten for `ENFORCER_STALL_NS`, it calls `fail_stop("enforcer stalled")`.
@@ -42,8 +47,10 @@ Read them there; this page does not copy host code.
 A fail-stop records why, kills the cgroup if it can do so without waiting for
 the stuck enforcer, and exits with status 70; the exit also fires the
 sandbox's parent-death signal. The lab checks that from outside the
-controller: the exit status, an empty cgroup with no stray processes, and
-nothing written after the controller exited.
+controller: the exit status, an empty cgroup with no stray processes, and no
+upstream write recorded at the receiving sink after the controller exited.
+The sink is read after a short, fixed wait, so this covers writes that reach
+the sink in that window, not every kind of write forever.
 
 ## Watch the control
 
