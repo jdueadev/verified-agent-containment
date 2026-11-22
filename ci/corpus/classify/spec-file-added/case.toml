@@ -1,0 +1,4 @@
+checker = "classify"
+origin = "#125 seed: twin of spec-helper-shrunk. New spec goes in new files; the path is lane C today, so only the escalation is absent."
+expect_lane = "C"
+expect_no_escalation = true
