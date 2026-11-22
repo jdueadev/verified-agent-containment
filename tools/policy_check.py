@@ -228,13 +228,72 @@ def ratchets(base_get, head_get):
     return out
 
 
+# ---------- spec immutability ----------
+
+# Spec: the tests and known-bad inputs that judge the code (#125). Once a spec file
+# is on the base branch it must be the same at head. New spec goes in new files.
+# Equal means equal code: Python compares by ast, Rust by the lexer's code tokens, so
+# reformatting or a changed comment is not an edit. Everything else compares as text.
+SPEC_PATTERNS = ("tools/test_*.py", "crates/containment-kernel/tests/**", "ci/corpus/**")
+
+
+def is_spec(path):
+    return any(lane_match(path, pattern) for pattern in SPEC_PATTERNS)
+
+
+def spec_form(path, text):
+    """What has to stay equal. Raises ValueError when the text cannot be read, which the
+    caller treats as an edit: an unreadable head file is never the same as its base."""
+    if path.endswith(".py"):
+        try:
+            return ast.dump(ast.parse(text))
+        except SyntaxError as error:
+            raise ValueError(f"does not parse ({error.msg})") from error
+    if path.endswith(".rs"):
+        try:
+            return rust_tokens.code_tokens(text)
+        except rust_tokens.LexError as error:
+            raise ValueError(f"cannot be lexed ({error})") from error
+    return text
+
+
+def spec_ratchets(paths, base_get, head_get):
+    """Reasons the head edits or removes spec that the base has. A rename is a removal:
+    the diff is read with --no-renames, so the old path is gone at head."""
+    out = []
+    for path in sorted(p for p in paths if is_spec(p)):
+        old = base_get(path)
+        if old is None:
+            continue
+        new = head_get(path)
+        if new is None:
+            out.append(f"spec {path} was removed")
+            continue
+        try:
+            base_form = spec_form(path, old)
+        except ValueError:
+            # A base file that cannot be read can only stay byte-for-byte the same.
+            base_form = None
+        if base_form is None:
+            same = new == old
+        else:
+            try:
+                same = spec_form(path, new) == base_form
+            except ValueError as error:
+                out.append(f"spec {path} {error}")
+                continue
+        if not same:
+            out.append(f"spec {path} was edited")
+    return out
+
+
 # ---------- classify ----------
 
 def classify(paths, base_get, head_get, lanes):
     head_claims = head_get("claims.toml") or ""
     doc_cited = set(re.findall(r'"doc:([^#"]+)', head_claims)) | set(re.findall(r'"doc:([^#"]+)', base_get("claims.toml") or ""))
     by_path = {path: lane_of(path, lanes, doc_cited) for path in paths}
-    escalations = ratchets(base_get, head_get)
+    escalations = ratchets(base_get, head_get) + spec_ratchets(paths, base_get, head_get)
     lane = max([entry[0] for entry in by_path.values()] + ["A"], key=ORDER.get)
     if escalations:
         lane = "C"
