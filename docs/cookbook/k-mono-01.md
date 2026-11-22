@@ -124,7 +124,7 @@ example that shows the law in action, not evidence: no claim cites it, and the
 proof is still `formal/PROOF.bend`.
 
 <!-- cookbook:begin snippet k-mono-01-repeat-restrict -->
-Snippet [`snippets/k-mono-01-repeat-restrict.json`](snippets/k-mono-01-repeat-restrict.json), checked by [`tools/cookbook_check.py`](../../tools/cookbook_check.py) on every `scripts/check.sh` run.
+Snippet [`snippets/k-mono-01-repeat-restrict.json`](snippets/k-mono-01-repeat-restrict.json), checked by [`tools/cookbook_check.py`](../../tools/cookbook_check.py) on every `scripts/check.sh` run. Run it in the [simulator page](../../web/dist/agent-containment-simulator.html#recipe=k-mono-01-repeat-restrict) (open the downloaded file in a browser).
 
 ```json
 {
