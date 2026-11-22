@@ -14,7 +14,9 @@ classify   prints the lane of the diff between two commits. Lanes are defined in
            from a fork) fails unless the maintainer approved the head commit.
 codeowners checks that .github/CODEOWNERS is exactly lane C (--write regenerates it).
 invariants checks rules that hold on every commit: `sabotage` is not a default
-           feature, the lane map parses, and CODEOWNERS matches it.
+           feature, the lane map parses, CODEOWNERS matches it, and the kernel
+           stays pure (no_std, no unsafe, nothing beyond core, no build-time
+           file or environment reads).
 
 This script only reads the other commit's files through git. It never imports or
 runs them, so it is safe to run from the base branch against an untrusted head.
@@ -37,6 +39,7 @@ ROOT = Path(__file__).resolve().parent.parent
 LANES_FILE = "ci/lanes.toml"
 CODEOWNERS_FILE = ".github/CODEOWNERS"
 HOST_MANIFEST = "crates/containment-host/Cargo.toml"
+KERNEL_SRC = "crates/containment-kernel/src"
 ORDER = {"A": 0, "B": 1, "C": 2}
 SHRINK_FIELDS = ("files", "evidence", "depends_on")
 FIXED_FIELDS = ("statement", "falsifier")
@@ -90,10 +93,18 @@ def git(*args):
 
 
 def reader(ref):
+    """Read files of one commit. A path the commit does not contain reads as None;
+    any other git failure (an unknown ref, a broken repository) is raised. Treating
+    every failure as "absent" would make the ratchets compare against nothing on
+    the base side and escalate nothing, which fails open."""
+    commit = git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").strip()
+
     def get(path):
         try:
-            return git("show", f"{ref}:{path}").replace("\r\n", "\n")
+            return git("show", f"{commit}:{path}").replace("\r\n", "\n")
         except subprocess.CalledProcessError:
+            if git("ls-tree", "--name-only", commit, "--", path).strip():
+                raise
             return None
     return get
 
@@ -227,11 +238,15 @@ def classify(paths, base_get, head_get, lanes):
 
 
 def approved(reviews, owner, head_sha):
-    """True when the owner's latest review approves exactly this head commit."""
+    """True when the owner's latest review approves exactly this head commit.
+    Without a head commit nothing is approved: a review whose commit is unknown
+    must never match a head that is unknown too."""
+    if not head_sha:
+        return False
     latest = None
     flat = [r for page in reviews for r in (page if isinstance(page, list) else [page])]
     for review in flat:
-        if (review.get("user") or {}).get("login", "").lower() == owner.lstrip("@").lower() \
+        if ((review.get("user") or {}).get("login") or "").lower() == owner.lstrip("@").lower() \
                 and review.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
             latest = review
     return bool(latest) and latest["state"] == "APPROVED" and latest.get("commit_id") == head_sha
@@ -274,6 +289,92 @@ def sabotage_default_errors(manifest_text):
     return [f"{HOST_MANIFEST}: `sabotage` is enabled by the default features"] if "sabotage" in seen else []
 
 
+# The kernel is lane B, but it is compiled into the host binary. Its laws, mutants
+# and the differential test check its decisions, not its side effects, so the
+# attributes that keep it pure are checked here on every commit (#83). Tokens, not
+# text: a comment or a string that names `std` is not code.
+KERNEL_ROOT_ATTRIBUTES = (("no_std",), ("forbid", "(", "unsafe_code", ")"))
+# Identifiers the kernel may not contain at all, in any position: a call, an import,
+# an alias, a path or an attribute argument (including inside cfg_attr). The kernel
+# uses none of them, so refusing the name outright cannot be dodged by renaming
+# (`use core::include as load`) or by moving it (`#[cfg_attr(all(), path = ..)]`).
+KERNEL_FORBIDDEN_IDENTS = {
+    # crates beyond core, and foreign code
+    "std": "depends on more than `core`",
+    "alloc": "depends on more than `core`",
+    "extern": "declares foreign code or another crate",
+    # build-time reads of files or the environment
+    "include": "reads a file at build time",
+    "include_str": "reads a file at build time",
+    "include_bytes": "reads a file at build time",
+    "env": "reads the environment at build time",
+    "option_env": "reads the environment at build time",
+    # source from elsewhere, and code that bypasses forbid(unsafe_code)
+    "path": "loads source from elsewhere (`#[path]`)",
+    "global_asm": "injects machine code without `unsafe`",
+    "asm": "injects machine code",
+    "naked_asm": "injects machine code",
+    "link": "links foreign code",
+    "link_section": "places data in a chosen link section",
+    "no_mangle": "exports a symbol",
+    "export_name": "exports a symbol",
+    "used": "keeps a symbol for the linker",
+    "linkage": "sets symbol linkage",
+    "feature": "enables unstable features",
+}
+
+
+def _ident(kind, text):
+    """A raw identifier (`r#include`) means the same name as `include`."""
+    return text[2:] if kind == "ident" and text.startswith("r#") else text
+
+
+def _leading_inner_attributes(toks):
+    """The token lists of the `#![...]` attributes that open the file, which are the
+    ones that apply to the whole crate. One inside `mod m { ... }` applies to `m` only."""
+    attrs, i = [], 0
+    while toks[i:i + 3] == ["#", "!", "["]:
+        depth, j = 0, i + 2
+        while j < len(toks):
+            depth += toks[j] == "["
+            depth -= toks[j] == "]"
+            if depth == 0:
+                break
+            j += 1
+        if j >= len(toks):
+            break
+        attrs.append(toks[i + 3:j])
+        i = j + 1
+    return attrs
+
+
+def kernel_purity_errors(files):
+    """`files` maps each kernel source path to its text; `lib.rs` is the crate root."""
+    out = []
+    root = f"{KERNEL_SRC}/lib.rs"
+    if root not in files:
+        return [f"{root}: missing, so the kernel's purity cannot be checked"]
+    for path, text in sorted(files.items()):
+        try:
+            toks = [_ident(kind, tok) for kind, tok in rust_tokens.code_tokens(text) if kind != "doc"]
+        except rust_tokens.LexError as error:
+            out.append(f"{path}: cannot be read ({error}), so the kernel's purity cannot be checked")
+            continue
+        if path == root:
+            leading = _leading_inner_attributes(toks)
+            for attr in KERNEL_ROOT_ATTRIBUTES:
+                if list(attr) not in leading:
+                    out.append(f"{path}: the crate attribute #![{''.join(attr)}] is missing from the top of the file")
+        for tok in sorted(set(toks) & set(KERNEL_FORBIDDEN_IDENTS)):
+            out.append(f"{path}: uses `{tok}`, which {KERNEL_FORBIDDEN_IDENTS[tok]}")
+    return out
+
+
+def kernel_sources():
+    base = ROOT / KERNEL_SRC
+    return {p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8") for p in sorted(base.rglob("*.rs"))}
+
+
 def read(path):
     target = ROOT / path
     return target.read_text(encoding="utf-8") if target.exists() else None
@@ -294,6 +395,16 @@ def main(argv=None):
     o.add_argument("--write", action="store_true")
     sub.add_parser("invariants")
     args = parser.parse_args(argv)
+    try:
+        return run(parser, args)
+    except subprocess.CalledProcessError as error:
+        # Fail closed, but say why: the workflow shows stderr next to an empty result.
+        sys.exit(f"policy: {' '.join(error.cmd[3:])} failed: {(error.stderr or '').strip()}")
+
+
+def run(parser, args):
+    if args.command == "classify" and (args.reviews or args.enforce) and not args.head_sha:
+        parser.error("--reviews and --enforce need --head-sha: approval is only ever of one commit")
 
     if args.command == "classify":
         base_get, head_get = reader(args.base), reader(args.head)
@@ -301,7 +412,13 @@ def main(argv=None):
         # change cannot reclassify itself, and a path the target has since
         # promoted is judged by the newer rule. The diff and the ratchets still
         # compare against --base, the point the change started from.
-        owner, lanes = load_lanes(reader(args.map_ref or args.base)(LANES_FILE) or read(LANES_FILE))
+        map_ref = args.map_ref or args.base
+        lanes_text = reader(map_ref)(LANES_FILE)
+        if lanes_text is None:
+            sys.exit(f"policy: {map_ref} has no {LANES_FILE}; refusing to classify against another lane map")
+        owner, lanes = load_lanes(lanes_text)
+        if args.head_sha and git("rev-parse", "--verify", f"{args.head}^{{commit}}").strip() != args.head_sha:
+            sys.exit(f"policy: --head {args.head} is not --head-sha {args.head_sha}; an approval is of one commit")
         paths = [p for p in git("diff", "--name-only", "--no-renames", args.base, args.head).splitlines() if p]
         result = classify(paths, base_get, head_get, lanes)
         needs_owner = result["lane"] == "C" or args.fork
@@ -324,7 +441,8 @@ def main(argv=None):
             return 0
         errors = codeowners_errors(owner, lanes, read(CODEOWNERS_FILE))
     else:
-        errors = codeowners_errors(owner, lanes, read(CODEOWNERS_FILE)) + sabotage_default_errors(read(HOST_MANIFEST))
+        errors = (codeowners_errors(owner, lanes, read(CODEOWNERS_FILE)) + sabotage_default_errors(read(HOST_MANIFEST))
+                  + kernel_purity_errors(kernel_sources()))
     print(json.dumps({"errors": errors}, indent=2))
     return 1 if errors else 0
 

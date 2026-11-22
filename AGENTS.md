@@ -90,12 +90,16 @@ branch, so a change cannot reclassify itself.
 
 - **Lane A, free:** documentation, the web demo, examples. Merges on a green
   `check`.
-- **Lane B, evidence-carrying:** kernel, formal model, host source, claims,
-  build configuration. Merges when `check` and `policy` (which runs the
-  ratchets) are green. Its lab evidence is refreshed on `main` after the merge.
-- **Lane C, trusted base:** everything INV-3 names, lab results, any path the
+- **Lane B, evidence-carrying:** kernel and wasm source, formal model,
+  claims, lint configuration. Merges when `check` and `policy` (which runs
+  the ratchets) are green. Its lab evidence is refreshed on `main` after the
+  merge.
+- **Lane C, trusted base:** everything INV-3 names, the host crate and the
+  inputs that build it (`Cargo.toml`, `Cargo.lock`, `.cargo/`, the toolchain
+  pin, the kernel's manifest and build script), lab results, any path the
   lane map does not list, and any change a ratchet flags. Needs the
-  maintainer's approval.
+  maintainer's approval. Host code is here because the code under test can
+  fool the lab (`docs/decisions/0004-host-code-in-lane-c.md`).
 
 A pull request from a fork needs the maintainer whatever its lane.
 

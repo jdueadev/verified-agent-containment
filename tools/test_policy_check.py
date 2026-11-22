@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """Unit tests for tools/policy_check.py. Each rule has a case that makes it fire."""
+import contextlib
+import io
+import json
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import policy_check as pc
@@ -75,8 +81,19 @@ class LaneTests(unittest.TestCase):
                      "results/ci/lab-0123456/attack-suite.json", "tools/lab_record.py"):
             self.assertEqual(self.lane(path), "C", path)
 
+    def test_host_code_and_build_inputs_are_lane_c(self):
+        # #83: the lab can be fooled by the code it tests, so host code needs the maintainer.
+        for path in ("crates/containment-host/src/controller.rs", "crates/containment-host/src/differential.rs",
+                     "crates/containment-host/src/controller/gateway.rs", "crates/containment-host/src/hud.html",
+                     "crates/containment-host/build.rs", "Cargo.toml", "Cargo.lock", ".cargo/config.toml",
+                     ".cargo/config", "rust-toolchain.toml", "rust-toolchain",
+                     "crates/containment-kernel/Cargo.toml", "crates/containment-kernel/build.rs",
+                     "crates/containment-wasm/Cargo.toml", "crates/containment-wasm/build.rs"):
+            self.assertEqual(self.lane(path), "C", path)
+
     def test_source_and_claims_are_lane_b(self):
-        for path in ("crates/containment-host/src/controller.rs", "formal/LAWS.bend", "claims.toml", "Cargo.toml",
+        for path in ("crates/containment-kernel/src/lib.rs", "crates/containment-wasm/src/lib.rs",
+                     "formal/LAWS.bend", "claims.toml",
                      "docs/claims.md", "results/differential.json", "tools/kernel_mutants.py", "README.md"):
             self.assertEqual(self.lane(path), "B", path)
 
@@ -200,10 +217,146 @@ class ApprovalTests(unittest.TestCase):
         self.assertFalse(pc.approved([self.review("jdueadev", "APPROVED"), self.review("jdueadev", "CHANGES_REQUESTED")], "@jdueadev", "h1"))
         self.assertTrue(pc.approved([self.review("jdueadev", "APPROVED"), self.review("jdueadev", "COMMENTED")], "@jdueadev", "h1"))
 
+    def test_a_dismissal_cancels_an_earlier_approval(self):
+        reviews = [self.review("jdueadev", "APPROVED"), self.review("jdueadev", "DISMISSED")]
+        self.assertFalse(pc.approved(reviews, "@jdueadev", "h1"))
+        reviews.append(self.review("jdueadev", "APPROVED"))
+        self.assertTrue(pc.approved(reviews, "@jdueadev", "h1"))
+
+    def test_an_approval_dismissed_in_place_counts_for_nothing(self):
+        approval = self.review("jdueadev", "APPROVED")
+        approval["state"] = "DISMISSED"
+        self.assertFalse(pc.approved([approval], "@jdueadev", "h1"))
+
+    def test_a_deleted_reviewer_is_nobody(self):
+        ghost = {"user": None, "state": "APPROVED", "commit_id": "h1"}
+        self.assertFalse(pc.approved([ghost], "@jdueadev", "h1"))
+        no_login = {"user": {"login": None}, "state": "APPROVED", "commit_id": "h1"}
+        self.assertFalse(pc.approved([no_login], "@jdueadev", "h1"))
+        self.assertTrue(pc.approved([ghost, self.review("jdueadev", "APPROVED")], "@jdueadev", "h1"))
+
+    def test_an_unknown_commit_never_matches(self):
+        self.assertFalse(pc.approved([self.review("jdueadev", "APPROVED", None)], "@jdueadev", None))
+        self.assertFalse(pc.approved([self.review("jdueadev", "APPROVED", "")], "@jdueadev", ""))
+        self.assertFalse(pc.approved([self.review("jdueadev", "APPROVED", None)], "@jdueadev", "h1"))
+
     def test_paginated_reviews_are_read_in_order(self):
         pages = [[self.review("jdueadev", "APPROVED")], [self.review("jdueadev", "CHANGES_REQUESTED")]]
         self.assertFalse(pc.approved(pages, "@jdueadev", "h1"))
         self.assertTrue(pc.approved(list(reversed(pages)), "@jdueadev", "h1"))
+
+
+class EnforceExitTests(unittest.TestCase):
+    """`classify --enforce` is the gate the `policy` workflow runs. These drive it end to
+    end, with git replaced by fixed trees so the result depends on nothing local."""
+
+    LANES_TEXT = (ROOT / "ci/lanes.toml").read_text(encoding="utf-8")
+
+    def run_classify(self, paths, *extra, reviews=None, head_commit=None, trees=None):
+        """Return (exit code, parsed result). Refs b, h and m are base, head and map-ref."""
+        files = dict(BASE, **{"ci/lanes.toml": self.LANES_TEXT})
+        trees = trees or {}
+        argv = ["classify", "--base", "b", "--head", "h", *extra]
+        if head_commit is None and "--head-sha" in extra:
+            head_commit = extra[extra.index("--head-sha") + 1]
+
+        def fake_git(*args):
+            return (head_commit or "") + "\n" if args[0] == "rev-parse" else "\n".join(paths) + "\n"
+
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            if reviews is not None:
+                review_file = Path(tmp) / "reviews.json"
+                review_file.write_text(json.dumps(reviews), encoding="utf-8")
+                argv += ["--reviews", str(review_file)]
+            with mock.patch.object(pc, "reader", lambda ref: trees.get(ref, files).get), \
+                    mock.patch.object(pc, "git", fake_git), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                code = pc.main(argv)
+        return code, json.loads(out.getvalue())
+
+    def approval(self, sha="h1"):
+        return [{"user": {"login": "jdueadev"}, "state": "APPROVED", "commit_id": sha}]
+
+    def test_lane_c_without_approval_fails_only_when_enforced(self):
+        code, result = self.run_classify(["AGENTS.md"], "--head-sha", "h1", "--enforce", reviews=[])
+        self.assertEqual((code, result["lane"], result["needs_maintainer"], result["approved"]), (1, "C", True, False))
+        code, result = self.run_classify(["AGENTS.md"], "--head-sha", "h1", reviews=[])
+        self.assertEqual((code, result["approved"]), (0, False))
+
+    def test_lane_c_approved_at_this_head_passes(self):
+        code, result = self.run_classify(["AGENTS.md"], "--head-sha", "h1", "--enforce", reviews=self.approval())
+        self.assertEqual((code, result["lane"], result["approved"]), (0, "C", True))
+
+    def test_lane_c_approved_at_an_older_head_fails(self):
+        code, result = self.run_classify(["AGENTS.md"], "--head-sha", "h2", "--enforce", reviews=self.approval("h1"))
+        self.assertEqual((code, result["approved"]), (1, False))
+
+    def test_a_fork_needs_approval_whatever_its_lane(self):
+        code, result = self.run_classify(["docs/reference.md"], "--head-sha", "h1", "--fork", "--enforce", reviews=[])
+        self.assertEqual((code, result["lane"], result["needs_maintainer"]), (1, "A", True))
+        code, result = self.run_classify(["docs/reference.md"], "--head-sha", "h1", "--enforce", reviews=[])
+        self.assertEqual((code, result["lane"], result["needs_maintainer"]), (0, "A", False))
+
+    def test_the_lane_map_comes_from_the_map_ref_not_the_head(self):
+        def moved(lane):
+            text = self.LANES_TEXT.replace('  "AGENTS.md",\n', "", 1)
+            out = text.replace(f'{lane} = [\n', f'{lane} = [\n  "AGENTS.md",\n', 1)
+            self.assertNotEqual(out, text)
+            return dict(BASE, **{"ci/lanes.toml": out})
+
+        # Three different maps put AGENTS.md in three different lanes, so the lane
+        # reported shows which one was read. Only AGENTS.md is classified.
+        maps = {"b": moved("B"), "h": moved("A"), "m": dict(BASE, **{"ci/lanes.toml": self.LANES_TEXT})}
+        code, result = self.run_classify(["AGENTS.md"], "--map-ref", "m", "--head-sha", "h1",
+                                         "--enforce", reviews=[], trees=maps)
+        self.assertEqual((code, result["paths"]["AGENTS.md"]["lane"], result["lane"]), (1, "C", "C"))
+        # and with the lanes rotated, the map-ref still decides.
+        maps = {"b": dict(BASE, **{"ci/lanes.toml": self.LANES_TEXT}),
+                "h": moved("B"), "m": moved("A")}
+        code, result = self.run_classify(["AGENTS.md"], "--map-ref", "m", "--head-sha", "h1",
+                                         "--enforce", reviews=[], trees=maps)
+        self.assertEqual((code, result["paths"]["AGENTS.md"]["lane"]), (0, "A"))
+
+    def test_a_missing_lane_map_is_refused(self):
+        with self.assertRaises(SystemExit) as stop:
+            self.run_classify(["AGENTS.md"], "--map-ref", "m", "--head-sha", "h1", "--enforce", reviews=[],
+                              trees={"m": dict(BASE)})
+        self.assertIn("has no ci/lanes.toml", str(stop.exception.code))
+
+    def test_an_approval_of_another_commit_than_the_one_classified_is_refused(self):
+        with self.assertRaises(SystemExit) as stop:
+            self.run_classify(["AGENTS.md"], "--head-sha", "h1", "--enforce", reviews=self.approval(), head_commit="h9")
+        self.assertIn("is not --head-sha", str(stop.exception.code))
+
+    def test_reviews_or_enforce_without_a_head_commit_is_refused(self):
+        ghost_commit = [{"user": {"login": "jdueadev"}, "state": "APPROVED", "commit_id": None}]
+        for extra, reviews in ((("--enforce",), None), ((), self.approval()),
+                               (("--head-sha", "", "--enforce"), ghost_commit)):
+            with self.subTest(extra=extra), self.assertRaises(SystemExit) as stop:
+                self.run_classify(["AGENTS.md"], *extra, reviews=reviews)
+            self.assertEqual(stop.exception.code, 2)
+
+
+class ReaderTests(unittest.TestCase):
+    """reader() against this repository: only a path the commit lacks reads as absent."""
+
+    def test_a_missing_path_is_none_and_a_present_one_is_read(self):
+        get = pc.reader("HEAD")
+        self.assertIsNone(get("no/such/file.txt"))
+        self.assertIn("lanes", get("ci/lanes.toml"))
+
+    def test_a_failed_read_of_a_present_path_is_an_error(self):
+        def fake_git(*args):
+            if args[0] == "show":
+                raise subprocess.CalledProcessError(128, ["git", *args])
+            return "c0ffee\n" if args[0] == "rev-parse" else "claims.toml\n"
+        with mock.patch.object(pc, "git", fake_git), self.assertRaises(subprocess.CalledProcessError):
+            pc.reader("HEAD")("claims.toml")
+
+    def test_an_unknown_ref_is_an_error_not_an_empty_tree(self):
+        with self.assertRaises(subprocess.CalledProcessError):
+            pc.reader("refs/heads/no-such-branch-for-policy-tests")
 
 
 class CodeownersAndInvariantTests(unittest.TestCase):
@@ -221,6 +374,70 @@ class CodeownersAndInvariantTests(unittest.TestCase):
         self.assertTrue(pc.sabotage_default_errors('[features]\ndefault = ["sabotage"]\nsabotage = []\n'))
         self.assertTrue(pc.sabotage_default_errors('[features]\ndefault = ["lab"]\nlab = ["sabotage"]\nsabotage = []\n'))
         self.assertEqual(pc.sabotage_default_errors((ROOT / "crates/containment-host/Cargo.toml").read_text(encoding="utf-8")), [])
+
+
+class KernelPurityTests(unittest.TestCase):
+    ROOT_FILE = "crates/containment-kernel/src/lib.rs"
+    PURE = "//! Kernel.\n#![no_std]\n#![forbid(unsafe_code)]\npub fn f(x: u8) -> u8 { core::cmp::min(x, 1) }\n"
+
+    def errors(self, text, extra=None):
+        return pc.kernel_purity_errors({self.ROOT_FILE: text, **(extra or {})})
+
+    def test_the_real_kernel_is_pure(self):
+        self.assertEqual(pc.kernel_purity_errors(pc.kernel_sources()), [])
+
+    def test_a_pure_kernel_passes_and_comments_or_strings_do_not_count(self):
+        self.assertEqual(self.errors(self.PURE), [])
+        self.assertEqual(self.errors(self.PURE + '// uses std::fs\nconst S: &str = "std::env";\n'), [])
+
+    def test_each_root_attribute_is_required(self):
+        self.assertTrue(self.errors(self.PURE.replace("#![no_std]\n", "")))
+        self.assertTrue(self.errors(self.PURE.replace("#![forbid(unsafe_code)]\n", "")))
+        self.assertTrue(self.errors(self.PURE.replace("forbid(unsafe_code)", "deny(unsafe_code)")))
+        self.assertTrue(self.errors(self.PURE.replace("#![no_std]", "#[no_std]")))
+
+    def test_ways_out_of_core_are_refused(self):
+        for snippet in ("extern crate std;", "extern crate libc;", "use std::fs;", "extern crate alloc;", "use alloc::vec::Vec;",
+                        'const P: &str = include_str!("../../../examples/x");', 'include!("x.rs");',
+                        'const K: &str = env!("HOME");', 'const K: Option<&str> = option_env!("HOME");',
+                        '#[path = "../../../web/x.rs"]\nmod x;'):
+            with self.subTest(snippet=snippet):
+                self.assertTrue(self.errors(self.PURE + snippet + "\n"))
+
+    def test_the_review_bypasses_are_refused(self):
+        # Each of these got past the first version of the check (CodeRabbit on #84).
+        bypasses = {
+            "raw identifier": 'const P: &str = r#include_str!("../../../examples/x");',
+            "raw include": 'r#include!("../../containment-wasm/src/payload.rs");',
+            "renamed import": 'use core::include as load;\nload!("../../containment-wasm/src/payload.rs");',
+            "path in cfg_attr": '#[cfg_attr(all(), path = "../../containment-wasm/src/payload.rs")]\npub mod payload;',
+            "nested cfg_attr": '#[cfg_attr(all(), cfg_attr(all(), path = "x.rs"))]\nmod x;',
+            "global_asm": 'core::arch::global_asm!("nop");',
+            "feature gate": "#![feature(asm_experimental_arch)]",
+            "export": "#[no_mangle]\npub fn exported() {}",
+            "link section": '#[link_section = ".init_array"]\npub static S: u8 = 0;',
+            "extern block": 'extern "C" { fn f(); }',
+        }
+        for name, snippet in bypasses.items():
+            with self.subTest(name=name):
+                self.assertTrue(self.errors(self.PURE + snippet + "\n"))
+
+    def test_root_attributes_count_only_at_the_top_of_the_crate(self):
+        moved = self.PURE.replace("#![forbid(unsafe_code)]\n", "") + "pub mod marker {\n    #![forbid(unsafe_code)]\n}\n"
+        self.assertTrue(any("forbid(unsafe_code)" in e for e in self.errors(moved)))
+        late = self.PURE.replace("#![no_std]\n", "") + "#![no_std]\n"
+        self.assertTrue(any("no_std" in e for e in self.errors(late)))
+        hidden = self.PURE.replace("#![no_std]", "#![cfg_attr(any(), no_std)]")
+        self.assertTrue(any("no_std" in e for e in self.errors(hidden)))
+        extra = self.PURE.replace("#![forbid(unsafe_code)]\n", "#![forbid(unsafe_code)]\n#![deny(clippy::panic)]\n")
+        self.assertEqual(self.errors(extra), [])
+
+    def test_every_kernel_file_is_checked_and_a_missing_root_fails(self):
+        self.assertTrue(self.errors(self.PURE, {"crates/containment-kernel/src/m.rs": "use std::io;\n"}))
+        self.assertTrue(pc.kernel_purity_errors({}))
+        unreadable = self.errors(self.PURE + 'const S: &str = "unterminated;\n')
+        self.assertTrue(unreadable)
+        self.assertTrue(all("cannot be read" in e for e in unreadable), unreadable)
 
 
 if __name__ == "__main__":
