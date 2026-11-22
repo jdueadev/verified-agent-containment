@@ -82,6 +82,18 @@ class RecordTests(unittest.TestCase):
         for name in ("attack-suite.json", "live-suite.json", "environment.txt"):
             self.assertTrue((self.root / where / name).is_file(), name)
 
+    def test_a_new_claim_with_lab_evidence_gets_its_first_entry(self):
+        text = (self.root / "claims.toml").read_text(encoding="utf-8")
+        text += ('\n[[claim]]\nid = "H-NEW-01"\nstatement = "s"\nlayer = "host"\nstatus = "tested"\n'
+                 'evidence = ["scenario:monitor_crash", "sabotage:ignore_expiry"]\nfalsifier = "f"\n'
+                 'platforms = []\nfiles = ["crates/containment-host/src/sandbox.rs"]\n')
+        (self.root / "claims.toml").write_text(text, encoding="utf-8")
+        ids, _ = self.record()
+        self.assertIn("H-NEW-01", ids)
+        row = next(c for c in tomllib.loads((self.root / "claims.toml").read_text(encoding="utf-8"))["claim"]
+                   if c["id"] == "H-NEW-01")
+        self.assertEqual([p["commit"] for p in row["platforms"]], [COMMIT])
+
     def test_the_same_platform_and_commit_is_not_recorded_twice(self):
         self.record()
         shutil.rmtree(self.root / "results")
