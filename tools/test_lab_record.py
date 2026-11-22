@@ -90,6 +90,7 @@ class RecordTests(unittest.TestCase):
         (self.root / "claims.toml").write_text(text, encoding="utf-8")
         ids, _ = self.record()
         self.assertIn("H-NEW-01", ids)
+        self.assertFalse(any(cid.startswith("C-RST-03") for cid in ids), "a planned claim was recorded")
         row = next(c for c in tomllib.loads((self.root / "claims.toml").read_text(encoding="utf-8"))["claim"]
                    if c["id"] == "H-NEW-01")
         self.assertEqual([p["commit"] for p in row["platforms"]], [COMMIT])

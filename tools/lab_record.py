@@ -139,12 +139,14 @@ def claim_support(claim, results):
 
 
 def lab_claims(claims):
-    """Claims a lab run speaks to: those with a passing platform already, and those whose
-    evidence names a lab scenario or control, so that a new claim gets its first entry."""
+    """Claims a lab run speaks to: those with a passing platform already, and tested ones
+    whose evidence names a lab scenario or control, so that a new claim gets its first
+    entry. A planned claim names scenarios that do not exist yet and is left alone."""
     def lab_evidence(claim):
         return any(ref.partition(":")[0] in REF_KINDS for ref in claim.get("evidence", []))
     return [c for c in claims
-            if lab_evidence(c) or any(str(p.get("result", "")).startswith("pass") for p in c.get("platforms", []))]
+            if (c.get("status") == "tested" and lab_evidence(c))
+            or any(str(p.get("result", "")).startswith("pass") for p in c.get("platforms", []))]
 
 
 def append_platform(text, claim_id, entry):
