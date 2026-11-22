@@ -268,7 +268,7 @@ class ReportTests(unittest.TestCase):
         self.assertTrue(any(line.startswith("- **#1 ping") for line in lines))
         self.assertTrue(any(line.startswith("| #1 ping") for line in lines))
         # Read it as GitHub renders it: entities decoded, the digest's own "#1 " link removed.
-        shown = html.unescape("\n".join(lines)).replace("**#1 ", "**").replace("| #1 ", "| ")
+        shown = html.unescape("\n".join(lines)).replace("**#1 ", "**").replace("| #1 ", "| ").replace("- #1 ", "- ")
         self.assertIn("ping", shown)
         self.assertNotRegex(shown, r"[@#]\w")
         self.assertNotRegex(shown, r"(?i)gh-\w")
