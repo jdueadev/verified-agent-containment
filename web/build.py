@@ -48,6 +48,9 @@ kernels = {"safe": b64(gen / "kernel.opt.wasm"), "variants": variants}
 # committed page, so the page cannot run a different interpreter than scripts/check.sh.
 subprocess.run(["bend", "formal/kernel.bend", "-o", str(gen / "kernel.mjs")], cwd=root, check=True, stdout=subprocess.DEVNULL)
 errors, notes = cookbook.check(root, ci=True)
+# Recipe regions are scripts/check.sh's job, and one of them (the snippet's link to this
+# page) can only be regenerated once this page exists. Every other error stops the build.
+errors = [e for e in errors if "is out of date; run python3 tools/cookbook_check.py --write" not in e]
 if errors:
     raise SystemExit("cookbook check failed; the page is not built:\n" + "\n".join(errors))
 blocks = cookbook.page_blocks(root)
