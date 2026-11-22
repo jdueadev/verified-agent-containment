@@ -84,10 +84,12 @@ class RecordTests(unittest.TestCase):
 
     def test_a_full_run_records_every_lab_claim_and_nothing_else(self):
         before = {c["id"]: c for c in tomllib.loads((self.root / "claims.toml").read_text(encoding="utf-8"))["claim"]}
-        ids, where = self.record()
+        ids, where, skipped = self.record()
         self.assertEqual(where, f"results/ci/lab-{COMMIT}")
-        lab = {cid for cid, c in before.items() if any(p["result"].startswith("pass") for p in c.get("platforms", []))}
+        lab = {cid for cid, c in before.items()
+               if c["layer"] == "host" and any(p["result"].startswith("pass") for p in c.get("platforms", []))}
         self.assertEqual(set(ids), lab)
+        self.assertEqual(skipped, ["L-ISO-02"])
         self.assertTrue(lab)
         after = {c["id"]: c for c in tomllib.loads((self.root / "claims.toml").read_text(encoding="utf-8"))["claim"]}
         for cid, old in before.items():
@@ -108,12 +110,22 @@ class RecordTests(unittest.TestCase):
                  'evidence = ["scenario:monitor_crash", "sabotage:ignore_expiry"]\nfalsifier = "f"\n'
                  'platforms = []\nfiles = ["crates/containment-host/src/sandbox.rs"]\n')
         (self.root / "claims.toml").write_text(text, encoding="utf-8")
-        ids, _ = self.record()
+        ids, _, _ = self.record()
         self.assertIn("H-NEW-01", ids)
         self.assertFalse(any(cid.startswith("C-RST-03") for cid in ids), "a planned claim was recorded")
         row = next(c for c in tomllib.loads((self.root / "claims.toml").read_text(encoding="utf-8"))["claim"]
                    if c["id"] == "H-NEW-01")
         self.assertEqual([p["commit"] for p in row["platforms"]], [COMMIT])
+
+    def test_an_os_claim_is_skipped_and_left_unchanged(self):
+        before = next(c for c in tomllib.loads((self.root / "claims.toml").read_text(encoding="utf-8"))["claim"]
+                      if c["id"] == "L-ISO-02")
+        ids, _, skipped = self.record()
+        self.assertNotIn("L-ISO-02", ids)
+        self.assertIn("L-ISO-02", skipped)
+        after = next(c for c in tomllib.loads((self.root / "claims.toml").read_text(encoding="utf-8"))["claim"]
+                     if c["id"] == "L-ISO-02")
+        self.assertEqual(after, before)
 
     def test_the_same_platform_and_commit_is_not_recorded_twice(self):
         self.record()

@@ -38,12 +38,17 @@ if [ "$(git rev-parse origin/main)" != "$commit" ]; then
   exit 0
 fi
 
+# Lab claims a CI run does not record (an "os" claim such as L-ISO-02): they stay
+# stale until a lab on their own platform runs, and do not count here.
+python3 tools/lab_record.py --list-skipped > "$RUNNER_TEMP/skipped.txt"
+sed 's/^\(.*\)$/CI-4 \1:/' "$RUNNER_TEMP/skipped.txt" > "$RUNNER_TEMP/skipped-patterns.txt"
+
 claims_report() {
   # $1 is "stale" or "errors". claims_check exits non-zero when it reports errors;
-  # the report is printed either way.
+  # the report is printed either way. Stale rows of skipped claims are left out.
   python3 tools/claims_check.py > "$RUNNER_TEMP/claims.json" || true
   python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); print("\n".join(d[sys.argv[2]]))' \
-    "$RUNNER_TEMP/claims.json" "$1"
+    "$RUNNER_TEMP/claims.json" "$1" | grep -vF -f "$RUNNER_TEMP/skipped-patterns.txt" || true
 }
 
 before="$(claims_report stale)"
