@@ -32,6 +32,12 @@ pub const LIMITS_WAIVER_ENV: &str = "CONTAINMENT_ALLOW_MISSING_LIMITS";
 /// System One runs as uid_base + this offset; generations use lower offsets.
 pub const SYSTEM_ONE_UID_OFFSET: u32 = 15;
 
+/// Where the harness makes the read-only tree the sandbox_grant scenario grants. Not
+/// under /run or /tmp, which a grant may never be.
+pub fn lab_grant_dir(run_id: &str) -> PathBuf {
+    PathBuf::from("/var/lib/verified-agent-containment").join(format!("grant-{run_id}"))
+}
+
 /// Time source for leases. CLOCK_BOOTTIME keeps counting during suspend, so a
 /// suspended host cannot extend a lease.
 pub fn boot_ns() -> u64 {

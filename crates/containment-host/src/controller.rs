@@ -1,6 +1,7 @@
 use crate::common::*;
 use crate::live::LiveState;
 use crate::sandbox::{self, SandboxSpec};
+use crate::sandbox_grants::{Frozen, PolicyFile, Reserved, SandboxPolicy};
 use containment_kernel::*;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::{json, Value};
@@ -636,7 +637,9 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let private_mode = if weak.writable_policy() { 0o777 } else if misconfigured { 0o711 } else { 0o700 };
     fs::set_permissions(&private_dir, fs::Permissions::from_mode(private_mode))?;
     let policy_path = private_dir.join("policy.json");
-    let policy = json!({"allowed": ["allowed.test"], "baseline": ["baseline.test"], "secrets": ["api_token"]});
+    // Only sandbox_grant grants anything: the fixture the harness made for this run.
+    let lab_grants: Vec<PathBuf> = if scenario == "sandbox_grant" { vec![lab_grant_dir(run_id)] } else { Vec::new() };
+    let policy = json!({"allowed": ["allowed.test"], "baseline": ["baseline.test"], "secrets": ["api_token"], "sandbox": {"read_only": lab_grants}});
     write_private(&policy_path, &policy.to_string(), if weak.writable_policy() { 0o666 } else { 0o600 })?;
     let canary_path = private_dir.join("canary");
     let canary = random_hex(16)?;
@@ -655,7 +658,6 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let s1_cgroup = cgroup_root()?.join(format!("verified-agent-containment-{run_id}-system-one"));
     fs::create_dir(&run_cgroup)?;
     let delegated = enable_limits(&run_cgroup);
-    let first = Generation::create(&run_cgroup, 1)?;
 
     let sink_log = private_dir.join("sink.jsonl");
     let mut sink = Command::new(&exe).arg("sink").arg(&sink_log).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
@@ -672,6 +674,21 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         Some((policy, task)) => Some(Arc::new(LiveState::load(Path::new(policy), task.clone(), canary_token)?)),
         None => None,
     };
+    // What the sandbox may show beyond the default view, and its limits: read once, here,
+    // from the root-owned policy file, and frozen into `spec` (#88, #28). A Kill rebuild
+    // reuses `spec` and never reads the file again, so a policy file the agent can write
+    // cannot grant it anything. An invalid grant refuses the run.
+    let plan = crate::sandbox_view::plan(&fs::read(&exe)?, Path::new("/")).map_err(|e| format!("sandbox view: {e}"))?;
+    let frozen = match &live {
+        Some(l) => Frozen::freeze(&l.policy.sandbox, &l.policy_file, Path::new("/"), 0, &Reserved::for_plan(&plan, &[&root])),
+        None => PolicyFile::read(&policy_path).and_then(|file| {
+            let value: Value = serde_json::from_slice(&file.bytes).map_err(|e| e.to_string())?;
+            let section: SandboxPolicy = serde_json::from_value(value["sandbox"].clone()).map_err(|e| format!("sandbox: {e}"))?;
+            Frozen::freeze(&section, &file, Path::new("/"), 0, &Reserved::for_plan(&plan, &[&root]))
+        }),
+    }
+    .map_err(|e| format!("sandbox policy: {e}"))?;
+    let first = Generation::create(&run_cgroup, 1, &frozen.limits())?;
     let timing = live.as_ref().map(|l| l.policy.timing);
     let config = Config { max_lease_ms: MAX_LEASE_MS, freeze_grace_ms: timing.map_or(FREEZE_GRACE_MS, |t| t.freeze_grace_ms) };
     let blind_hold_ms = timing.map_or(LAB_BLIND_HOLD_MS, |t| t.blind_hold_ms);
@@ -704,12 +721,14 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         "host_marker": host_marker,
         "drop_dir": drop_dir,
         "gateway": if weak.host_root() { gateway.clone() } else { PathBuf::from("/gateway.sock") },
+        "grant": lab_grant_dir(run_id),
     }) };
     let spec = SandboxSpec {
         exe: exe.clone(), new_root, private_dir: private_dir.clone(), gateway: gateway.clone(),
         scenario: scenario.clone(), output: private_dir.join("agent.jsonl"), probe,
         share_network: weak.shared_network(), expose_private: weak.writable_policy(),
         no_parent_death_signal: weak.no_parent_death_signal(), host_root: weak.host_root(), wide_root: weak.wide_root(), seccomp: !weak.no_seccomp(), memfd_exec: weak.memfd_exec(),
+        policy: frozen,
     };
     let freeze_faults = match scenario.as_str() { "actuator_retry" => 2, "actuator_dead" => i64::MAX, "reset_races_kill" => 1, "double_reset" => 2, _ => 0 };
     let kill_faults = match scenario.as_str() { "actuator_dead" => i64::MAX, "reset_races_kill" | "double_reset" => 3, _ => 0 };
@@ -841,7 +860,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             // uid_base + 15 belongs to System One. Past 14 rebuilds, fail closed.
             let created = if number >= u64::from(SYSTEM_ONE_UID_OFFSET) {
                 Err(std::io::Error::other("sandbox generation limit reached"))
-            } else { Generation::create(&run_cgroup, number) }.and_then(|generation| {
+            } else { Generation::create(&run_cgroup, number, &shared.spec.policy.limits()) }.and_then(|generation| {
                 let uid = uid_base + number as u32;
                 let previous_uid = shared.sandbox_uid.swap(u64::from(uid), Ordering::SeqCst);
                 let spawned = shared.workspace_for(number, uid)
@@ -934,6 +953,8 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         "open_fds": fs::read_dir("/proc/self/fd").map_or(0, Iterator::count),
         "policy_intact": serde_json::from_str::<Value>(&fs::read_to_string(&policy_path)?).is_ok_and(|value| value == policy),
         "canary_intact": fs::read_to_string(&canary_path)? == canary,
+        // What the agent could see beyond its default view, as frozen at startup.
+        "sandbox": shared.spec.policy.record(),
     });
     fs::write(private_dir.join("report.tmp"), serde_json::to_vec(&report)?)?;
     fs::rename(private_dir.join("report.tmp"), private_dir.join("report.json"))?;

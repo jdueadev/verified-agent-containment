@@ -52,3 +52,21 @@ down_hold_ms = 30000     # classifier down before Hold (spec 5.5)
 [run]
 max_steps = 16
 max_seconds = 900
+
+# What the sandbox shows beyond the agent's own loader and libraries. Read once, at
+# startup; a Kill rebuild reuses what was read. Each path is canonicalised, refused
+# if it is / or is under /etc, /home, /root, /proc, /sys, /dev, /run, /var/run, /mnt
+# or /tmp, refused if its tree holds a socket, FIFO or device, and bound read-only,
+# nosuid, nodev and noexec. A policy that grants anything must be owned by root and
+# not group- or world-writable. The run's report.json lists every grant.
+# [sandbox]
+# read_only = ["/opt/tool"]
+#
+# Per-generation limits, shown at their defaults. Out-of-range values refuse the run.
+# [sandbox.limits]
+# nproc = 256        # 16..=4096
+# nofile = 256       # 32..=4096
+# fsize_mib = 16     # 1..=1024
+# tmp_mib = 16       # 1..=1024
+# pids_max = 512     # 16..=4096
+# memory_mib = 1024  # 64..=16384

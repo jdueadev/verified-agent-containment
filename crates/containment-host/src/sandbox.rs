@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::ptr;
 
+use crate::sandbox_grants::Limits;
+
 pub struct SandboxSpec {
     pub exe: PathBuf,
     pub new_root: PathBuf,
@@ -26,6 +28,9 @@ pub struct SandboxSpec {
     pub wide_root: bool,
     pub seccomp: bool,
     pub memfd_exec: bool,
+    /// Grants and limits from the root-owned policy, read once at startup (#88, #28).
+    /// Every generation, a Kill rebuild's included, is built from this same value.
+    pub policy: crate::sandbox_grants::Frozen,
 }
 
 fn check(result: libc::c_int) -> io::Result<()> {
@@ -50,6 +55,11 @@ pub fn spawn(spec: &SandboxSpec, cgroup: &Path, uid: u32, workspace: Option<&Pat
         flags |= libc::CLONE_NEWNET;
     }
     let fd = procs.as_raw_fd();
+    // This generation's copy of each grant, cloned from the descriptor validated at
+    // startup (#88, #28). They stay open across the launcher's exec, which attaches them;
+    // drop_authority closes everything before the agent runs.
+    let trees = spec.policy.clone_trees()?;
+    let grant_fds: Vec<libc::c_int> = trees.iter().map(AsRawFd::as_raw_fd).collect();
     let death_signal = !spec.no_parent_death_signal;
     // SAFETY: getpid has no preconditions.
     let controller = unsafe { libc::getpid() };
@@ -58,7 +68,7 @@ pub fn spawn(spec: &SandboxSpec, cgroup: &Path, uid: u32, workspace: Option<&Pat
         "scenario": spec.scenario, "uid": uid, "probe": spec.probe, "expose_private": spec.expose_private,
         "death_signal": death_signal, "host_root": spec.host_root, "wide_root": spec.wide_root,
         "seccomp": spec.seccomp, "memfd_exec": spec.memfd_exec,
-        "workspace": workspace,
+        "workspace": workspace, "grants": spec.policy.launch_config(&grant_fds), "limits": spec.policy.limits().record(),
     });
     let mut command = Command::new(&spec.exe);
     command
@@ -74,6 +84,9 @@ pub fn spawn(spec: &SandboxSpec, cgroup: &Path, uid: u32, workspace: Option<&Pat
             let pid = b"0\n";
             if libc::write(fd, pid.as_ptr().cast(), pid.len()) != pid.len() as isize {
                 return Err(io::Error::last_os_error());
+            }
+            for grant in &grant_fds {
+                check(libc::fcntl(*grant, libc::F_SETFD, 0))?;
             }
             check(libc::setsid())?;
             if death_signal {
@@ -129,7 +142,7 @@ fn bind(source: &str, target: &str, extra: libc::c_ulong) -> Result<(), Box<dyn 
 
 /// Builds a minimal read-only root. Host paths outside this list do not exist
 /// in the sandbox, including WSL interop paths and Windows drive mounts.
-fn pivot_to_minimal_root(config: &Value) -> Result<(), Box<dyn Error>> {
+fn pivot_to_minimal_root(config: &Value, limits: &Limits) -> Result<(), Box<dyn Error>> {
     let root = config["new_root"].as_str().ok_or("new root")?;
     let exe = config["exe"].as_str().ok_or("exe")?;
     let gateway = config["gateway"].as_str().ok_or("gateway")?;
@@ -181,9 +194,11 @@ fn pivot_to_minimal_root(config: &Value) -> Result<(), Box<dyn Error>> {
         fs::create_dir(under("/private"))?;
         bind(config["private_dir"].as_str().ok_or("private")?, &under("/private"), libc::MS_NOEXEC)?;
     }
+    bind_grants(config, root)?;
     // Only process directories, and only processes the viewer may ptrace.
     mount("proc", &under("/proc"), Some("proc"), libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC, Some("subset=pid,hidepid=invisible"))?;
-    mount("tmpfs", &under("/tmp"), Some("tmpfs"), libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC, Some("mode=1777,size=16m"))?;
+    let tmp = format!("mode=1777,size={}m", limits.tmp_mib);
+    mount("tmpfs", &under("/tmp"), Some("tmpfs"), libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC, Some(&tmp))?;
     let new_root = c(root)?;
     let old_root = c(&under("/.old"))?;
     // SAFETY: both paths are live NUL-terminated strings.
@@ -194,6 +209,28 @@ fn pivot_to_minimal_root(config: &Value) -> Result<(), Box<dyn Error>> {
     check(unsafe { libc::umount2(old.as_ptr(), libc::MNT_DETACH) })?;
     fs::remove_dir("/.old")?;
     mount("none", "/", None, libc::MS_REMOUNT | libc::MS_BIND | libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV, None)
+}
+
+/// Attaches each grant: the controller cloned the mount at the descriptor it validated at
+/// startup, so what is attached is that exact object, never the path again (#88, #28).
+/// Not recursive, so a mount under a grant on the host is not carried in. Made private,
+/// so later host mounts do not propagate in, then read-only, nosuid, nodev and noexec. A
+/// grant that cannot be attached stops the sandbox from starting.
+fn bind_grants(config: &Value, root: &str) -> Result<(), Box<dyn Error>> {
+    let grants = config["grants"].as_array().ok_or("grants")?;
+    for grant in grants {
+        let fd = grant["fd"].as_i64().and_then(|fd| libc::c_int::try_from(fd).ok()).ok_or("grant descriptor")?;
+        let path = grant["path"].as_str().ok_or("grant path")?;
+        let dir = grant["dir"].as_bool().ok_or("grant kind")?;
+        let target = crate::sandbox_grants::make_mount_point(Path::new(root), Path::new(path), dir)?;
+        crate::sandbox_grants::move_mount(fd, &target).map_err(|e| format!("grant {path}: {e}"))?;
+        let target = target.to_str().ok_or("grant path is not UTF-8")?;
+        mount("none", target, None, libc::MS_PRIVATE, None)?;
+        mount("none", target, None, libc::MS_REMOUNT | libc::MS_BIND | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_RDONLY | libc::MS_NOEXEC, None)?;
+        // SAFETY: closes a descriptor this process inherited for the attach and no longer uses.
+        check(unsafe { libc::close(fd) })?;
+    }
+    Ok(())
 }
 
 fn stmt(code: u16, k: u32) -> libc::sock_filter {
@@ -338,16 +375,16 @@ pub unsafe fn install_filter(program: &mut [libc::sock_filter]) -> libc::c_int {
     unsafe { libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &fprog as *const libc::sock_fprog) }
 }
 
-fn drop_authority(uid: u32, seccomp: bool) -> Result<(), Box<dyn Error>> {
+fn drop_authority(uid: u32, seccomp: bool, limits: &Limits) -> Result<(), Box<dyn Error>> {
     let limit = |resource, value| {
         let limit = libc::rlimit { rlim_cur: value, rlim_max: value };
         // SAFETY: `limit` is a valid rlimit for the call.
         check(unsafe { libc::setrlimit(resource, &limit) })
     };
-    limit(libc::RLIMIT_NPROC, 256)?;
-    limit(libc::RLIMIT_NOFILE, 256)?;
+    limit(libc::RLIMIT_NPROC, limits.nproc)?;
+    limit(libc::RLIMIT_NOFILE, limits.nofile)?;
     limit(libc::RLIMIT_CORE, 0)?;
-    limit(libc::RLIMIT_FSIZE, 16 * 1024 * 1024)?;
+    limit(libc::RLIMIT_FSIZE, limits.fsize_mib * 1024 * 1024)?;
     // SAFETY: these calls change only this process's credentials and flags.
     unsafe {
         // Unconfirmed means stopped (INV-7): a failed close_range would leave the
@@ -365,7 +402,7 @@ fn drop_authority(uid: u32, seccomp: bool) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn prepare(config: &Value) -> Result<(String, String), Box<dyn Error>> {
+fn prepare(config: &Value, limits: &Limits) -> Result<(String, String), Box<dyn Error>> {
     mount("none", "/", None, libc::MS_REC | libc::MS_PRIVATE, None)?;
     let exe = config["exe"].as_str().ok_or("exe")?.to_owned();
     let gateway = config["gateway"].as_str().ok_or("gateway")?.to_owned();
@@ -373,7 +410,7 @@ fn prepare(config: &Value) -> Result<(String, String), Box<dyn Error>> {
         mount("proc", "/proc", Some("proc"), libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC, None)?;
         (exe, gateway)
     } else {
-        pivot_to_minimal_root(config)?;
+        pivot_to_minimal_root(config, limits)?;
         ("/agent".to_owned(), "/gateway.sock".to_owned())
     };
     Ok(paths)
@@ -387,6 +424,10 @@ pub fn launch(args: &[String]) -> Result<(), Box<dyn Error>> {
     let [config] = args else { return Err("sandbox-launch arguments are invalid".into()) };
     let config: Value = serde_json::from_str(config)?;
     let death_signal = config["death_signal"] == true;
+    // The limits travel from the frozen policy; checked again here so a malformed
+    // configuration cannot start a sandbox with no limits.
+    let limits: Limits = serde_json::from_value(config["limits"].clone()).map_err(|e| format!("sandbox limits: {e}"))?;
+    limits.validate()?;
     // Init polls this pipe so a launcher death before PDEATHSIG is armed is seen.
     let mut pipe = [0; 2];
     // SAFETY: `pipe` is a valid two-element output array.
@@ -402,6 +443,10 @@ pub fn launch(args: &[String]) -> Result<(), Box<dyn Error>> {
         let mut status = 0;
         // SAFETY: `status` is a valid out pointer.
         unsafe { libc::waitpid(init, &mut status, 0) };
+        // An init that failed (a grant that could not be attached, say) is not a clean exit.
+        if !(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0) {
+            return Err(format!("sandbox init failed (wait status {status})").into());
+        }
         return Ok(());
     }
     // SAFETY: closing the unused write end is valid in init.
@@ -423,14 +468,14 @@ pub fn launch(args: &[String]) -> Result<(), Box<dyn Error>> {
     if config["memfd_exec"] != true {
         fs::write("/proc/sys/vm/memfd_noexec", "2").map_err(|e| format!("vm.memfd_noexec: {e}"))?;
     }
-    let (exe, gateway) = prepare(&config)?;
+    let (exe, gateway) = prepare(&config, &limits)?;
     // SAFETY: init is single-threaded here.
     let agent = unsafe { libc::fork() };
     if agent < 0 {
         return Err(io::Error::last_os_error().into());
     }
     if agent == 0 {
-        drop_authority(config["uid"].as_u64().ok_or("uid")? as u32, config["seccomp"] != false)?;
+        drop_authority(config["uid"].as_u64().ok_or("uid")? as u32, config["seccomp"] != false, &limits)?;
         let error = Command::new(Path::new(&exe))
             .arg("agent")
             .arg(gateway)

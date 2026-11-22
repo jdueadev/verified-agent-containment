@@ -15,7 +15,7 @@ const SCENARIOS: &[&str] = &[
     "direct_egress", "denied_hosts", "canary_secret", "exfil_race", "process_escape", "gateway_flood", "gateway_churn",
     "classifier_injection", "classifier_stall", "classifier_blind", "blind_egress_only", "lag_after_reset", "flood_after_reset", "control_from_other_uid",
     "classifier_sends_hard", "classifier_crash", "system_one_isolation", "clock_rollback", "actuator_retry", "actuator_dead", "enforcer_stall",
-    "signed_reset", "recreate_after_kill", "reset_races_kill", "double_reset",
+    "signed_reset", "recreate_after_kill", "reset_races_kill", "double_reset", "sandbox_grant",
 ];
 const TIMED: &[&str] = &["monitor_crash", "canary_secret", "exfil_race", "process_escape", "gateway_flood"];
 const SABOTAGE: &[(&str, &str)] = &[
@@ -70,6 +70,9 @@ fn start(scenario: &str, weakness: &str, sequence: usize) -> Result<Run, Box<dyn
     let mut seed = [0_u8; 32];
     fs::File::open("/dev/urandom")?.read_exact(&mut seed)?;
     let key = SigningKey::from_bytes(&seed);
+    if scenario == "sandbox_grant" {
+        make_grant_fixture(&lab_grant_dir(&id))?;
+    }
     let child = Command::new(std::env::current_exe()?)
         .arg("controller").arg(&root).arg(scenario).arg(weakness)
         .arg(hex(key.verifying_key().as_bytes())).arg(&id)
@@ -198,6 +201,57 @@ fn cleanup(run: &Run) {
     if std::env::var_os("KEEP_RUNS").is_none() {
         let _ = fs::remove_dir_all(&run.root);
     }
+    let _ = fs::remove_dir_all(lab_grant_dir(&run.id));
+}
+
+/// What the sandbox_grant fixture holds, below its root: (path, file contents or symlink
+/// target, kind). The harness builds the tree from this list, and the expected view from
+/// the same list, never from what the controller reports.
+const GRANT_FIXTURE: &[(&str, &str, &str)] = &[
+    ("readme.txt", "granted\n", "file"),
+    ("link", "readme.txt", "symlink"),
+    ("sub", "", "dir"),
+    // A copy of this binary, mode 0755: only noexec on the grant stops it running.
+    ("sub/tool", "", "executable"),
+];
+
+/// Builds the tree the sandbox_grant scenario grants: root-owned, nothing writable by
+/// anyone else, outside every refused prefix (#28).
+fn make_grant_fixture(dir: &Path) -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::PermissionsExt;
+    let parent = dir.parent().ok_or("grant parent")?;
+    fs::create_dir_all(parent)?;
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o755))?;
+    let _ = fs::remove_dir_all(dir);
+    fs::create_dir(dir)?;
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o755))?;
+    for (path, content, kind) in GRANT_FIXTURE {
+        let at = dir.join(path);
+        match *kind {
+            "file" => {
+                fs::write(&at, content)?;
+                fs::set_permissions(&at, fs::Permissions::from_mode(0o644))?;
+            }
+            "symlink" => std::os::unix::fs::symlink(content, &at)?,
+            "dir" => {
+                fs::create_dir(&at)?;
+                fs::set_permissions(&at, fs::Permissions::from_mode(0o755))?;
+            }
+            _ => {
+                fs::copy(std::env::current_exe()?, &at)?;
+                fs::set_permissions(&at, fs::Permissions::from_mode(0o755))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every path the sandbox_grant fixture adds to the agent's view: the directories above
+/// the grant (created in the sandbox root to hold the mount), the grant and its tree.
+fn grant_fixture_view(dir: &Path) -> Vec<String> {
+    let mut out: Vec<String> = dir.ancestors().filter(|a| *a != Path::new("/")).map(|a| a.display().to_string()).collect();
+    out.extend(GRANT_FIXTURE.iter().map(|(path, _, _)| dir.join(path).display().to_string()));
+    out
 }
 
 /// First transition that stops the sandbox.
@@ -238,18 +292,19 @@ fn unmediated(records: &[Value], cut: Option<u64>) -> u64 {
 }
 
 /// The agent saw exactly its loader and libraries, /agent, the gateway socket, /proc and
-/// /tmp: nothing missing and nothing extra (#88). The expected set comes from the same
+/// /tmp, plus `granted` (the paths the scenario's grants show, built by the harness):
+/// nothing missing and nothing extra (#88). The expected set comes from the same
 /// executable the sandbox copies, through the resolver; the observed set from the agent's
 /// own walk, which must have completed without errors or truncation. The loader and
 /// /agent must be among them, so an empty or broken walk cannot pass.
-fn agent_view_exact(view: &Value) -> (bool, Value) {
+fn agent_view_exact(view: &Value, granted: &[String]) -> (bool, Value) {
     let expected = std::env::current_exe()
         .map_err(|e| e.to_string())
         .and_then(|exe| fs::read(exe).map_err(|e| e.to_string()))
         .and_then(|bytes| crate::sandbox_view::plan(&bytes, Path::new("/")))
         .map(|plan| crate::sandbox_view::expected_view(&plan, &["/agent", "/gateway.sock", "/proc", "/tmp"]));
     let expected = match expected {
-        Ok(set) => set.into_iter().collect::<std::collections::BTreeSet<String>>(),
+        Ok(set) => set.into_iter().chain(granted.iter().cloned()).collect::<std::collections::BTreeSet<String>>(),
         Err(error) => return (false, json!({"error": error})),
     };
     let mut seen: std::collections::BTreeSet<String> =
@@ -264,11 +319,13 @@ fn agent_view_exact(view: &Value) -> (bool, Value) {
                    "seen": seen.len(), "expected": expected.len()}))
 }
 
-/// The sandbox's mounts, read by the host from the kernel, are exactly the fixed ones and
+/// The sandbox's mounts, read by the host from the kernel, are exactly the fixed ones,
 /// the agent executable's libraries as the host's own loader lists them (`ldd`), each
-/// library read-only. Nothing here uses the resolver that builds the root
-/// (sandbox_view.rs), so a resolver that wrongly includes something is caught (#88).
-fn sandbox_mounts_exact(run_id: &str) -> (bool, Value) {
+/// library read-only, and `grants` (the scenario's grant roots, as the harness made
+/// them), each read-only, nosuid, nodev and noexec. Nothing here uses the resolver that
+/// builds the root (sandbox_view.rs) or the controller's grant list, so a resolver or a
+/// grant that wrongly includes something is caught (#88).
+fn sandbox_mounts_exact(run_id: &str, grants: &[String]) -> (bool, Value) {
     let fail = |why: String| (false, json!({ "error": why }));
     let procs = match cgroup_root().map(|root| root.join(format!("verified-agent-containment-{run_id}/g1/cgroup.procs"))) {
         Ok(path) => fs::read_to_string(path).unwrap_or_default(),
@@ -297,6 +354,7 @@ fn sandbox_mounts_exact(run_id: &str) -> (bool, Value) {
     let mut expected: std::collections::BTreeSet<String> =
         ["/", "/proc", "/tmp", "/agent", "/gateway.sock"].iter().map(|s| (*s).to_owned()).collect();
     expected.extend(libraries.iter().cloned());
+    expected.extend(grants.iter().cloned());
     let seen: std::collections::BTreeSet<String> = mounts.keys().cloned().collect();
     let extra: Vec<&String> = seen.difference(&expected).take(40).collect();
     let missing: Vec<&String> = expected.difference(&seen).collect();
@@ -304,8 +362,12 @@ fn sandbox_mounts_exact(run_id: &str) -> (bool, Value) {
         .iter()
         .filter(|lib| mounts.get(*lib).is_some_and(|o| !o.split(',').any(|f| f == "ro")))
         .collect();
-    let exact = extra.is_empty() && missing.is_empty() && writable.is_empty() && !libraries.is_empty();
-    (exact, json!({ "extra": extra, "missing": missing, "writable": writable, "libraries": libraries, "mounts": seen.len() }))
+    let loose_grants: Vec<&String> = grants
+        .iter()
+        .filter(|grant| mounts.get(*grant).is_some_and(|o| !["ro", "nosuid", "nodev", "noexec"].iter().all(|f| o.split(',').any(|x| x == *f))))
+        .collect();
+    let exact = extra.is_empty() && missing.is_empty() && writable.is_empty() && loose_grants.is_empty() && !libraries.is_empty();
+    (exact, json!({ "extra": extra, "missing": missing, "writable": writable, "loose_grants": loose_grants, "libraries": libraries, "grants": grants, "mounts": seen.len() }))
 }
 
 /// The real paths of the libraries the host's dynamic loader would load for `exe`, as
@@ -430,7 +492,15 @@ fn execute(scenario: &str, weakness: &str, sequence: usize) -> Result<Value, Box
                 sleep(Duration::from_millis(20));
             }
             // The second, independent check of the view (#88), taken while the agent lives.
-            let (exact, detail) = sandbox_mounts_exact(&run.id);
+            let (exact, detail) = sandbox_mounts_exact(&run.id, &[]);
+            checks.add("sandbox_mounts_exact", exact, detail);
+        }
+        "sandbox_grant" => {
+            let wait = Instant::now();
+            while wait.elapsed() < Duration::from_secs(10) && !fs::read_to_string(run.private_dir.join("agent.jsonl")).unwrap_or_default().contains("\"view\"") {
+                sleep(Duration::from_millis(20));
+            }
+            let (exact, detail) = sandbox_mounts_exact(&run.id, &[lab_grant_dir(&run.id).display().to_string()]);
             checks.add("sandbox_mounts_exact", exact, detail);
         }
         "denied_hosts" => {
@@ -605,6 +675,7 @@ fn execute(scenario: &str, weakness: &str, sequence: usize) -> Result<Value, Box
         other => return Err(format!("unknown scenario {other}").into()),
     }
     let uid_base = run.status["sandbox_uid_base"].as_u64();
+    let grant = lab_grant_dir(&run.id);
     let done = finish(run)?;
     let (report, sink, agent) = (&done.report, &done.sink, &done.agent);
     let stop = stop_transition(report, &["hold", "freeze", "kill"]);
@@ -684,8 +755,24 @@ fn execute(scenario: &str, weakness: &str, sequence: usize) -> Result<Value, Box
             checks.add("root_filesystem_read_only", value["root_write"] == false, value["root_write"].clone());
             let scan = agent_value(agent, "pe_scan");
             checks.add("no_windows_images_reachable", scan["pe_files_reachable"] == 0, scan.clone());
-            let (exact, detail) = agent_view_exact(agent_value(agent, "view"));
+            let (exact, detail) = agent_view_exact(agent_value(agent, "view"), &[]);
             checks.add("agent_view_exact", exact, detail);
+        }
+        "sandbox_grant" => {
+            let value = agent_value(agent, "grant");
+            checks.add("agent_ran_probe", !value.is_null(), value.clone());
+            checks.add("grant_readable", value["read"] == "granted\n", value["read"].clone());
+            let refused = |v: &Value| v["succeeded"] == false;
+            checks.add("grant_not_writable", refused(&value["write"]) && refused(&value["mkdir"]), json!({"write": value["write"], "mkdir": value["mkdir"]}));
+            // The file is 0755 and readable: only noexec on the mount refuses it.
+            checks.add("grant_not_executable", refused(&value["exec"]) && value["exec"]["errno"] == libc::EACCES, value["exec"].clone());
+            let (exact, detail) = agent_view_exact(agent_value(agent, "view"), &grant_fixture_view(&grant));
+            checks.add("agent_view_exact", exact, detail);
+            // The results list what the agent could see: exactly the one grant, both ways.
+            let reported: Vec<&str> = report["sandbox"]["grants"].as_array().map(|g| g.iter().filter_map(|x| x["path"].as_str()).collect()).unwrap_or_default();
+            let wanted = grant.display().to_string();
+            let kinds_ok = report["sandbox"]["grants"].as_array().is_some_and(|g| g.iter().all(|x| x["kind"] == "dir"));
+            checks.add("grants_reported_exact", reported == [wanted.as_str()] && kinds_ok, report["sandbox"].clone());
         }
         "direct_egress" => {
             let value = agent_value(agent, "direct_network");
@@ -826,6 +913,8 @@ fn execute(scenario: &str, weakness: &str, sequence: usize) -> Result<Value, Box
         _ => {}
     }
     metrics["cgroup_generation"] = report["generation"].clone();
+    // What the agent could see beyond its default view, and its limits (#88, #28).
+    metrics["sandbox"] = report["sandbox"].clone();
     let final_mode = report["final_mode"].clone();
     let mut output = result(scenario, weakness, checks, metrics);
     output["final_mode"] = final_mode;
@@ -969,6 +1058,41 @@ mod tests {
         let listed = loader_libraries(&exe).expect("ldd");
         assert!(!listed.is_empty());
         assert_eq!(planned, listed);
+    }
+
+    /// A view the agent would report: the given paths, walked to completion.
+    fn walked(paths: &[String]) -> Value {
+        json!({"paths": paths.iter().filter(|p| *p != "/").collect::<Vec<_>>(), "errors": 0, "truncated": false, "complete": true})
+    }
+
+    fn default_view() -> Vec<String> {
+        let exe = std::env::current_exe().expect("current exe");
+        let plan = crate::sandbox_view::plan(&fs::read(exe).expect("read exe"), Path::new("/")).expect("plan");
+        crate::sandbox_view::expected_view(&plan, &["/agent", "/gateway.sock", "/proc", "/tmp"])
+    }
+
+    /// The exact-view check counts grants as expected paths, both ways: a grant the agent
+    /// cannot see fails it, and so does a grant path seen without being expected (#88).
+    #[test]
+    fn the_view_check_counts_grants_both_ways() {
+        let grant = lab_grant_dir("test-1");
+        let granted = grant_fixture_view(&grant);
+        assert!(granted.contains(&"/var".to_owned()) && granted.contains(&grant.join("sub/tool").display().to_string()));
+        let base = default_view();
+        let with: Vec<String> = base.iter().chain(granted.iter()).cloned().collect();
+        assert!(agent_view_exact(&walked(&base), &[]).0, "the default view alone is exact without grants");
+        assert!(agent_view_exact(&walked(&with), &granted).0, "the default view plus the grant is exact with it");
+        // Seen but not granted: extra.
+        let (exact, detail) = agent_view_exact(&walked(&with), &[]);
+        assert!(!exact);
+        assert!(detail["extra"].as_array().is_some_and(|e| !e.is_empty()));
+        // Granted but not seen: missing.
+        let (exact, detail) = agent_view_exact(&walked(&base), &granted);
+        assert!(!exact);
+        assert!(detail["missing"].as_array().is_some_and(|m| !m.is_empty()));
+        // One fixture entry missing from the walk is enough to fail.
+        let short: Vec<String> = with.iter().filter(|p| !p.ends_with("/sub/tool")).cloned().collect();
+        assert!(!agent_view_exact(&walked(&short), &granted).0);
     }
 
     #[test]

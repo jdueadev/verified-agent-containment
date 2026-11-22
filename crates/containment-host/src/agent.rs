@@ -255,6 +255,33 @@ fn visible_paths() -> Value {
     json!({"paths": out, "errors": errors, "truncated": truncated, "complete": true})
 }
 
+/// Tries what a read-only, noexec grant must allow and refuse: read a file, write a file,
+/// make a directory, run an executable (#88, #28).
+fn grant_probe(probe: &Value) -> Value {
+    let Some(grant) = probe["grant"].as_str() else { return json!({"error": "no grant in the probe"}) };
+    let dir = Path::new(grant);
+    let attempt = |result: std::io::Result<()>| match result {
+        Ok(()) => json!({"succeeded": true}),
+        Err(e) => json!({"succeeded": false, "errno": e.raw_os_error()}),
+    };
+    let exec = std::process::Command::new(dir.join("sub/tool"))
+        .env_clear()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|mut child| {
+            let _ = child.kill();
+            let _ = child.wait();
+        });
+    json!({
+        "read": fs::read_to_string(dir.join("readme.txt")).ok(),
+        "write": attempt(fs::write(dir.join("written-by-agent"), "x")),
+        "mkdir": attempt(fs::create_dir(dir.join("made-by-agent"))),
+        "exec": attempt(exec),
+    })
+}
+
 /// Counts files the agent may execute that carry a Windows executable header.
 fn reachable_pe_files() -> usize {
     fn walk(dir: &Path, depth: usize, count: &mut usize) {
@@ -402,6 +429,11 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         }
         "direct_egress" => {
             direct_network(&probe);
+            idle()
+        }
+        "sandbox_grant" => {
+            say("grant", grant_probe(&probe));
+            say("view", visible_paths());
             idle()
         }
         "denied_hosts" => {

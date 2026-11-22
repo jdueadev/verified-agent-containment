@@ -24,6 +24,9 @@ pub struct Policy {
     pub timing: Timing,
     #[serde(default)]
     pub run: RunLimits,
+    /// Read-only grants and per-generation limits (#88, #28). Read once, at startup.
+    #[serde(default)]
+    pub sandbox: crate::sandbox_grants::SandboxPolicy,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -144,11 +147,15 @@ pub struct LiveState {
     pub task: String,
     /// Exact credential values, redacted from anything returned to the agent.
     pub secret_values: Vec<String>,
+    /// The policy file as it was read, once: its bytes, hash and ownership.
+    pub policy_file: crate::sandbox_grants::PolicyFile,
 }
 
 impl LiveState {
     pub fn load(policy_path: &Path, task: String, canary: String) -> Result<Self, Box<dyn Error>> {
-        let policy: Policy = toml::from_str(&fs::read_to_string(policy_path)?)?;
+        let policy_file = crate::sandbox_grants::PolicyFile::read(policy_path)?;
+        let policy: Policy = toml::from_str(policy_file.text()?)?;
+        policy.sandbox.validate()?;
         let model_url = Url::parse(&policy.model.endpoint).ok_or("model.endpoint is not an http(s) URL")?;
         let mut creds = BTreeMap::new();
         let mut raw_values = Vec::new();
@@ -194,7 +201,7 @@ impl LiveState {
         secret_values.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
         secret_values.dedup();
         crate::common::check_redactable(&secret_values)?;
-        Ok(Self { policy, model_url, model_header, hosts, canary, used: Mutex::default(), tokens: AtomicU64::new(0), lease: AtomicU64::new(0), task, secret_values })
+        Ok(Self { policy, model_url, model_header, hosts, canary, used: Mutex::default(), tokens: AtomicU64::new(0), lease: AtomicU64::new(0), task, secret_values, policy_file })
     }
 }
 
@@ -249,6 +256,23 @@ mod tests {
         let policy: Policy = toml::from_str(text).unwrap();
         assert!(!policy.host.is_empty());
         assert!(Url::parse(&policy.model.endpoint).is_some());
+    }
+
+    #[test]
+    fn the_sandbox_section_parses_strictly_and_is_validated_on_load() {
+        let base = "[model]\nendpoint = \"http://127.0.0.1:1/v1/chat/completions\"\nname = \"m\"\n";
+        let policy: Policy = toml::from_str(&format!("{base}[sandbox]\nread_only = [\"/opt/tool\"]\n[sandbox.limits]\nnproc = 64\n")).unwrap();
+        assert_eq!(policy.sandbox.read_only, [PathBuf::from("/opt/tool")]);
+        assert_eq!(policy.sandbox.limits.nproc, 64);
+        assert!(toml::from_str::<Policy>(&format!("{base}[sandbox]\nread_write = [\"/opt\"]\n")).is_err());
+        // Without a [sandbox] section the defaults apply: no grants, the old limits.
+        let plain: Policy = toml::from_str(base).unwrap();
+        assert_eq!(plain.sandbox, crate::sandbox_grants::SandboxPolicy::default());
+        let path = std::env::temp_dir().join(format!("vac-live-policy-{}.toml", std::process::id()));
+        fs::write(&path, format!("{base}[sandbox.limits]\nnproc = 0\n")).unwrap();
+        let error = LiveState::load(&path, String::new(), String::new()).err().map(|e| e.to_string());
+        let _ = fs::remove_file(&path);
+        assert!(error.as_deref().is_some_and(|e| e.contains("nproc")), "{error:?}");
     }
 
     #[test]

@@ -310,7 +310,7 @@ fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn
     }
     let passed = checks.passed();
     let _ = fs::remove_dir_all(&run.root);
-    Ok(json!({"scenario": scenario, "weakness": weakness, "passed": passed, "final_mode": report["final_mode"], "checks": checks.0, "live": report["live"]}))
+    Ok(json!({"scenario": scenario, "weakness": weakness, "passed": passed, "final_mode": report["final_mode"], "checks": checks.0, "live": report["live"], "sandbox": report["sandbox"]}))
 }
 
 /// Runs the live-mode suite with a scripted model, then every sabotaged controller.

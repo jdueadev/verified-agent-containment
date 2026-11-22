@@ -2,8 +2,6 @@
 
 use super::*;
 
-pub(super) const LIMITS: [(&str, &str); 3] = [("pids.max", "512"), ("memory.max", "1073741824"), ("cpu.max", "50000 100000")];
-
 /// One sandbox generation. Control files stay open so enforcement does not need
 /// a new file descriptor while the host is under pressure.
 pub(super) struct Generation {
@@ -12,23 +10,26 @@ pub(super) struct Generation {
     pub(super) freeze: File,
     pub(super) kill: File,
     pub(super) events: File,
+    /// The cgroup limits this generation was given, from the frozen policy.
+    pub(super) wanted: [(&'static str, String); 3],
 }
 
 impl Generation {
-    pub(super) fn create(parent: &Path, number: u64) -> std::io::Result<Self> {
+    pub(super) fn create(parent: &Path, number: u64, limits: &crate::sandbox_grants::Limits) -> std::io::Result<Self> {
         let path = parent.join(format!("g{number}"));
         fs::create_dir(&path)?;
-        for (file, value) in LIMITS {
+        let wanted = limits.cgroup();
+        for (file, value) in &wanted {
             let _ = fs::write(path.join(file), value);
         }
         let write = |name| fs::OpenOptions::new().write(true).open(path.join(name));
-        Ok(Self { number, freeze: write("cgroup.freeze")?, kill: write("cgroup.kill")?, events: File::open(path.join("cgroup.events"))?, path })
+        Ok(Self { number, freeze: write("cgroup.freeze")?, kill: write("cgroup.kill")?, events: File::open(path.join("cgroup.events"))?, path, wanted })
     }
 
     /// Limits actually in force, read back from the cgroup.
     pub(super) fn limits(&self) -> Value {
         let read = |file: &str| fs::read_to_string(self.path.join(file)).ok().map(|v| v.trim().to_owned());
-        json!(LIMITS.iter().map(|(file, value)| json!({"file": file, "wanted": value, "actual": read(file)})).collect::<Vec<_>>())
+        json!(self.wanted.iter().map(|(file, value)| json!({"file": file, "wanted": value, "actual": read(file)})).collect::<Vec<_>>())
     }
 
     pub(super) fn events(&self) -> String {
