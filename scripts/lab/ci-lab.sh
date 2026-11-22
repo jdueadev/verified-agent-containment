@@ -141,20 +141,12 @@ default_sha="$(sha256sum "$default" | cut -d' ' -f1)"
 sabotage_sha="$(sha256sum "$sabotage" | cut -d' ' -f1)"
 out="$work/lab"
 mkdir -p "$out"
-# Ubuntu 24.04 runners refuse unprivileged user namespaces through AppArmor, and
-# System One starts in one after dropping privileges (system_one.rs), so the
-# controller fails with EACCES. The WSL2 and Linux VM labs have no such policy.
-# This runner is thrown away after the job; the setting before and after is
-# recorded with the results. The sandbox's own seccomp filter still refuses
-# unshare to the agent, which is what the suites test.
+# Ubuntu 24.04's AppArmor setting for unprivileged user namespaces is left as the
+# image ships it, and recorded: the controller has to work on a stock install. (An
+# earlier version switched it off while chasing an EACCES that turned out to be the
+# noexec /run below.)
 userns_knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
-userns_before="absent"
-if [ -e "$userns_knob" ]; then
-  userns_before="$(cat "$userns_knob")"
-  [ "$userns_before" = 0 ] || sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0 \
-    || fail "could not allow unprivileged user namespaces for System One"
-fi
-userns_after="$(cat "$userns_knob" 2>/dev/null || echo absent)"
+userns_setting="$(cat "$userns_knob" 2>/dev/null || echo absent)"
 # The sandbox mounts the host's /usr read-only, and the sandbox_escape scenario
 # reads the header of every executable the agent can see (no_windows_images_
 # reachable). Hosted runner images carry tens of GB of preinstalled SDKs under
@@ -204,7 +196,7 @@ fi
   echo "kernel: $(uname -r)"
   echo "cgroup v2 controllers: $(cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null || echo none)"
   echo "cpus: $(nproc)"
-  echo "kernel.apparmor_restrict_unprivileged_userns: $userns_before -> $userns_after"
+  echo "kernel.apparmor_restrict_unprivileged_userns: $userns_setting (unchanged)"
   echo "run directory: $run_note"
   echo "runner image trimmed: $usr_note"
   echo "rust-toolchain channel: $pin"
@@ -223,7 +215,7 @@ fi
   echo "- toolchain: $pin ($host), $cargo_v"
   echo "- Cargo.lock sha256: \`$(sha256sum Cargo.lock | cut -d' ' -f1)\`"
   echo "- cgroup controllers: \`$(cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null || echo none)\`"
-  echo "- apparmor_restrict_unprivileged_userns: $userns_before -> $userns_after"
+  echo "- apparmor_restrict_unprivileged_userns: $userns_setting (unchanged)"
   echo "- run directory: $run_note"
   echo "- runner image trimmed: $usr_note"
   echo "- default build sha256: \`$default_sha\`"
