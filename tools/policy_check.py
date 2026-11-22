@@ -4,9 +4,12 @@
 Usage:
   policy_check.py classify --base REF [--head REF] [--map-ref REF] [--reviews FILE --head-sha SHA]
                            [--fork] [--enforce]
+  policy_check.py queue --base SHA --head SHA --entries FILE [--enforce]
   policy_check.py codeowners [--write]
   policy_check.py invariants
 
+queue      judges a merge-queue group: one commit per queued PR, each classified with
+           the lane map before it and, if lane C, approved by the owner at its head.
 classify   prints the lane of the diff between two commits. Lanes are defined in
            ci/lanes.toml. A ratchet raises the lane to C when the change removes
            or rewords a law, mutant, scenario or sabotage control, or weakens a
@@ -391,6 +394,11 @@ def main(argv=None):
     c.add_argument("--head-sha")
     c.add_argument("--fork", action="store_true")
     c.add_argument("--enforce", action="store_true")
+    q = sub.add_parser("queue")
+    q.add_argument("--base", required=True, help="merge_group.base_sha")
+    q.add_argument("--head", required=True, help="merge_group.head_sha")
+    q.add_argument("--entries", required=True, help="JSON list of the group's entries, in queue order")
+    q.add_argument("--enforce", action="store_true")
     o = sub.add_parser("codeowners")
     o.add_argument("--write", action="store_true")
     sub.add_parser("invariants")
@@ -402,7 +410,53 @@ def main(argv=None):
         sys.exit(f"policy: {' '.join(error.cmd[3:])} failed: {(error.stderr or '').strip()}")
 
 
+def judge_queue(base, head, entries):
+    """Judge a merge-queue group (#102). `entries` are the group's pull requests in queue
+    order, as the API lists them: {"number", "head_sha", "reviews"}. The group must be
+    exactly one first-parent commit per entry on top of `base`. Each commit's own change
+    is classified with the lane map of the commit before it, as if it merged alone, so a
+    stale PR-time result counts for nothing; a lane C commit needs the owner's approval
+    of that entry's head. Anything that does not line up is a problem, never a pass."""
+    problems, rows = [], []
+    base = git("rev-parse", "--verify", f"{base}^{{commit}}").strip()
+    head = git("rev-parse", "--verify", f"{head}^{{commit}}").strip()
+    commits = [c for c in git("rev-list", "--first-parent", "--reverse", f"{base}..{head}").split() if c]
+    if not entries:
+        return [{"problem": "the group lists no entries"}], ["the group lists no entries"]
+    if len(commits) != len(entries):
+        problems.append(f"the group has {len(commits)} commits for {len(entries)} entries")
+        return rows, problems
+    previous = base
+    for commit, entry in zip(commits, entries):
+        parents = git("rev-list", "--parents", "-n", "1", commit).split()[1:]
+        if parents != [previous]:
+            problems.append(f"{commit[:12]} is not a single-parent commit on top of {previous[:12]}")
+            break
+        lanes_text = reader(previous)(LANES_FILE)
+        if lanes_text is None:
+            problems.append(f"{previous[:12]} has no {LANES_FILE}")
+            break
+        owner, lanes = load_lanes(lanes_text)
+        paths = [p for p in git("diff", "--name-only", "--no-renames", previous, commit).splitlines() if p]
+        result = classify(paths, reader(previous), reader(commit), lanes)
+        ok = result["lane"] != "C" or approved(entry.get("reviews", []), owner, entry.get("head_sha"))
+        rows.append({"pr": entry.get("number"), "commit": commit, "lane": result["lane"],
+                     "escalations": result["escalations"], "approved": ok})
+        if not ok:
+            problems.append(f"PR #{entry.get('number')} is lane C in this group, without {owner}'s approval of its head")
+        previous = commit
+    return rows, problems
+
+
 def run(parser, args):
+    if args.command == "queue":
+        entries = json.loads(Path(args.entries).read_text(encoding="utf-8"))
+        rows, problems = judge_queue(args.base, args.head, entries if isinstance(entries, list) else [])
+        print(json.dumps({"entries": rows, "problems": problems, "enforced": args.enforce}, indent=2))
+        for problem in problems:
+            print(f"policy: {problem}", file=sys.stderr)
+        return 1 if problems and args.enforce else 0
+
     if args.command == "classify" and (args.reviews or args.enforce) and not args.head_sha:
         parser.error("--reviews and --enforce need --head-sha: approval is only ever of one commit")
 

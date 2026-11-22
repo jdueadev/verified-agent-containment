@@ -440,5 +440,97 @@ class KernelPurityTests(unittest.TestCase):
         self.assertTrue(all("cannot be read" in e for e in unreadable), unreadable)
 
 
+class QueueTests(unittest.TestCase):
+    """policy_check queue (#102) against a real temporary repository, so the commit walk,
+    the lane map of each parent and the diffs are git's, not a mock's."""
+
+    def setUp(self):
+        import shutil
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.git("init", "-q", "-b", "main")
+        self.git("config", "user.name", "t")
+        self.git("config", "user.email", "t@example.invalid")
+        (self.tmp / "ci").mkdir()
+        (self.tmp / "ci/lanes.toml").write_text((ROOT / "ci/lanes.toml").read_text(encoding="utf-8"), encoding="utf-8")
+        (self.tmp / "docs").mkdir()
+        (self.tmp / "docs/reference.md").write_text("base\n", encoding="utf-8")
+        (self.tmp / "AGENTS.md").write_text("rules\n", encoding="utf-8")
+        self.base = self.commit("base")
+        patcher = mock.patch.object(pc, "git", self.git)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", str(self.tmp), *args], capture_output=True, text=True,
+                              encoding="utf-8", check=True).stdout
+
+    def commit(self, message):
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", message)
+        return self.git("rev-parse", "HEAD").strip()
+
+    def edit(self, path, text, message):
+        target = self.tmp / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        return self.commit(message)
+
+    def entry(self, number, head, approved_at=None):
+        reviews = [{"user": {"login": "jdueadev"}, "state": "APPROVED", "commit_id": approved_at}] if approved_at else []
+        return {"number": number, "head_sha": head, "reviews": reviews}
+
+    def test_a_lane_a_change_and_an_approved_lane_c_change_pass(self):
+        a = self.edit("docs/reference.md", "changed\n", "lane A")
+        c = self.edit("AGENTS.md", "rules, changed\n", "lane C")
+        rows, problems = pc.judge_queue(self.base, c, [self.entry(1, "pr1head"), self.entry(2, "pr2head", "pr2head")])
+        self.assertEqual(problems, [])
+        self.assertEqual([r["lane"] for r in rows], ["A", "C"])
+
+    def test_an_unapproved_or_stale_approved_lane_c_member_fails(self):
+        c = self.edit("AGENTS.md", "rules, changed\n", "lane C")
+        for entry in (self.entry(7, "pr7head"), self.entry(7, "pr7head", "older")):
+            with self.subTest(entry=entry["reviews"]):
+                _, problems = pc.judge_queue(self.base, c, [entry])
+                self.assertTrue(any("PR #7 is lane C" in p for p in problems), problems)
+
+    def test_a_path_moved_into_lane_c_earlier_in_the_group_binds_a_later_member(self):
+        # The attack the design review found: PR 1 (approved) moves docs/secret.md into
+        # lane C; PR 2 touches it and was lane B when it was checked alone.
+        lanes = (self.tmp / "ci/lanes.toml").read_text(encoding="utf-8")
+        moved = lanes.replace("C = [\n", 'C = [\n  "docs/secret.md",\n', 1)
+        self.assertNotEqual(moved, lanes)
+        first = self.edit("ci/lanes.toml", moved, "PR 1: promote docs/secret.md")
+        second = self.edit("docs/secret.md", "now in lane C\n", "PR 2: touches it")
+        rows, problems = pc.judge_queue(self.base, second,
+                                        [self.entry(1, "pr1head", "pr1head"), self.entry(2, "pr2head")])
+        self.assertEqual([r["lane"] for r in rows], ["C", "C"])
+        self.assertTrue(any("PR #2 is lane C" in p for p in problems), problems)
+        del first
+
+    def test_the_group_must_be_one_linear_commit_per_entry(self):
+        a = self.edit("docs/reference.md", "changed\n", "one")
+        _, problems = pc.judge_queue(self.base, a, [self.entry(1, "x"), self.entry(2, "y")])
+        self.assertTrue(any("1 commits for 2 entries" in p for p in problems), problems)
+        _, problems = pc.judge_queue(self.base, a, [])
+        self.assertTrue(problems)
+        # A merge commit in the range is refused.
+        self.git("checkout", "-q", "-b", "side", self.base)
+        side = self.edit("docs/other.md", "side\n", "side")
+        self.git("checkout", "-q", "main")
+        self.git("merge", "-q", "--no-ff", "-m", "merge", side)
+        merged = self.git("rev-parse", "HEAD").strip()
+        _, problems = pc.judge_queue(self.base, merged, [self.entry(1, "x"), self.entry(2, "y")])
+        self.assertTrue(problems, "a merge commit was accepted")
+
+    def test_the_command_fails_only_when_enforced(self):
+        c = self.edit("AGENTS.md", "rules, changed\n", "lane C")
+        entries = self.tmp / "entries.json"
+        entries.write_text(json.dumps([self.entry(3, "h")]), encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(pc.main(["queue", "--base", self.base, "--head", c, "--entries", str(entries), "--enforce"]), 1)
+            self.assertEqual(pc.main(["queue", "--base", self.base, "--head", c, "--entries", str(entries)]), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
