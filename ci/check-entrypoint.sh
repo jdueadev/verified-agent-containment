@@ -6,7 +6,7 @@
 #   - CI=true, so a missing tool fails instead of printing SKIPPED;
 #   - the run has the hardening the wrapper asks for: uid 1000, no network
 #     but loopback, an empty capability bounding set, no_new_privs, and a
-#     read-only root filesystem, checkout and gitdir;
+#     read-only root filesystem, checkout and gitdir (read from mountinfo);
 #   - the checkout's files, copied from the read-only /src into the scratch
 #     volume /work, show the same `git status` there as in /src, and no file
 #     is marked assume-unchanged or skip-worktree;
@@ -15,13 +15,19 @@
 #     a recorded lab commit (results/ci/lab-*, results/wsl2/lab-*) is an
 #     ancestor of HEAD. tools/claims_check.py treats a git failure as "stale"
 #     or "no lab run", so without this a broken mount would pass quietly;
-#   - the image was built from this checkout's pins, Dockerfile, entrypoint,
-#     toolchain file, Cargo.lock and crate manifests;
+#   - the image's inputs (pins, Dockerfile, entrypoint, wrapper, toolchain
+#     file, Cargo.toml, Cargo.lock, crate manifests) are committed, and the
+#     image was built from exactly those files: its baked build context
+#     matches them, and its hash is the one the wrapper built;
 #   - every tool reports exactly the version ci/pins.env and
 #     rust-toolchain.toml pin.
 # It also fails if check.sh printed SKIPPED or a unit test was skipped. A
-# passing run ends with a "Tier: T1 (container, ...)" line naming the image
-# id, HEAD, whether the tree had uncommitted changes, and the arguments.
+# passing run on a clean tree ends with a "Tier: T1 (container, ...)" line
+# naming the image id, the context hash, HEAD and the arguments. On a tree
+# with uncommitted changes it says so and prints no tier line.
+#
+# These checks catch accidents and honest mistakes. They are not a defence
+# against a hostile image, which could print anything.
 #
 # Usage (through the wrapper): [--no-strict]   run scripts/check.sh
 #                              --affected REF  run claims_check.py --affected REF
@@ -30,11 +36,9 @@ set -euo pipefail
 
 SRC=/src          # the checkout, mounted read-only
 WORK=/work        # a fresh scratch volume
-BAKED=/opt/check  # the files the image was built from
-SKEL=/opt/check-skel  # the manifests the baked cargo registry was fetched for
+CONTEXT=/opt/check-context  # the build context the image was built from
 REPO="$WORK/repo"
-PINNED_FILES=(ci/pins.env ci/check.Dockerfile ci/check-entrypoint.sh rust-toolchain.toml Cargo.lock)
-REQUIRED_PINS=(BUN_VERSION NODE_VERSION JAVA_VERSION JRE_VERSION PYTHON_VERSION BEND_COMMIT TLA_SHA256)
+REQUIRED_PINS=(BUN_VERSION NODE_VERSION JAVA_VERSION CHECK_JRE_VERSION CHECK_PYTHON_VERSION BEND_COMMIT TLA_SHA256)
 
 say() { echo "check-container: $*" >&2; }
 die() { echo "check-container: error: $*" >&2; exit 1; }
@@ -124,24 +128,57 @@ check_history() {
   [ "$ancestors" -gt 0 ] || die "no recorded lab commit is an ancestor of HEAD; the history is incomplete"
 }
 
+# The build context, as scripts/check-in-container.sh assembles it. The image
+# carries a copy in $CONTEXT; its hash is the image tag and the reported
+# context hash, which anyone can recompute from a commit.
+context_files() {
+  printf '%s\n' ci/check.Dockerfile ci/check-entrypoint.sh ci/pins.env rust-toolchain.toml Cargo.toml Cargo.lock
+  find crates -mindepth 2 -maxdepth 2 -name Cargo.toml -type f
+}
+
+context_hash() {  # run in a directory laid out like the context
+  find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
+}
+
+# The inputs the image was built from must be committed, so the context hash
+# names files that exist at HEAD.
+check_inputs_committed() {
+  local inputs
+  mapfile -t inputs < <(context_files)
+  inputs+=(scripts/check-in-container.sh)
+  git diff --quiet HEAD -- "${inputs[@]}" \
+    || die "the image's inputs have uncommitted changes ($(git diff --name-only HEAD -- "${inputs[@]}" | tr '\n' ' ')); commit them first"
+  [ -z "$(git ls-files --others --exclude-standard -- "${inputs[@]}")" ] \
+    || die "the image's inputs include untracked files; commit them first"
+}
+
 check_image() {
-  local f
-  for f in "${PINNED_FILES[@]}"; do
-    cmp -s "$BAKED/$f" "$f" \
+  local f baked here
+  baked="$(cd "$CONTEXT" && find . -type f | sed 's#^\./##' | LC_ALL=C sort)"
+  here="$(context_files | LC_ALL=C sort)"
+  [ "$baked" = "$here" ] || die "the build inputs are not the ones this image was built from; rebuild with scripts/check-in-container.sh"
+  for f in $here; do
+    cmp -s "$CONTEXT/$f" "$f" \
       || die "$f is not the one this image was built from; rebuild with scripts/check-in-container.sh"
   done
-  # The manifests the baked registry was fetched for.
-  local baked here
-  baked="$(cd "$SKEL" && find Cargo.toml crates -name Cargo.toml -type f | LC_ALL=C sort)"
-  here="$(find Cargo.toml crates -name Cargo.toml -type f | LC_ALL=C sort)"
-  [ "$baked" = "$here" ] || die "the crate manifests are not the ones this image was built from; rebuild"
-  for f in $here; do
-    cmp -s "$SKEL/$f" "$f" || die "$f is not the one this image was built from; rebuild"
-  done
+  cmp -s "$CONTEXT/ci/check-entrypoint.sh" "${BASH_SOURCE[0]}" || die "this entrypoint is not the image's own"
+  CONTEXT_HASH="$(cd "$CONTEXT" && context_hash)"
+  [ "$CONTEXT_HASH" = "${CHECK_CONTEXT_HASH:-}" ] \
+    || die "the context hash is $CONTEXT_HASH, but the wrapper built ${CHECK_CONTEXT_HASH:-nothing}"
+}
+
+# Whether a mount is read-only, from its per-mount options in mountinfo. The
+# last entry for a mount point is the one on top.
+mount_is_ro() {
+  local opts
+  opts="$(awk -v p="$1" '$5 == p { o = $6 } END { print o }' /proc/self/mountinfo)"
+  [ -n "$opts" ] || die "$1 is not a mount point"
+  [[ ",$opts," == *,ro,* ]]
 }
 
 # The run's own hardening, as scripts/check-in-container.sh asks for it. A
-# hand-made `docker run` without it does not get a T1 line.
+# hand-made `docker run` without it does not get a T1 line. Nothing here
+# writes: a probe file would land in the checkout if the mount were writable.
 check_hardening() {
   [ "$(id -u):$(id -g)" = 1000:1000 ] || die "not running as uid 1000"
   local nets
@@ -151,9 +188,10 @@ check_hardening() {
   # capabilities either way, but only --cap-drop=ALL empties the bounding set.
   grep -qE '^CapBnd:[[:space:]]+0+$' /proc/self/status || die "capabilities are not dropped; run with --cap-drop=ALL"
   grep -qE '^NoNewPrivs:[[:space:]]+1$' /proc/self/status || die "no_new_privs is off; run with --security-opt=no-new-privileges"
-  if touch /opt/.check-probe 2>/dev/null; then die "the root filesystem is writable; run with --read-only"; fi
-  if touch "$SRC/.check-probe" 2>/dev/null; then die "$SRC is writable; mount it read-only"; fi
-  if touch "${GIT_DIR:?}/.check-probe" 2>/dev/null; then die "the gitdir is writable; mount it read-only"; fi
+  mount_is_ro / || die "the root filesystem is mounted read-write; run with --read-only"
+  mount_is_ro "$SRC" || die "$SRC is mounted read-write; mount the checkout read-only"
+  mount_is_ro /git || die "/git is mounted read-write; mount the gitdir read-only"
+  [[ "${GIT_DIR:?}" == /git || "$GIT_DIR" == /git/* ]] || die "GIT_DIR $GIT_DIR is not under the /git mount"
 }
 
 read_pins() {
@@ -182,10 +220,10 @@ check_tools() {
   expect node "$(node --version)" "v${PIN[NODE_VERSION]}"
   local java
   java="$(java -XshowSettings:properties -version 2>&1 | sed -n 's/^ *java\.runtime\.version = //p')"
-  [[ "${PIN[JRE_VERSION]}" == "${PIN[JAVA_VERSION]}".* ]] \
-    || die "JRE_VERSION ${PIN[JRE_VERSION]} is not Java ${PIN[JAVA_VERSION]}"
-  expect java "${java%-LTS}" "${PIN[JRE_VERSION]}"
-  expect python3 "$(python3 --version)" "Python ${PIN[PYTHON_VERSION]}"
+  [[ "${PIN[CHECK_JRE_VERSION]}" == "${PIN[JAVA_VERSION]}".* ]] \
+    || die "CHECK_JRE_VERSION ${PIN[CHECK_JRE_VERSION]} is not Java ${PIN[JAVA_VERSION]}"
+  expect java "${java%-LTS}" "${PIN[CHECK_JRE_VERSION]}"
+  expect python3 "$(python3 --version)" "Python ${PIN[CHECK_PYTHON_VERSION]}"
   [ "$(command -v bend)" = /usr/local/bin/bend ] && grep -qF /opt/bend/bend2/main.ts /usr/local/bin/bend \
     || die "bend is not the pinned checkout in /opt/bend"
   expect bend "$(GIT_DIR=/opt/bend/.git git rev-parse HEAD)" "${PIN[BEND_COMMIT]}"
@@ -202,6 +240,8 @@ main() {
   [ "${CI:-}" = true ] || die "CI must be true, so that a missing tool fails instead of printing SKIPPED"
   [[ "${CHECK_IMAGE_ID:-}" =~ ^sha256:[0-9a-f]{64}$ ]] \
     || die "CHECK_IMAGE_ID is not set; start this with scripts/check-in-container.sh"
+  [[ "${CHECK_CONTEXT_HASH:-}" =~ ^[0-9a-f]{64}$ ]] \
+    || die "CHECK_CONTEXT_HASH is not set; start this with scripts/check-in-container.sh"
   case "${1:-}" in
     --affected) [ $# = 2 ] || die "usage: --affected REF" ;;
     --claims) [ $# = 1 ] || die "usage: --claims" ;;
@@ -212,6 +252,7 @@ main() {
   export GIT_WORK_TREE="$REPO" HOME="$WORK/home" TMPDIR=/tmp
   cd "$REPO"
   check_history
+  check_inputs_committed
   check_image
   read_pins
   # Cargo extracts crates into CARGO_HOME, so it gets a writable copy of the
@@ -221,7 +262,7 @@ main() {
   export CARGO_HOME="$WORK/cargo" CARGO_NET_OFFLINE=true
   check_tools
 
-  say "image $CHECK_IMAGE_ID"
+  say "image $CHECK_IMAGE_ID, context hash $CONTEXT_HASH"
   say "ci/check.Dockerfile sha256 $(sha256sum ci/check.Dockerfile | cut -d' ' -f1)"
   say "HEAD $HEAD_SHA ($TREE_STATE)"
   local t
@@ -250,7 +291,11 @@ main() {
   if grep -nE 'skipped=[0-9]' /tmp/check.log >&2; then
     die "a unit test was skipped, so this run is T0, not T1"
   fi
-  echo "Tier: T1 (container, image $CHECK_IMAGE_ID) at HEAD $HEAD_SHA ($TREE_STATE), scripts/check.sh${*:+ $*}"
+  if [ "$TREE_STATE" != clean ]; then
+    say "scripts/check.sh passed on a tree with uncommitted changes, so this is no T1 result for HEAD $HEAD_SHA"
+    return
+  fi
+  echo "Tier: T1 (container, image $CHECK_IMAGE_ID, context $CONTEXT_HASH) at HEAD $HEAD_SHA (clean), scripts/check.sh${*:+ $*}"
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

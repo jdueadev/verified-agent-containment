@@ -7,12 +7,13 @@
 # Usage:
 #   scripts/check-in-container.sh [--no-strict]   build if needed, run scripts/check.sh
 #   scripts/check-in-container.sh --affected REF  run claims_check.py --affected REF in it
-#   scripts/check-in-container.sh --build-only    build, print the image id
+#   scripts/check-in-container.sh --build-only    build, print the image id and context hash
 #
 # ENGINE=docker (the default) or ENGINE=podman. Nothing else can be set: every
 # pin comes from ci/pins.env and rust-toolchain.toml, passed as build-args.
-# A full run that passes ends with "Tier: T1 (container, image sha256:...)";
-# report the tier as that line gives it. The image is linux/amd64 only.
+# A full run that passes on a clean, committed tree ends with
+# "Tier: T1 (container, image sha256:..., context <hash>)"; report the tier as
+# that line gives it. The image is linux/amd64 only.
 set -euo pipefail
 
 die() { echo "check-in-container: error: $*" >&2; exit 1; }
@@ -64,8 +65,10 @@ else
 fi
 case "$root$common" in *,*) die "a path with a comma cannot be mounted: $root or $common" ;; esac
 
-# The build context holds only what the Dockerfile copies, and the image tag
-# is the hash of all of it, so a change to any of them builds a new image.
+# The build context holds only what the Dockerfile copies. Its hash (the
+# context hash) names the image, so a change to any of them builds a new
+# image, and anyone can recompute it from a commit: the sha256 of the sorted
+# `sha256sum ./<path>` lines of these files.
 ctx="$(mktemp -d)"
 trap 'rm -rf "$ctx"' EXIT
 shopt -s nullglob
@@ -77,8 +80,9 @@ for f in ci/check.Dockerfile ci/check-entrypoint.sh ci/pins.env rust-toolchain.t
   mkdir -p "$ctx/$(dirname "$f")"
   cp "$f" "$ctx/$f"
 done
-hash="$(cd "$ctx" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)"
-tag="vac-check:$hash"
+context_hash="$(cd "$ctx" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+[[ "$context_hash" =~ ^[0-9a-f]{64}$ ]] || die "could not hash the build context"
+tag="vac-check:${context_hash:0:16}"
 
 # Every key of ci/pins.env, as the Dockerfile's ARGs. It refuses a missing or
 # mismatched one.
@@ -94,9 +98,9 @@ done < ci/pins.env
 id="$("$ENGINE" image inspect --format '{{.Id}}' "$tag")" || die "cannot inspect $tag"
 id="sha256:${id#sha256:}"
 [[ "$id" =~ ^sha256:[0-9a-f]{64}$ ]] || die "unexpected image id '$id'"
-echo "check-in-container: built $tag, image $id" >&2
+echo "check-in-container: built $tag, image $id, context hash $context_hash" >&2
 if [ "$build_only" = 1 ]; then
-  echo "$id"
+  echo "$id $context_hash"
   exit 0
 fi
 
@@ -106,7 +110,7 @@ run=(run --rm --platform linux/amd64
   --mount "type=bind,src=$(native "$common"),dst=/git,readonly"
   --volume /work
   --tmpfs /tmp:rw,exec,nosuid,nodev
-  --env "GIT_DIR=$git_dir" --env "CHECK_IMAGE_ID=$id")
+  --env "GIT_DIR=$git_dir" --env "CHECK_IMAGE_ID=$id" --env "CHECK_CONTEXT_HASH=$context_hash")
 if [ "$ENGINE" = podman ]; then
   # /tmp is the tmpfs above. Rootless, map the host user to uid 1000 so the
   # bind mounts stay readable.
