@@ -1,6 +1,6 @@
 # Running live agents: reference
 
-Details for `containment-lab live`, the HUD, `ctl` and the red-team kit. For a guided first run, start with [`quickstart-local-model.md`](quickstart-local-model.md).
+Details for `containment-lab live`, the HUD, `ctl` and the red-team kit. For a guided first run, begin with [`quickstart-local-model.md`](quickstart-local-model.md).
 
 ## Commands and exit status
 
