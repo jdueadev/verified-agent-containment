@@ -11,11 +11,12 @@ base  runs every spec test file the base commit has. Head-only spec files are mo
       of the checkout first, so a new test cannot run beside the base spec. With --rust,
       each base file in crates/containment-kernel/tests/ runs first, as its own `cargo
       test --test NAME`, before any Python child has run head code. Then each base
-      Python test module runs in its own `python3 -I -B` process. Before each one, its
-      file is rewritten from the base commit and the head's __pycache__ is removed, so
-      an earlier child cannot have changed it on disk; the child loads it by path, so a
-      package or extension of the same name cannot stand in for it, and any such file
-      beside it fails the module.
+      Python test module runs in its own `python3 -I -B` process, in its own throwaway
+      copy of the head checkout, so a test may write into the repository without
+      reaching any other module. In that copy the module's file is rewritten from the
+      base commit and __pycache__ is removed; the child loads it by path, so a package
+      or extension of the same name cannot stand in for it, and any such file beside it
+      fails the module.
 new   runs only the head-only spec files, the same way. The workflow runs it in a
       separate job after `base`, so nothing it does can reach the base verdict.
 
@@ -202,13 +203,40 @@ def shadows(head, module):
                   if p.name != f"{module}.py" and p.name.split(".")[0] == module)
 
 
-def run_python_module(head, path, base_text=None, as_user=None):
+def own_copy(head):
+    """A throwaway copy of the head checkout (without target/) for one child, which may
+    write to it freely: some tests write into the repository, and a copy per child keeps
+    one child from changing what a later one runs or imports."""
+    work = Path(tempfile.mkdtemp(prefix="spec-module-"))
+    work.chmod(0o755)  # mkdtemp makes it 0700; the child's user must reach the copy inside
+    copy = work / "repo"
+    shutil.copytree(head, copy, symlinks=True, ignore=shutil.ignore_patterns("target"))
+    return work, copy
+
+
+def remove_copy(work, as_user):
+    # Files the child made belong to the child's user, so with as_user they are removed as root.
+    if as_user:
+        subprocess.run(["sudo", "-n", "rm", "-rf", "--", str(work)], capture_output=True)
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def run_python_module(head, path, base_text=None, as_user=None, isolate=False):
     """Run one test module in a fresh isolated interpreter and return {id: outcome}.
 
     With base_text, the module file is first rewritten from the base commit, so an
-    earlier child cannot have changed it on disk. The child loads the module by path
-    from the head's tools/ and writes its results into a directory made for it alone;
-    nothing it prints is parsed. Afterwards anything it left running is killed."""
+    earlier child cannot have changed it on disk. With isolate, the child runs in its
+    own copy of the checkout (own_copy), which `run` always asks for. The child loads
+    the module by path from tools/ and writes its results into a directory made for it
+    alone; nothing it prints is parsed. Afterwards anything it left running is killed."""
+    if isolate:
+        work, copy = own_copy(head)
+        try:
+            if as_user:
+                subprocess.run(["sudo", "-n", "chown", "-R", as_user, str(copy)], check=True, capture_output=True)
+            return run_python_module(copy, path, base_text, as_user, isolate=False)
+        finally:
+            remove_copy(work, as_user)
     module = Path(path).stem
     source = head / "tools" / f"{module}.py"
     if base_text is not None:
@@ -306,7 +334,7 @@ def run(mode, base_ref, head, rust, as_user=None):
                 continue
             if name.endswith(".py"):
                 expected = python_test_ids(Path(name).stem, text)
-                reported = run_python_module(head, name, text if mode == "base" else None, as_user)
+                reported = run_python_module(head, name, text if mode == "base" else None, as_user, isolate=True)
             else:
                 stem = Path(name).stem
                 expected = [f"{stem}::{t}" for t in rust_test_ids(text)]
