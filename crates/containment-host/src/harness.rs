@@ -264,6 +264,76 @@ fn agent_view_exact(view: &Value) -> (bool, Value) {
                    "seen": seen.len(), "expected": expected.len()}))
 }
 
+/// The sandbox's mounts, read by the host from the kernel, are exactly the fixed ones and
+/// the agent executable's libraries as the host's own loader lists them (`ldd`), each
+/// library read-only. Nothing here uses the resolver that builds the root
+/// (sandbox_view.rs), so a resolver that wrongly includes something is caught (#88).
+fn sandbox_mounts_exact(run_id: &str) -> (bool, Value) {
+    let fail = |why: String| (false, json!({ "error": why }));
+    let procs = match cgroup_root().map(|root| root.join(format!("verified-agent-containment-{run_id}/g1/cgroup.procs"))) {
+        Ok(path) => fs::read_to_string(path).unwrap_or_default(),
+        Err(e) => return fail(format!("cgroup root: {e}")),
+    };
+    // The agent is the process running /agent; its mount table is the sandbox's.
+    let Some(pid) = procs.split_whitespace().find(|pid| {
+        fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|c| c.split(|b| *b == 0).next() == Some(b"/agent".as_slice()))
+    }) else {
+        return fail("no process running /agent in the first generation".to_owned());
+    };
+    let Ok(table) = fs::read_to_string(format!("/proc/{pid}/mountinfo")) else {
+        return fail(format!("cannot read /proc/{pid}/mountinfo"));
+    };
+    let mut mounts = std::collections::BTreeMap::new();
+    for line in table.lines() {
+        let fields: Vec<&str> = line.split(' ').collect();
+        if let (Some(point), Some(options)) = (fields.get(4), fields.get(5)) {
+            mounts.insert((*point).to_owned(), (*options).to_owned());
+        }
+    }
+    let libraries = match std::env::current_exe().map_err(|e| e.to_string()).and_then(|exe| loader_libraries(&exe)) {
+        Ok(libs) => libs,
+        Err(e) => return fail(format!("ldd: {e}")),
+    };
+    let mut expected: std::collections::BTreeSet<String> =
+        ["/", "/proc", "/tmp", "/agent", "/gateway.sock"].iter().map(|s| (*s).to_owned()).collect();
+    expected.extend(libraries.iter().cloned());
+    let seen: std::collections::BTreeSet<String> = mounts.keys().cloned().collect();
+    let extra: Vec<&String> = seen.difference(&expected).take(40).collect();
+    let missing: Vec<&String> = expected.difference(&seen).collect();
+    let writable: Vec<&String> = libraries
+        .iter()
+        .filter(|lib| mounts.get(*lib).is_some_and(|o| !o.split(',').any(|f| f == "ro")))
+        .collect();
+    let exact = extra.is_empty() && missing.is_empty() && writable.is_empty() && !libraries.is_empty();
+    (exact, json!({ "extra": extra, "missing": missing, "writable": writable, "libraries": libraries, "mounts": seen.len() }))
+}
+
+/// The real paths of the libraries the host's dynamic loader would load for `exe`, as
+/// `ldd` reports them. The vDSO has no file and is skipped.
+fn loader_libraries(exe: &Path) -> Result<Vec<String>, String> {
+    let output = Command::new("ldd").arg(exe).output().map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+    }
+    let mut libs = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let line = line.trim();
+        let path = match line.split_once(" => ") {
+            Some((_, rest)) => rest.split(" (").next().unwrap_or(""),
+            None => line.split(" (").next().unwrap_or(""),
+        };
+        if path.starts_with('/') {
+            let real = fs::canonicalize(path).map_err(|e| format!("{path}: {e}"))?;
+            libs.push(real.display().to_string());
+        } else if !line.starts_with("linux-vdso") && !line.starts_with("linux-gate") && !line.is_empty() {
+            return Err(format!("unexpected ldd line {line:?}"));
+        }
+    }
+    libs.sort();
+    libs.dedup();
+    Ok(libs)
+}
+
 fn agent_value<'a>(events: &'a [Value], name: &str) -> &'a Value {
     events.iter().find(|item| item["event"] == name).map_or(&Value::Null, |item| &item["value"])
 }
@@ -359,6 +429,9 @@ fn execute(scenario: &str, weakness: &str, sequence: usize) -> Result<Value, Box
             while wait.elapsed() < Duration::from_secs(30) && !fs::read_to_string(run.private_dir.join("agent.jsonl")).unwrap_or_default().contains("\"pe_scan\"") {
                 sleep(Duration::from_millis(20));
             }
+            // The second, independent check of the view (#88), taken while the agent lives.
+            let (exact, detail) = sandbox_mounts_exact(&run.id);
+            checks.add("sandbox_mounts_exact", exact, detail);
         }
         "denied_hosts" => {
             let reached = wait_for_mode(&run, "restrict", Duration::from_secs(3));
@@ -875,4 +948,31 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     write_replace(&out, &serde_json::to_vec_pretty(&output)?)?;
     println!("runs {passed}/{} passed; sabotage {detected}/{} detected; admitted after commit {}; written after cut {}", runs.len(), sabotage.len(), sum("bytes_admitted_after_commit"), sum("bytes_written_after_cut"));
     if passed == runs.len() && detected == sabotage.len() { Ok(()) } else { Err("attack suite failed".into()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The resolver that builds the sandbox root and the host's own loader agree, on this
+    /// host, about which files the agent needs (#88). The lab's mount check relies on the
+    /// loader's list; this keeps the two from drifting apart unnoticed.
+    #[test]
+    fn the_resolver_and_the_hosts_loader_agree() {
+        let exe = std::env::current_exe().expect("current exe");
+        let plan = crate::sandbox_view::plan(&fs::read(&exe).expect("read exe"), Path::new("/")).expect("plan");
+        let planned: Vec<String> = plan
+            .iter()
+            .filter(|(_, entry)| **entry == crate::sandbox_view::Entry::File)
+            .map(|(path, _)| path.display().to_string())
+            .collect();
+        let listed = loader_libraries(&exe).expect("ldd");
+        assert!(!listed.is_empty());
+        assert_eq!(planned, listed);
+    }
+
+    #[test]
+    fn an_unreadable_executable_is_an_error_not_an_empty_list() {
+        assert!(loader_libraries(Path::new("/nonexistent/agent")).is_err());
+    }
 }
