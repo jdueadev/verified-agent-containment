@@ -91,7 +91,8 @@ branch, so a change cannot reclassify itself.
 - **Lane A, free:** documentation, the web demo, examples. Merges on a green
   `check`.
 - **Lane B, evidence-carrying:** kernel, formal model, host source, claims,
-  build configuration. Merges when `check` and the evidence checks are green.
+  build configuration. Merges when `check` and `policy` (which runs the
+  ratchets) are green. Its lab evidence is refreshed on `main` after the merge.
 - **Lane C, trusted base:** everything INV-3 names, lab results, any path the
   lane map does not list, and any change a ratchet flags. Needs the
   maintainer's approval.
@@ -117,10 +118,14 @@ shows which claims you touched.
 
 1. Keep going. Do not edit `claims.toml`, `results/` or `docs/claims.md` to
    clear it.
-2. Open the pull request as a **draft** and list the stale claim ids exactly
-   as the checker prints them.
-3. The maintainer runs the lab. The required checks, not you, decide when it
-   can merge.
+2. List the stale claim ids in the pull request exactly as the checker prints
+   them. Staleness does not block the merge: `main` may carry honestly stale
+   claims, and only a release must be fresh
+   (`docs/decisions/0002-repository-settings.md`).
+3. After the merge, the maintainer runs the lab on the resulting commit on
+   `main` and lands the evidence in a follow-up pull request. `main` is
+   squash-only, so a lab run on a branch commit can never be evidence for
+   `main`. The required checks, not you, decide when anything can merge.
 
 ## What "checked" means
 

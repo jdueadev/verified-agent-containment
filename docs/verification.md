@@ -26,18 +26,19 @@ python3 tools/claims_check.py --affected              # uncommitted edits vs HEA
 python3 tools/claims_check.py --affected origin/main  # entire branch vs origin/main
 ```
 
-## Pull request workflow (Draft vs Ready)
+## Pull request workflow
 
-CI (`.github/workflows/check.yml`) separates fast per-push checks from the merge-time lab freshness gate so you only run the root lab once per PR, not once per review round:
+`main` is squash-only with linear history, and `evidence-freshness` is not a required check (`docs/decisions/0002-repository-settings.md`). Freshness is enforced where the guarantees are made: on release tags.
 
-1. **Open the PR as a Draft.** On every push, the `check` job runs `scripts/check.sh --no-strict` (Bend proofs, TLA+, differential, mutation, Clippy, both unit-test builds, tooling tests, and non-strict `claims_check.py`). Formal proofs and source coverage (`CI-7`) are enforced on every commit; stale host claims print as warnings.
+1. **Open the PR.** On every push, the `check` job runs `scripts/check.sh --no-strict` (Bend proofs, TLA+, differential, mutation, Clippy, both unit-test builds, tooling tests, and non-strict `claims_check.py`). Formal proofs and source coverage (`CI-7`) are enforced on every commit; stale host claims print as warnings.
 2. **Iterate through review rounds** using fast unit tests and the `check` job.
-3. **Refresh committed evidence once on the final commit** before marking Ready:
-   * If `--affected origin/main` reports host lab claims, run the root lab once, commit the results, and update `claims.toml`.
-   * If `formal/host/*` or `formal/*.bend` changed, commit the regenerated `results/tla-check.json` (from `tools/tla_check.sh`) or `results/formal-verdict.json` (from `scripts/verdict.sh`), since `evidence-freshness` validates committed evidence on a clean checkout.
+3. **Commit evidence that CI can regenerate** on the final commit:
+   * If `formal/host/*` changed, commit the regenerated `results/tla-check.json` (from `tools/tla_check.sh`).
+   * If `formal/*.bend` changed, commit the regenerated `results/formal-verdict.json` (from `scripts/verdict.sh`) in the same PR. `CI-1` fails `check` until the verdict matches, so this one cannot wait for the merge; it needs the maintainer, since the agent environment has no Lean.
    * Regenerate `docs/claims.md` with `python3 tools/claims_check.py --write`.
-4. **Mark the PR Ready for Review.** The `evidence-freshness` job runs `python3 tools/claims_check.py --strict` as a merge gate—nothing merges to `main` with stale claims, missing dual-binary stamps, or partial/waived attack-suite runs.
-5. **Merge strategy for lab commits:** Because `CI-4` diffs against the commit SHA recorded in `claims.toml`, merge PRs that add a new branch lab commit with a regular merge commit (not squash), or update the recorded SHA to the squashed commit if squashing, so clean clones of `main` can resolve that commit.
+4. **Merge with honestly stale claims.** List the ids `--affected origin/main` prints in the PR. On Ready PRs and on `main`, the `evidence-freshness` job runs `python3 tools/claims_check.py --strict` and reports what is stale; it does not block the merge.
+5. **Refresh lab evidence on `main`, after the merge.** The maintainer runs the root lab on the squashed commit, which is on `main`, so `CI-4` can resolve the commit recorded in `claims.toml` from any clean clone. The results and the `platforms` update land in a follow-up PR. A lab run on a PR branch commit cannot be used: squashing means that commit never reaches `main`.
+6. **Release.** The `release` workflow requires every claim to be fresh under `--strict` on the tagged commit.
 
 ## What the laws cover
 

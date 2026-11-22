@@ -17,7 +17,7 @@ Closes #
 Any box ticked: heavy. None ticked: say why the change does not widen what any checker accepts.
 
 ## Claims affected
-<!-- Claim ids from claims.toml. Paste the stale ids exactly as `python3 tools/claims_check.py --affected origin/main` prints them. A change that stales a claim stays a draft until the lab has run. -->
+<!-- Claim ids from claims.toml. Paste the stale ids exactly as `python3 tools/claims_check.py --affected origin/main` prints them. A change that stales a claim may merge; the lab then runs on the resulting commit on main, and its evidence lands in a follow-up PR (AGENTS.md). -->
 
 ## Invariants touched
 <!-- INV-n from AGENTS.md, and how the change keeps each one. -->
