@@ -18,6 +18,7 @@ python3 tools/pins_check.py require cargo bend bun node java --file "${TLA2TOOLS
 # .github/CODEOWNERS is exactly lane C of ci/lanes.toml.
 python3 tools/policy_check.py invariants
 python3 tools/pins_check.py drift
+python3 tools/workflow_lint.py
 mkdir -p results target/generated
 (cd formal && bend PROOF.bend --check-only)
 bend formal/kernel.bend -o target/generated/kernel.mjs >/dev/null
