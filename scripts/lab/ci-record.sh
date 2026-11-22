@@ -11,7 +11,8 @@
 #   1. If no lab claim is stale at COMMIT, there is nothing to record: exit 0.
 #   2. tools/lab_record.py checks the run (CI-8, every claim's scenario and control
 #      evidence) and writes results/ci/lab-<sha7>/ and the platform entries.
-#   3. docs/claims.md is regenerated, and no lab claim may still be stale.
+#   3. docs/claims.md is regenerated; with the evidence staged, claims_check must
+#      report no errors and nothing stale.
 #   4. Older open evidence PRs are closed as superseded, and a PR from branch
 #      evidence/lab-<sha7> is opened with auto-merge requested. It edits
 #      `platforms`, so it is lane C: it merges when the maintainer approves it.
@@ -26,14 +27,15 @@ branch="evidence/lab-$short"
 
 [ "$(git rev-parse HEAD)" = "$commit" ] || { echo "ci-record: HEAD is not $commit" >&2; exit 1; }
 
-stale_lab_claims() {
-  # claims_check exits non-zero when it reports errors; the stale list is still printed.
+claims_report() {
+  # $1 is "stale" or "errors". claims_check exits non-zero when it reports errors;
+  # the report is printed either way.
   python3 tools/claims_check.py > "$RUNNER_TEMP/claims.json" || true
-  python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); print("\n".join(d.get("stale", [])))' \
-    "$RUNNER_TEMP/claims.json"
+  python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); print("\n".join(d[sys.argv[2]]))' \
+    "$RUNNER_TEMP/claims.json" "$1"
 }
 
-before="$(stale_lab_claims)"
+before="$(claims_report stale)"
 if [ -z "$before" ]; then
   echo "No lab claim is stale at $short; no evidence to record." | tee -a "$summary"
   exit 0
@@ -43,17 +45,20 @@ echo "Stale before recording:"; echo "$before"
 python3 tools/lab_record.py --results "$results" --commit "$commit" --platform gha-ubuntu-24.04 \
   | tee "$RUNNER_TEMP/record.json"
 python3 tools/claims_check.py --write > /dev/null || true
-after="$(stale_lab_claims)"
-if [ -n "$after" ]; then
-  echo "ci-record: claims are still stale after recording; refusing to open a PR:" >&2
-  echo "$after" >&2
-  exit 1
-fi
 
 git config user.name "lab workflow"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 git switch -c "$branch"
+# Staged first: CI-9 looks for the results among tracked files.
 git add claims.toml docs/claims.md "results/ci/lab-$short"
+after="$(claims_report stale)$(claims_report errors)"
+if [ -n "$after" ]; then
+  echo "ci-record: the recorded evidence does not leave claims_check clean; refusing to open a PR:" >&2
+  echo "$after" >&2
+  exit 1
+fi
+[ -z "$(git status --porcelain --untracked-files=no | grep -v '^[AM]  ')" ] \
+  || { echo "ci-record: unexpected changes besides the evidence" >&2; git status --short >&2; exit 1; }
 git commit -q -m "Lab evidence for $short from CI
 
 Recorded by scripts/lab/ci-record.sh from $run_url"
