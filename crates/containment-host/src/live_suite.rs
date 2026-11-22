@@ -27,6 +27,7 @@ impl Checks {
 const SCENARIOS: &[&str] = &[
     "benign", "canary_exfil", "unlisted_host", "write_to_read_host", "request_budget", "token_budget",
     "stop_cuts_upstream", "rebuild_discards_workspace", "credential_scoped", "hud_log_redacted", "slow_model_no_false_lag",
+    "reset_during_inference",
 ];
 /// (weakness, scenario, the check it must break, checks that must still pass).
 /// A sabotage counts as caught only when its own target check fails while the
@@ -41,7 +42,14 @@ const SABOTAGE: &[(&str, &str, &str, &[&str])] = &[
         &["taint_written_in_first_generation", "signed_reset_accepted", "second_generation_listed_workspace", "rebuilt_workspace_was_seeded"]),
     ("hud_log_unredacted", "hud_log_redacted", "hud_log_has_no_secrets", &["canary_url_refused"]),
     ("lag_from_receipt", "slow_model_no_false_lag", "no_classifier_signal", &["agent_finished_slowly"]),
+    ("live_lease_unbound", "reset_during_inference", "new_lease_counts_only_its_own_calls",
+        &["signed_reset_accepted", "call_in_flight_at_reset", "calls_after_reset"]),
 ];
+
+/// How long the first call of `reset_during_inference` takes at the mock model.
+const SLOW_CALL_MS: u64 = 1_500;
+/// What the mock model reports per call (usage.total_tokens).
+const MOCK_TOKENS_PER_CALL: u64 = 120;
 
 /// Small enough that the budget runs out within the script's ten calls.
 const TOKEN_BUDGET: u64 = 2_500;
@@ -85,6 +93,12 @@ fn script(scenario: &str, write: &str, read: &str, unlisted: &str) -> Vec<Value>
         // in by the mock once the run has started). The request is refused, but
         // the HUD log records the URL, so the canary must be masked there.
         "hud_log_redacted" => vec![call("list_dir", json!({"path": "."})), get(unlisted, "/?k={{file:CANARY_FILE}}"), finish],
+        // The first call is slow, so the operator's reset lands while it is in flight.
+        "reset_during_inference" => {
+            let mut first = call("list_dir", json!({"path": "."}));
+            first["delay_ms"] = json!(SLOW_CALL_MS);
+            vec![first, get(write, "/index.html"), finish]
+        }
         _ => vec![finish],
     }
 }
@@ -188,6 +202,18 @@ fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn
             checks.add("rebuilt_workspace_was_seeded", listing.contains("notes.txt"), json!(listing));
             checks.add("rebuilt_workspace_is_clean", !listing.contains("taint.txt"), json!(listing));
             fs::write(run.private_dir.join("stop"), "")?;
+        }
+        "reset_during_inference" => {
+            // The mock logs a request before it sleeps, so one entry means the call is in flight.
+            let began = Instant::now();
+            while model.entries().is_empty() && began.elapsed() < Duration::from_secs(5) {
+                sleep(Duration::from_millis(10));
+            }
+            // A reset needs a mode other than Run. Restrict keeps inference (baseline
+            // egress), so the slow call stays in flight across the reset.
+            let restrict = run.control(&json!({"op": "hard", "level": "restrict"}));
+            let reset = run.control(&run.signed_reset("restrict"));
+            checks.add("signed_reset_accepted", restrict["mode"] == "restrict" && reset["ok"] == true, json!({"restrict": restrict, "reset": reset}));
         }
         _ => {}
     }
@@ -296,6 +322,23 @@ fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn
             checks.add("write_host_saw_credential", writes.iter().any(|e| e["headers"]["authorization"] == json!(format!("Bearer {token}"))), json!(writes.len()));
             let echoed = transcript.iter().any(|e| e["event"] == "tool" && e["value"]["output"].as_str().is_some_and(|o| o.contains("[redacted]")));
             checks.add("echoed_credential_redacted", echoed && !transcript_text.contains(&token), json!({"redacted_seen": echoed}));
+        }
+        "reset_during_inference" => {
+            // Every call the model saw after the reset committed belongs to the new
+            // lease; the call already in flight belongs to the old one and must not
+            // be charged to the new lease (claim C-ARCH-05).
+            let entries = model.try_entries()?;
+            let reset = events.iter().find(|(e, to, _)| e == "signed_reset" && to == "run").map(|(_, _, ns)| *ns);
+            let first = entries.first().and_then(|e| e["ns"].as_u64());
+            // The slow call must also have completed, so its charge was settled.
+            let completed = transcript.iter().any(|e| e["event"] == "tool" && e["value"]["name"] == "list_dir");
+            let in_flight = completed && matches!((first, reset), (Some(f), Some(r)) if f < r && r < f + SLOW_CALL_MS * 1_000_000);
+            checks.add("call_in_flight_at_reset", in_flight, json!({"first_call_ns": first, "reset_commit_ns": reset, "completed": completed}));
+            let after = reset.map_or(0, |r| entries.iter().filter(|e| e["ns"].as_u64().is_some_and(|ns| ns > r)).count() as u64);
+            checks.add("calls_after_reset", after >= 1, json!(after));
+            let expected = after * MOCK_TOKENS_PER_CALL;
+            checks.add("new_lease_counts_only_its_own_calls", report["live"]["tokens"].as_u64() == Some(expected),
+                json!({"tokens": report["live"]["tokens"], "expected": expected, "epoch": report["live"]["epoch"]}));
         }
         _ => {}
     }

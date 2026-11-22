@@ -66,20 +66,21 @@ pub(super) struct SystemOneSpec {
 /// sockets, signals or namespaces, and the parent-death signal armed after the
 /// uid change (a uid change clears it).
 pub(super) fn spawn_system_one(spec: &SystemOneSpec, restarted: bool) -> std::io::Result<(Child, OwnedFd, UnixDatagram)> {
+    // Each descriptor is owned as soon as it exists, so an error path closes it.
     let mut pipe = [0; 2];
-    let mut pair = [0; 2];
-    // SAFETY: both arrays are valid two-element outputs.
-    unsafe {
-        if libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) != 0
-            || libc::socketpair(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0, pair.as_mut_ptr()) != 0
-        {
-            return Err(std::io::Error::last_os_error());
-        }
+    // SAFETY: `pipe` is a valid two-element output.
+    if unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(std::io::Error::last_os_error());
     }
-    // SAFETY: the calls above returned these descriptors and nothing else owns them.
-    let (trace_read, trace_write, mine, theirs) = unsafe {
-        (OwnedFd::from_raw_fd(pipe[0]), OwnedFd::from_raw_fd(pipe[1]), OwnedFd::from_raw_fd(pair[0]), OwnedFd::from_raw_fd(pair[1]))
-    };
+    // SAFETY: pipe2 returned these descriptors and nothing else owns them.
+    let (trace_read, trace_write) = unsafe { (OwnedFd::from_raw_fd(pipe[0]), OwnedFd::from_raw_fd(pipe[1])) };
+    let mut pair = [0; 2];
+    // SAFETY: `pair` is a valid two-element output.
+    if unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0, pair.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: socketpair returned these descriptors and nothing else owns them.
+    let (mine, theirs) = unsafe { (OwnedFd::from_raw_fd(pair[0]), OwnedFd::from_raw_fd(pair[1])) };
     // SAFETY: fcntl on descriptors this function owns.
     unsafe {
         libc::fcntl(trace_write.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK);
@@ -107,14 +108,16 @@ pub(super) fn spawn_system_one(spec: &SystemOneSpec, restarted: bool) -> std::io
                 return Err(std::io::Error::last_os_error());
             }
             // Move both ends above fd 4 first so dup2 cannot clobber one with the other,
-            // then place them and close everything else.
+            // then place them and mark everything else close-on-exec. Closing them
+            // here would also close std's exec-error pipe, and a failed exec would
+            // then look like a child that started and crashed.
             let high_read = libc::fcntl(read_fd, libc::F_DUPFD, 10);
             let high_out = libc::fcntl(out_fd, libc::F_DUPFD, 10);
             check(high_read)?;
             check(high_out)?;
             check(libc::dup2(high_read, crate::system_one::TRACE_FD))?;
             check(libc::dup2(high_out, crate::system_one::VERDICT_FD))?;
-            check(libc::syscall(libc::SYS_close_range, 5_u32, u32::MAX, 0_u32) as libc::c_int)?;
+            check(libc::syscall(libc::SYS_close_range, 5_u32, u32::MAX, libc::CLOSE_RANGE_CLOEXEC) as libc::c_int)?;
             let limit = |resource, value| check(libc::setrlimit(resource, &libc::rlimit { rlim_cur: value, rlim_max: value }));
             limit(libc::RLIMIT_NPROC, 64)?;
             limit(libc::RLIMIT_NOFILE, 64)?;
@@ -186,6 +189,16 @@ pub(super) fn read_verdicts(shared: &Shared, socket: &UnixDatagram, epoch: u64, 
     }
 }
 
+/// Marks System One down. Only activity after the outage began makes the agent
+/// count as busy, so the baseline is taken once, when the outage starts. A
+/// restart that fails again is the same outage and keeps it.
+fn outage_began(down: &mut Option<u64>, dropped_at_down: &AtomicU64, dropped: u64, now: u64) {
+    if down.is_none() {
+        *down = Some(now);
+        dropped_at_down.store(dropped, Ordering::SeqCst);
+    }
+}
+
 /// Keeps System One running. While it is down, trace records are dropped
 /// (which restricts) and the down timer runs (which holds a busy agent).
 pub(super) fn supervise_system_one(shared: Arc<Shared>, spec: SystemOneSpec) {
@@ -229,16 +242,50 @@ pub(super) fn supervise_system_one(shared: Arc<Shared>, spec: SystemOneSpec) {
             shared.dropped_logs.fetch_add(lost, Ordering::Relaxed);
             apply_classifier(&shared, Some("classifier_lost_records"), boot_ns(), Level::Restrict);
         }
-        {
-            let mut down = lock(&shared.s1_down_since);
-            if down.is_none() {
-                *down = Some(boot_ns());
-            }
-            // Only activity after this point makes the agent count as busy.
-            shared.s1_dropped_at_down.store(shared.dropped_logs.load(Ordering::Relaxed), Ordering::SeqCst);
-        }
+        outage_began(&mut lock(&shared.s1_down_since), &shared.s1_dropped_at_down, shared.dropped_logs.load(Ordering::Relaxed), boot_ns());
         shared.s1_restarts.fetch_add(1, Ordering::Relaxed);
         restarted = true;
         thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// C2: a System One that fails to restart on every pass is one outage. Its
+    /// baseline stays where the outage began, so records dropped during it
+    /// still make the agent count as busy.
+    #[test]
+    fn the_outage_baseline_survives_failed_restarts() {
+        let mut down = None;
+        let baseline = AtomicU64::new(0);
+        outage_began(&mut down, &baseline, 5, 100);
+        outage_began(&mut down, &baseline, 9, 200);
+        outage_began(&mut down, &baseline, 14, 300);
+        assert_eq!(down, Some(100));
+        assert_eq!(baseline.load(Ordering::SeqCst), 5);
+    }
+
+    /// C1: an exec failure reaches the caller as an error, not as a child that
+    /// looks like it started and then crashed.
+    #[test]
+    fn a_missing_system_one_binary_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("vac-s1-{}-{}", std::process::id(), boot_ns()));
+        fs::create_dir_all(&dir).expect("scratch dir");
+        fs::write(dir.join("cgroup.procs"), "").expect("procs");
+        let spec = SystemOneSpec {
+            exe: dir.join("missing"), profile: "lab", scenario: "none".into(), private_file: dir.join("private"),
+            uid: 0, confined: false, weak_filter: false, pipe_bytes: 64 * 1024, cgroup: dir.clone(),
+        };
+        let result = spawn_system_one(&spec, false);
+        let _ = fs::remove_dir_all(&dir);
+        match result {
+            Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}"),
+            Ok((mut child, _, _)) => {
+                let status = child.wait();
+                panic!("spawn reported success for a missing binary; the child exited with {status:?}");
+            }
+        }
     }
 }

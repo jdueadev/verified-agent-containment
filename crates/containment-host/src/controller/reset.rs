@@ -229,17 +229,9 @@ pub(super) fn reset_handler(shared: &Arc<Shared>, message: Value, peer: Option<l
     };
     let (before, result) = shared.apply(None, received, |now_ms| Event::Reset { now_ms, signed, counter, from_mode, not_after_ms, ttl_ms });
     let accepted = before.mode != Mode::Run && result.control.mode == Mode::Run;
-    if accepted {
-        // Budgets are per lease: an accepted reset starts a new one.
-        if let Some(live) = &shared.live {
-            // Held across the lease change so a release cannot interleave with it.
-            let mut used = lock(&live.used);
-            used.clear();
-            live.lease.fetch_add(1, Ordering::SeqCst);
-            live.tokens.store(0, Ordering::SeqCst);
-            drop(used);
-        }
-    }
+    // Budgets are per lease, and the lease is the kernel's reset_counter: the
+    // gateway opens a fresh book the first time it sees the new counter, so the
+    // reset itself changes no book.
     json!({"ok": accepted, "mode": mode_name(result.control.mode), "counter": result.control.reset_counter})
 }
 

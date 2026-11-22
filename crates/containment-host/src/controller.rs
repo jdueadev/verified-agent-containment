@@ -352,7 +352,7 @@ impl Shared {
             }
             Action::ThawProcesses => {
                 enforced.frozen = false;
-                self.write_freeze("0") && self.wait_generation(|g| !g.frozen())
+                self.write_freeze("0") && self.wait_generation(Generation::thawed)
             }
             Action::RecreateSandbox => {
                 // A fresh sandbox starts only after the old cgroup is confirmed empty.
@@ -382,6 +382,8 @@ impl Shared {
     fn enforcer(&self) {
         let mut enforced = Enforced::default();
         let mut failing_since: Option<Instant> = None;
+        // A freeze or kill logged ok:false whose confirmation is still to come.
+        let mut unconfirmed = false;
         let began = Instant::now();
         loop {
             if self.spec.scenario == "enforcer_stall" && began.elapsed() > Duration::from_millis(150) {
@@ -400,6 +402,9 @@ impl Shared {
                 let started = boot_ns();
                 let ok = self.perform(action, &mut enforced);
                 self.bounded_push(&self.actions, json!({"action": action_name(action), "start_ns": started, "end_ns": boot_ns(), "ok": ok}));
+                if matches!(action, Action::FreezeProcesses | Action::KillProcesses) {
+                    unconfirmed = !ok;
+                }
                 if !ok && !self.weak.ignore_actuator_failure() {
                     // Retry from the reconcile path, in the same order.
                     if matches!(action, Action::RecreateSandbox | Action::ThawProcesses) {
@@ -409,7 +414,17 @@ impl Shared {
                 self.enforcer_busy.store(false, Ordering::SeqCst);
                 ok
             } else {
-                self.drive(enforced)
+                let started = boot_ns();
+                let ok = self.drive(enforced);
+                // A freeze or kill whose own wait timed out (logged ok:false) and
+                // that reconcile later confirms is logged too, so the run shows when
+                // it took hold.
+                if ok && unconfirmed && (enforced.frozen || enforced.killed.is_some()) {
+                    unconfirmed = false;
+                    let action = if enforced.killed.is_some() { Action::KillProcesses } else { Action::FreezeProcesses };
+                    self.bounded_push(&self.actions, json!({"action": action_name(action), "start_ns": started, "end_ns": boot_ns(), "ok": true, "via": "reconcile"}));
+                }
+                ok
             };
             if healthy || self.weak.ignore_actuator_failure() {
                 failing_since = None;
@@ -914,17 +929,21 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         thread::sleep(Duration::from_millis(1));
     }
     let final_control = *lock(&shared.control);
+    let events_error;
     let (populated, frozen, survivors, generation, limits) = {
         let generation = lock(&shared.generation);
-        let events = generation.events();
-        (events.contains("populated 1"), events.contains("frozen 1"),
-         fs::read_to_string(generation.path.join("cgroup.procs")).unwrap_or_default().lines().count(), generation.number, generation.limits())
+        // What cannot be read is reported as null, never as false or 0.
+        let state = generation.state();
+        events_error = state.as_ref().err().map(ToString::to_string);
+        let state = state.ok();
+        (state.and_then(|s| s.populated), state.and_then(|s| s.frozen),
+         fs::read_to_string(generation.path.join("cgroup.procs")).ok().map(|t| t.lines().count()), generation.number, generation.limits())
     };
     let report = json!({
-        "final_mode": mode_name(final_control.mode), "exit_cause": exit_cause, "populated": populated, "frozen": frozen, "survivors": survivors, "generation": generation, "limits": limits, "authority_pending": authority_pending_at_exit,
+        "final_mode": mode_name(final_control.mode), "exit_cause": exit_cause, "populated": populated, "frozen": frozen, "survivors": survivors, "generation": generation, "limits": limits, "authority_pending": authority_pending_at_exit, "events_error": events_error, "reset_counter": final_control.reset_counter,
         "transitions": *lock(&shared.transitions), "actions": *lock(&shared.actions), "classifier_signals": *lock(&shared.classifier_signals),
         "system_one_probe": *lock(&shared.s1_probe), "system_one_limits": *lock(&shared.s1_limits),
-        "live": shared.live.as_ref().map(|l| json!({"tokens": l.tokens.load(Ordering::SeqCst), "used": lock(&l.used).iter().map(|(k, v)| (k.clone(), json!({"requests": v.requests, "bytes": v.bytes}))).collect::<serde_json::Map<_, _>>()})), "system_one_restarts": shared.s1_restarts.load(Ordering::Relaxed), "log_overflow": shared.log_overflow.load(Ordering::Relaxed),
+        "live": shared.live.as_ref().map(|l| { let books = lock(&l.books); json!({"epoch": books.epoch(), "tokens": books.tokens(), "used": books.used().iter().map(|(k, v)| (k.clone(), json!({"requests": v.requests, "bytes": v.bytes}))).collect::<serde_json::Map<_, _>>()}) }), "system_one_restarts": shared.s1_restarts.load(Ordering::Relaxed), "log_overflow": shared.log_overflow.load(Ordering::Relaxed),
         "dropped_logs": shared.dropped_logs.load(Ordering::Relaxed), "monitor_alive": monitor.try_wait()?.is_none(),
         "sink_alive": sink.try_wait()?.is_none(),
         "renew_denied": shared.renew_denied.load(Ordering::Relaxed), "peer_rejected": shared.peer_rejected.load(Ordering::Relaxed),
