@@ -8,6 +8,9 @@ to watch that happen yourself. The style follows the
 | Recipe | Claim |
 | --- | --- |
 | [Containment only tightens](k-mono-01.md) | K-MONO-01 |
+| [Unconfirmed means stopped](h-act-01.md) (host) | H-ACT-01 |
+| [How the checks decide "passed": the kernel differential](r-diff-01.md) (checker) | R-DIFF-01 |
+| [What the lab measures: losing the monitor](h-lease-01.md) (lab) | H-LEASE-01 |
 
 ## Recipe template
 
@@ -59,8 +62,9 @@ generate. The prose around the regions is checked by review only.
 A snippet is a JSON file in [`snippets/`](snippets/): a kernel configuration, a
 start state, and up to 64 steps. Each step is an event and the results it must
 produce (`mode`, `deadline`, `clock`, `counter`, `actions`, and `access`
-checks). Numbers are whole numbers from 0 to 2^48 − 1, the largest the Bend
-kernel compiled to JavaScript accepts. `breaks` names a Bend mutant the claim cites (`mutant:NAME`), and
+checks). Numbers are whole numbers from 0 to 2^47 − 1. The Bend kernel
+compiled to JavaScript accepts up to 2^48 − 1, and this cap keeps the sum of
+two inputs, such as a time plus a lease, under that limit. `breaks` names a Bend mutant the claim cites (`mutant:NAME`), and
 `teeth` names the step and field that mutant must get wrong. The schema is
 strict: an unknown key or value is an error, so a typo cannot turn an
 expectation into a no-op. The one interpreter is
@@ -84,6 +88,25 @@ rejects `doc:` evidence that points into this folder. They still assert things,
 so treat them like tests: adding a snippet is a routine change, but removing or
 loosening an existing expectation or `teeth` is a heavy change in the sense of
 [`AGENTS.md`](../../AGENTS.md) and needs an issue first.
+
+## Host, checker and lab recipes
+
+Guarantees outside the Bend kernel follow the same template with three
+changes:
+
+- **No law.** Instead, a section that says where the guarantee is enforced or
+  checked, naming the file and function by link. Do not copy host, checker or
+  lab code onto the page.
+- **Watch the control** replaces **Break it**. Name the deliberate defect,
+  behind `cfg(feature = "sabotage")` for host code or in `RUST_MUTANTS` for the
+  Rust kernel, and the scenario or check that must catch it. Quote lab results
+  only from a committed file under `results/`, say which run produced them, and
+  never show them as live.
+- **No snippet.** Only the `claim` region is required; host behaviour cannot
+  run in a browser or without root.
+- **Reproduce** gives no command that needs root. Lab runs belong in a
+  throwaway machine (INV-11 in [`AGENTS.md`](../../AGENTS.md)), so link to
+  [`docs/verification.md`](../verification.md) instead.
 
 Recipes are documentation (lane A). They must not edit any file a claim lists,
 so nothing here can make evidence stale. The checker itself is trusted base
