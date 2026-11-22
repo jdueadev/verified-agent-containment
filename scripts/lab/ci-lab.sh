@@ -164,8 +164,11 @@ userns_after="$(cat "$userns_knob" 2>/dev/null || echo absent)"
 # the WSL2 and Linux VM labs. The check is unchanged; what was removed is recorded.
 usr_before="$(sudo du -sxh /usr 2>/dev/null | cut -f1)"
 trimmed=()
+# Also headers and documentation: the scan's cost is per file, and kernel headers,
+# Ruby docs, man pages and icons are a third of what is left. Kernel modules stay.
 for tree in /usr/local /usr/share/dotnet /usr/share/swift /usr/share/miniconda /usr/share/sbt \
-            /usr/share/kotlinc /usr/share/az_* /usr/lib/jvm /usr/lib/google-cloud-sdk /usr/lib/firefox; do
+            /usr/share/kotlinc /usr/share/az_* /usr/lib/jvm /usr/lib/google-cloud-sdk /usr/lib/firefox \
+            /usr/src/* /usr/share/ri /usr/share/doc /usr/share/man /usr/share/icons /usr/share/help; do
   [ -e "$tree" ] || continue
   if [ "$tree" = /usr/local ]; then
     sudo find /usr/local -mindepth 1 -maxdepth 1 -exec rm -rf {} + || fail "could not trim $tree"
@@ -177,7 +180,8 @@ done
 hash -r
 command -v python3 >/dev/null || fail "python3 is gone after trimming the runner image"
 usr_after="$(sudo du -sxh /usr 2>/dev/null | cut -f1)"
-usr_note="/usr $usr_before -> $usr_after; removed: ${trimmed[*]:-nothing}"
+usr_files="$(sudo find /usr /lib /lib64 -xdev 2>/dev/null | wc -l)"
+usr_note="/usr $usr_before -> $usr_after, $usr_files files under /usr and /lib*; removed: ${trimmed[*]:-nothing}"
 
 # The controller copies itself into /run/verified-agent-containment and executes
 # the copy, and hosted runners mount /run noexec (execve returns EACCES). Only
@@ -270,7 +274,7 @@ if [ "$status" -ne 0 ]; then
   (set +o pipefail; sudo find /usr /lib -xdev -type f 2>/dev/null | cut -d/ -f1-4 | sort | uniq -c | sort -rn | head -12) || true
   sudo python3 -I - <<'PY' || true
 import os, time
-start, files, pe = time.monotonic(), 0, 0
+start, files, pe = time.monotonic(), 0, []
 for top in ("/usr", "/lib", "/lib64"):
     for root, dirs, names in os.walk(top):
         if root.count("/") > 12:
@@ -281,10 +285,13 @@ for top in ("/usr", "/lib", "/lib64"):
             if os.path.isfile(path) and os.access(path, os.X_OK):
                 try:
                     with open(path, "rb") as f:
-                        pe += f.read(2) == b"MZ"
+                        if f.read(2) == b"MZ":
+                            pe.append(path)
                 except OSError:
                     pass
-print(f"scan like the agent's: {files} files, {pe} PE executables, {time.monotonic() - start:.1f}s as root without limits")
+print(f"scan like the agent's: {files} files, {len(pe)} PE executables, {time.monotonic() - start:.1f}s as root without limits")
+for path in pe[:20]:
+    print(f"  PE executable: {path}")
 PY
   if command -v strace >/dev/null || sudo apt-get install -y -q strace >/dev/null 2>&1; then
     sudo strace -f -qq -Z -e trace=all -o "$work/strace.txt" "$default" attack-suite --only benign --repeat 1 \
