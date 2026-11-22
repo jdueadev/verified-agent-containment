@@ -134,6 +134,20 @@ if [ -e "$userns_knob" ]; then
     || fail "could not allow unprivileged user namespaces for System One"
 fi
 userns_after="$(cat "$userns_knob" 2>/dev/null || echo absent)"
+# The controller copies itself into /run/verified-agent-containment and executes
+# the copy, and hosted runners mount /run noexec (execve returns EACCES). Only
+# that one directory gets a fresh tmpfs that allows exec; the rest of /run keeps
+# its options. Recorded with the results.
+run_dir=/run/verified-agent-containment
+run_opts="$(findmnt -no OPTIONS /run 2>/dev/null || echo unknown)"
+if [[ ",$run_opts," == *",noexec,"* ]]; then
+  sudo mkdir -p "$run_dir"
+  sudo mount -t tmpfs -o mode=0755,nosuid,nodev,exec tmpfs "$run_dir" \
+    || fail "could not mount an exec tmpfs at $run_dir"
+  run_note="/run is $run_opts; $run_dir mounted as its own tmpfs with exec"
+else
+  run_note="/run is $run_opts; nothing changed"
+fi
 # The record of this run, committed with the results by tools/lab_record.py.
 {
   echo "commit id: $(git rev-parse HEAD)"
@@ -142,6 +156,7 @@ userns_after="$(cat "$userns_knob" 2>/dev/null || echo absent)"
   echo "cgroup v2 controllers: $(cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null || echo none)"
   echo "cpus: $(nproc)"
   echo "kernel.apparmor_restrict_unprivileged_userns: $userns_before -> $userns_after"
+  echo "run directory: $run_note"
   echo "rust-toolchain channel: $pin"
   sed 's/^/rustc: /' <<<"$rustc_vv"
   echo "cargo: $cargo_v"
@@ -159,6 +174,7 @@ userns_after="$(cat "$userns_knob" 2>/dev/null || echo absent)"
   echo "- Cargo.lock sha256: \`$(sha256sum Cargo.lock | cut -d' ' -f1)\`"
   echo "- cgroup controllers: \`$(cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null || echo none)\`"
   echo "- apparmor_restrict_unprivileged_userns: $userns_before -> $userns_after"
+  echo "- run directory: $run_note"
   echo "- default build sha256: \`$default_sha\`"
   echo "- sabotage build sha256: \`$sabotage_sha\`"
   echo
@@ -194,7 +210,9 @@ fi
 if [ "$status" -ne 0 ]; then
   # Diagnostics for a runner the suites have not run on before: which syscalls fail.
   echo "::group::diagnostics"
-  findmnt -no TARGET,FSTYPE,OPTIONS /run /tmp /sys/fs/cgroup 2>&1 || true
+  for m in /run /run/verified-agent-containment /tmp /sys/fs/cgroup; do
+    echo "mount $m: $(findmnt -no FSTYPE,OPTIONS --target "$m" 2>&1)"
+  done
   echo "apparmor_restrict_unprivileged_userns: $(cat "$userns_knob" 2>/dev/null || echo absent)"
   echo "unprivileged_userns_clone: $(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null || echo absent)"
   echo "max_user_namespaces: $(cat /proc/sys/user/max_user_namespaces 2>/dev/null || echo absent)"
