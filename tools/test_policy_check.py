@@ -298,16 +298,24 @@ class EnforceExitTests(unittest.TestCase):
         self.assertEqual((code, result["lane"], result["needs_maintainer"]), (0, "A", False))
 
     def test_the_lane_map_comes_from_the_map_ref_not_the_head(self):
-        promoted = self.LANES_TEXT.replace('  "AGENTS.md",\n', "", 1).replace('A = [\n', 'A = [\n  "AGENTS.md",\n', 1)
-        self.assertNotEqual(promoted, self.LANES_TEXT)
-        head = dict(BASE, **{"ci/lanes.toml": promoted})
-        code, result = self.run_classify(["AGENTS.md", "ci/lanes.toml"], "--map-ref", "m", "--head-sha", "h1",
-                                         "--enforce", reviews=[], trees={"h": head, "b": head})
-        self.assertEqual((code, result["lane"]), (1, "C"))
-        # and the map-ref is what decides: promoting the path there makes AGENTS.md lane A.
+        def moved(lane):
+            text = self.LANES_TEXT.replace('  "AGENTS.md",\n', "", 1)
+            out = text.replace(f'{lane} = [\n', f'{lane} = [\n  "AGENTS.md",\n', 1)
+            self.assertNotEqual(out, text)
+            return dict(BASE, **{"ci/lanes.toml": out})
+
+        # Three different maps put AGENTS.md in three different lanes, so the lane
+        # reported shows which one was read. Only AGENTS.md is classified.
+        maps = {"b": moved("B"), "h": moved("A"), "m": dict(BASE, **{"ci/lanes.toml": self.LANES_TEXT})}
         code, result = self.run_classify(["AGENTS.md"], "--map-ref", "m", "--head-sha", "h1",
-                                         "--enforce", reviews=[], trees={"m": head})
-        self.assertEqual(result["paths"]["AGENTS.md"]["lane"], "A")
+                                         "--enforce", reviews=[], trees=maps)
+        self.assertEqual((code, result["paths"]["AGENTS.md"]["lane"], result["lane"]), (1, "C", "C"))
+        # and with the lanes rotated, the map-ref still decides.
+        maps = {"b": dict(BASE, **{"ci/lanes.toml": self.LANES_TEXT}),
+                "h": moved("B"), "m": moved("A")}
+        code, result = self.run_classify(["AGENTS.md"], "--map-ref", "m", "--head-sha", "h1",
+                                         "--enforce", reviews=[], trees=maps)
+        self.assertEqual((code, result["paths"]["AGENTS.md"]["lane"]), (0, "A"))
 
     def test_a_missing_lane_map_is_refused(self):
         with self.assertRaises(SystemExit) as stop:
