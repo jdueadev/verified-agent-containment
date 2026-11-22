@@ -25,6 +25,15 @@
 /crates/containment-host/src/live_suite.rs @jdueadev
 /crates/containment-host/src/redteam.rs @jdueadev
 /crates/containment-kernel/tests/ @jdueadev
+/crates/containment-host/ @jdueadev
+/.cargo/ @jdueadev
+/Cargo.toml @jdueadev
+/Cargo.lock @jdueadev
+/rust-toolchain.toml @jdueadev
+/crates/containment-kernel/Cargo.toml @jdueadev
+/crates/containment-kernel/build.rs @jdueadev
+/crates/containment-wasm/Cargo.toml @jdueadev
+/crates/containment-wasm/build.rs @jdueadev
 /results/attack-suite* @jdueadev
 /results/live-suite* @jdueadev
 /results/linux-vm/ @jdueadev

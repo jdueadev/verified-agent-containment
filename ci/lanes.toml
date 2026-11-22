@@ -47,6 +47,23 @@ C = [
   "crates/containment-host/src/live_suite.rs",
   "crates/containment-host/src/redteam.rs",
   "crates/containment-kernel/tests/**",
+  # Host containment code, and the inputs that can change the shipped binary
+  # without touching it. The lab gates honest mistakes, but the code under test
+  # can fool the lab, so these need the maintainer (#83). Every host source
+  # file but one is listed by a host lab claim.
+  "crates/containment-host/**",
+  ".cargo/**",
+  "Cargo.toml",
+  "Cargo.lock",
+  "rust-toolchain.toml",
+  # The kernel is compiled into the host. Its source stays lane B (laws,
+  # mutants and the differential test it), but a build script or a new
+  # dependency runs code during the host build.
+  "crates/containment-kernel/Cargo.toml",
+  "crates/containment-kernel/build.rs",
+  # The wasm build runs in `check` before the wasm differential judges it.
+  "crates/containment-wasm/Cargo.toml",
+  "crates/containment-wasm/build.rs",
   # Evidence that CI does not regenerate: the root lab runs and the Lean recheck.
   "results/attack-suite*",
   "results/live-suite*",
@@ -58,10 +75,6 @@ C = [
 B = [
   "crates/**",
   "formal/**",
-  "Cargo.toml",
-  "Cargo.lock",
-  ".cargo/**",
-  "rust-toolchain.toml",
   "rustfmt.toml",
   "clippy.toml",
   "claims.toml",

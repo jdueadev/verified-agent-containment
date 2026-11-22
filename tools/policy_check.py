@@ -14,7 +14,9 @@ classify   prints the lane of the diff between two commits. Lanes are defined in
            from a fork) fails unless the maintainer approved the head commit.
 codeowners checks that .github/CODEOWNERS is exactly lane C (--write regenerates it).
 invariants checks rules that hold on every commit: `sabotage` is not a default
-           feature, the lane map parses, and CODEOWNERS matches it.
+           feature, the lane map parses, CODEOWNERS matches it, and the kernel
+           stays pure (no_std, no unsafe, nothing beyond core, no build-time
+           file or environment reads).
 
 This script only reads the other commit's files through git. It never imports or
 runs them, so it is safe to run from the base branch against an untrusted head.
@@ -37,6 +39,7 @@ ROOT = Path(__file__).resolve().parent.parent
 LANES_FILE = "ci/lanes.toml"
 CODEOWNERS_FILE = ".github/CODEOWNERS"
 HOST_MANIFEST = "crates/containment-host/Cargo.toml"
+KERNEL_SRC = "crates/containment-kernel/src"
 ORDER = {"A": 0, "B": 1, "C": 2}
 SHRINK_FIELDS = ("files", "evidence", "depends_on")
 FIXED_FIELDS = ("statement", "falsifier")
@@ -286,6 +289,48 @@ def sabotage_default_errors(manifest_text):
     return [f"{HOST_MANIFEST}: `sabotage` is enabled by the default features"] if "sabotage" in seen else []
 
 
+# The kernel is lane B, but it is compiled into the host binary. Its laws, mutants
+# and the differential test check its decisions, not its side effects, so the
+# attributes that keep it pure are checked here on every commit (#83). Tokens, not
+# text: a comment or a string that names `std` is not code.
+KERNEL_ROOT_ATTRIBUTES = (("no_std",), ("forbid", "(", "unsafe_code", ")"))
+KERNEL_FORBIDDEN_MACROS = {"include", "include_str", "include_bytes", "env", "option_env"}
+
+
+def kernel_purity_errors(files):
+    """`files` maps each kernel source path to its text; `lib.rs` is the crate root."""
+    out = []
+    root = f"{KERNEL_SRC}/lib.rs"
+    if root not in files:
+        return [f"{root}: missing, so the kernel's purity cannot be checked"]
+    for path, text in sorted(files.items()):
+        try:
+            toks = [tok for kind, tok in rust_tokens.code_tokens(text) if kind != "doc"]
+        except rust_tokens.LexError as error:
+            out.append(f"{path}: cannot be read ({error}), so the kernel's purity cannot be checked")
+            continue
+        if path == root:
+            for attr in KERNEL_ROOT_ATTRIBUTES:
+                if not any(toks[i:i + 3 + len(attr) + 1] == ["#", "!", "[", *attr, "]"] for i in range(len(toks))):
+                    out.append(f"{path}: the crate attribute #![{''.join(attr)}] is missing")
+        for i, tok in enumerate(toks):
+            nxt = toks[i + 1] if i + 1 < len(toks) else ""
+            if tok in ("std", "alloc"):
+                out.append(f"{path}: uses `{tok}`; the kernel depends on nothing beyond `core`")
+            elif tok == "extern" and nxt == "crate":
+                out.append(f"{path}: `extern crate` brings in another crate")
+            elif tok in KERNEL_FORBIDDEN_MACROS and nxt == "!":
+                out.append(f"{path}: `{tok}!` reads a file or the environment at build time")
+            elif tok == "path" and i >= 2 and toks[i - 1] == "[" and toks[i - 2] == "#":
+                out.append(f"{path}: `#[path]` loads source from elsewhere")
+    return out
+
+
+def kernel_sources():
+    base = ROOT / KERNEL_SRC
+    return {p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8") for p in sorted(base.rglob("*.rs"))}
+
+
 def read(path):
     target = ROOT / path
     return target.read_text(encoding="utf-8") if target.exists() else None
@@ -352,7 +397,8 @@ def run(parser, args):
             return 0
         errors = codeowners_errors(owner, lanes, read(CODEOWNERS_FILE))
     else:
-        errors = codeowners_errors(owner, lanes, read(CODEOWNERS_FILE)) + sabotage_default_errors(read(HOST_MANIFEST))
+        errors = (codeowners_errors(owner, lanes, read(CODEOWNERS_FILE)) + sabotage_default_errors(read(HOST_MANIFEST))
+                  + kernel_purity_errors(kernel_sources()))
     print(json.dumps({"errors": errors}, indent=2))
     return 1 if errors else 0
 

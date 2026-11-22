@@ -80,8 +80,19 @@ class LaneTests(unittest.TestCase):
                      "results/formal-verdict.json", "docs/decisions/0001-agent-workflow.md"):
             self.assertEqual(self.lane(path), "C", path)
 
+    def test_host_code_and_build_inputs_are_lane_c(self):
+        # #83: the lab can be fooled by the code it tests, so host code needs the maintainer.
+        for path in ("crates/containment-host/src/controller.rs", "crates/containment-host/src/differential.rs",
+                     "crates/containment-host/src/controller/gateway.rs", "crates/containment-host/src/hud.html",
+                     "crates/containment-host/build.rs", "Cargo.toml", "Cargo.lock", ".cargo/config.toml",
+                     ".cargo/config", "rust-toolchain.toml", "rust-toolchain",
+                     "crates/containment-kernel/Cargo.toml", "crates/containment-kernel/build.rs",
+                     "crates/containment-wasm/Cargo.toml", "crates/containment-wasm/build.rs"):
+            self.assertEqual(self.lane(path), "C", path)
+
     def test_source_and_claims_are_lane_b(self):
-        for path in ("crates/containment-host/src/controller.rs", "formal/LAWS.bend", "claims.toml", "Cargo.toml",
+        for path in ("crates/containment-kernel/src/lib.rs", "crates/containment-wasm/src/lib.rs",
+                     "formal/LAWS.bend", "claims.toml",
                      "docs/claims.md", "results/differential.json", "tools/kernel_mutants.py", "README.md"):
             self.assertEqual(self.lane(path), "B", path)
 
@@ -354,6 +365,42 @@ class CodeownersAndInvariantTests(unittest.TestCase):
         self.assertTrue(pc.sabotage_default_errors('[features]\ndefault = ["sabotage"]\nsabotage = []\n'))
         self.assertTrue(pc.sabotage_default_errors('[features]\ndefault = ["lab"]\nlab = ["sabotage"]\nsabotage = []\n'))
         self.assertEqual(pc.sabotage_default_errors((ROOT / "crates/containment-host/Cargo.toml").read_text(encoding="utf-8")), [])
+
+
+class KernelPurityTests(unittest.TestCase):
+    ROOT_FILE = "crates/containment-kernel/src/lib.rs"
+    PURE = "//! Kernel.\n#![no_std]\n#![forbid(unsafe_code)]\npub fn f(x: u8) -> u8 { core::cmp::min(x, 1) }\n"
+
+    def errors(self, text, extra=None):
+        return pc.kernel_purity_errors({self.ROOT_FILE: text, **(extra or {})})
+
+    def test_the_real_kernel_is_pure(self):
+        self.assertEqual(pc.kernel_purity_errors(pc.kernel_sources()), [])
+
+    def test_a_pure_kernel_passes_and_comments_or_strings_do_not_count(self):
+        self.assertEqual(self.errors(self.PURE), [])
+        self.assertEqual(self.errors(self.PURE + '// uses std::fs\nconst S: &str = "std::env";\n'), [])
+
+    def test_each_root_attribute_is_required(self):
+        self.assertTrue(self.errors(self.PURE.replace("#![no_std]\n", "")))
+        self.assertTrue(self.errors(self.PURE.replace("#![forbid(unsafe_code)]\n", "")))
+        self.assertTrue(self.errors(self.PURE.replace("forbid(unsafe_code)", "deny(unsafe_code)")))
+        self.assertTrue(self.errors(self.PURE.replace("#![no_std]", "#[no_std]")))
+
+    def test_ways_out_of_core_are_refused(self):
+        for snippet in ("extern crate std;", "extern crate libc;", "use std::fs;", "extern crate alloc;", "use alloc::vec::Vec;",
+                        'const P: &str = include_str!("../../../examples/x");', 'include!("x.rs");',
+                        'const K: &str = env!("HOME");', 'const K: Option<&str> = option_env!("HOME");',
+                        '#[path = "../../../web/x.rs"]\nmod x;'):
+            with self.subTest(snippet=snippet):
+                self.assertTrue(self.errors(self.PURE + snippet + "\n"))
+
+    def test_every_kernel_file_is_checked_and_a_missing_root_fails(self):
+        self.assertTrue(self.errors(self.PURE, {"crates/containment-kernel/src/m.rs": "use std::io;\n"}))
+        self.assertTrue(pc.kernel_purity_errors({}))
+        unreadable = self.errors(self.PURE + 'const S: &str = "unterminated;\n')
+        self.assertTrue(unreadable)
+        self.assertTrue(all("cannot be read" in e for e in unreadable), unreadable)
 
 
 if __name__ == "__main__":
