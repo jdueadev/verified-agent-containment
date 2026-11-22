@@ -21,13 +21,13 @@ python3 tools/pins_check.py drift
 mkdir -p results target/generated
 (cd formal && bend PROOF.bend --check-only)
 bend formal/kernel.bend -o target/generated/kernel.mjs >/dev/null
-cargo test -q -p containment-kernel
-cargo clippy -q -p containment-kernel -p containment-host --all-targets -- -D warnings
-cargo test -q -p containment-host
+cargo test -q --locked -p containment-kernel
+cargo clippy -q --locked -p containment-kernel -p containment-host --all-targets -- -D warnings
+cargo test -q --locked -p containment-host
 # The sabotage build carries the deliberate defects; it must build, lint and test too.
-cargo clippy -q -p containment-host --all-targets --features sabotage -- -D warnings
-cargo test -q -p containment-host --features sabotage
-cargo build -q -p containment-host
+cargo clippy -q --locked -p containment-host --all-targets --features sabotage -- -D warnings
+cargo test -q --locked -p containment-host --features sabotage
+cargo build -q --locked -p containment-host
 target/debug/containment-lab differential-cases 5000 24301 > target/generated/differential.jsonl
 bun tools/differential.mjs target/generated/kernel.mjs target/generated/differential.jsonl | tee results/differential.json
 scripts/build-wasm.sh

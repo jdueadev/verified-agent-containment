@@ -61,6 +61,9 @@ C = [
   # dependency runs code during the host build.
   "crates/containment-kernel/Cargo.toml",
   "crates/containment-kernel/build.rs",
+  # The wasm build runs in `check` before the wasm differential judges it.
+  "crates/containment-wasm/Cargo.toml",
+  "crates/containment-wasm/build.rs",
   # Evidence that CI does not regenerate: the root lab runs and the Lean recheck.
   "results/attack-suite*",
   "results/live-suite*",

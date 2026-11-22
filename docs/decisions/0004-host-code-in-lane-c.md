@@ -36,13 +36,34 @@ Lane C gains:
 - the kernel's `Cargo.toml` and `build.rs`. A build script or a new
   dependency runs code during the host build.
 
-Kernel and wasm source stay lane B. Their behaviour is checked mechanically
-by the laws, the mutants and the differential test. A CLI crate split out of
-the host (#42) would also be lane B, which is that issue's purpose.
+- the wasm crate's `Cargo.toml` and `build.rs`. The wasm build runs in
+  `check` before the wasm differential judges it. `check.sh` and
+  `build-wasm.sh` now build with `--locked`.
+
+Kernel and wasm source stay lane B. Their decisions are checked
+mechanically by the laws, the mutants and the differential test. Those check
+decisions, not side effects, so `policy_check.py invariants` now also checks
+the kernel's purity on every commit. The crate root must keep `#![no_std]`
+and `#![forbid(unsafe_code)]`, and no kernel source may use `std` or
+`alloc`, `extern crate`, `include!`/`include_str!`/`include_bytes!`,
+`env!`/`option_env!` or `#[path]`. Without this check, deleting `no_std` in a
+lane B change would let the kernel do I/O inside the host binary.
+
+A CLI crate split out of the host (#42) would also be lane B, which is that
+issue's purpose.
 
 The `lab` check stays. It catches honest regressions before the maintainer
 reads the PR. The maintainer's review is the control against a deceptive
 change.
+
+## Residual risk, accepted
+
+A coordinated change to `kernel.bend`, the kernel and the wasm crate that
+alters a decision only on a rare input can pass the laws, the mutants and the
+differential test. The differential uses a fixed seed and 5,000 cases. Such a
+change stays pure, so it can only change a decision the laws do not pin.
+Moving kernel source to lane C would close this, at the cost of review for
+every kernel change.
 
 ## Consequences
 

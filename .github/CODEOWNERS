@@ -32,6 +32,8 @@
 /rust-toolchain.toml @jdueadev
 /crates/containment-kernel/Cargo.toml @jdueadev
 /crates/containment-kernel/build.rs @jdueadev
+/crates/containment-wasm/Cargo.toml @jdueadev
+/crates/containment-wasm/build.rs @jdueadev
 /results/attack-suite* @jdueadev
 /results/live-suite* @jdueadev
 /results/linux-vm/ @jdueadev
