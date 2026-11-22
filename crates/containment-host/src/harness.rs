@@ -212,6 +212,27 @@ fn action_end(report: &Value, name: &str, after: u64) -> Option<u64> {
         .and_then(|item| item["end_ns"].as_u64())
 }
 
+/// Whether the stop's freeze was confirmed by a read-back (#38, H1). Either the
+/// enforcer logged `freeze_processes` with `ok:true` after the stop commit
+/// (`commit_to_frozen_ms` is set), or the report's final read-back shows the
+/// stop held: frozen in Freeze, or, if the kernel's Freeze grace ran out first,
+/// a Kill whose `kill_processes` was confirmed and left nothing behind. Only
+/// exact `true`, `false` and `0` values count, so a read-back that is missing,
+/// `null` or unreadable fails.
+fn freeze_confirmed(report: &Value, metrics: &Value) -> (bool, Value) {
+    let logged = metrics["commit_to_frozen_ms"].is_number();
+    let frozen = report["final_mode"] == "freeze" && report["frozen"] == true;
+    let killed = report["final_mode"] == "kill" && metrics["commit_to_killed_ms"].is_number()
+        && report["populated"] == false && report["survivors"] == 0;
+    let actions: Vec<&Value> = report["actions"].as_array().map(|items| items.iter().filter(|a| a["action"] == "freeze_processes" || a["action"] == "kill_processes").collect()).unwrap_or_default();
+    let detail = json!({
+        "commit_to_frozen_ms": metrics["commit_to_frozen_ms"], "commit_to_killed_ms": metrics["commit_to_killed_ms"],
+        "final_mode": report["final_mode"], "frozen": report["frozen"], "populated": report["populated"], "survivors": report["survivors"],
+        "actuator_retries": report["actuator_retries"], "actions": actions,
+    });
+    (logged || frozen || killed, detail)
+}
+
 fn total_bytes<'a>(records: impl Iterator<Item = &'a Value>) -> u64 {
     records.map(|r| r["bytes"].as_u64().unwrap_or(0)).sum()
 }
@@ -659,6 +680,8 @@ fn execute(scenario: &str, weakness: &str, sequence: usize) -> Result<Value, Box
             } else {
                 let overflow = report["transitions"].as_array().is_some_and(|items| items.iter().any(|t| t["event"] == "classifier_overflow" && t["to"] == "restrict"));
                 checks.add("classifier_overflow_restricts", overflow, json!(overflow));
+                let (confirmed, detail) = freeze_confirmed(report, &metrics);
+                checks.add("freeze_confirmed", confirmed, detail);
             }
             if scenario == "monitor_crash" {
                 checks.add("positive_control_egress_before_trigger", bytes(sink, None) > 0, json!(bytes(sink, None)));
@@ -974,5 +997,55 @@ mod tests {
     #[test]
     fn an_unreadable_executable_is_an_error_not_an_empty_list() {
         assert!(loader_libraries(Path::new("/nonexistent/agent")).is_err());
+    }
+
+    fn confirmed(report: Value, metrics: Value) -> bool {
+        freeze_confirmed(&report, &metrics).0
+    }
+
+    #[test]
+    fn a_logged_freeze_after_the_commit_confirms() {
+        assert!(confirmed(json!({"final_mode":"freeze","frozen":false}), json!({"commit_to_frozen_ms":0.6,"commit_to_killed_ms":null})));
+    }
+
+    #[test]
+    fn an_unlogged_freeze_needs_a_frozen_read_back() {
+        let metrics = json!({"commit_to_frozen_ms":null,"commit_to_killed_ms":null});
+        assert!(confirmed(json!({"final_mode":"freeze","frozen":true}), metrics.clone()));
+        assert!(!confirmed(json!({"final_mode":"freeze","frozen":false}), metrics.clone()));
+        assert!(!confirmed(json!({"final_mode":"freeze","frozen":null}), metrics.clone()));
+        assert!(!confirmed(json!({"final_mode":"freeze"}), metrics.clone()));
+        assert!(!confirmed(json!({"final_mode":"freeze","frozen":"true"}), metrics.clone()));
+        // gateway_flood stops at lease expiry, so only a final Freeze counts.
+        // Stricter than needed for Hold, whose plan also freezes; never looser.
+        assert!(!confirmed(json!({"final_mode":"hold","frozen":true}), metrics.clone()));
+        // A controller that wrote no report.
+        assert!(!confirmed(json!({"final_mode":"controller_exited","failstop":null}), metrics));
+    }
+
+    #[test]
+    fn a_kill_counts_only_when_confirmed_and_empty() {
+        let killed = json!({"commit_to_frozen_ms":null,"commit_to_killed_ms":4.2});
+        let empty = json!({"final_mode":"kill","populated":false,"survivors":0});
+        assert!(confirmed(empty.clone(), killed.clone()));
+        // An unreadable cgroup reads as 0 survivors and not populated, so the
+        // kill itself must have been confirmed by the enforcer.
+        assert!(!confirmed(empty, json!({"commit_to_frozen_ms":null,"commit_to_killed_ms":null})));
+        assert!(!confirmed(json!({"final_mode":"kill","populated":true,"survivors":0}), killed.clone()));
+        assert!(!confirmed(json!({"final_mode":"kill","populated":false,"survivors":3}), killed.clone()));
+        assert!(!confirmed(json!({"final_mode":"kill","populated":null,"survivors":0}), killed.clone()));
+        assert!(!confirmed(json!({"final_mode":"kill","survivors":0}), killed.clone()));
+        // A confirmed kill and an empty cgroup outside Kill (a later reset) do not count.
+        assert!(!confirmed(json!({"final_mode":"run","populated":false,"survivors":0}), killed));
+    }
+
+    #[test]
+    fn the_detail_carries_the_read_back() {
+        let report = json!({"final_mode":"freeze","frozen":true,"populated":true,"survivors":4,"actuator_retries":1,
+            "actions":[{"action":"block_egress","ok":true},{"action":"freeze_processes","ok":false}]});
+        let (_, detail) = freeze_confirmed(&report, &json!({"commit_to_frozen_ms":null}));
+        assert_eq!(detail["actions"], json!([{"action":"freeze_processes","ok":false}]));
+        assert_eq!(detail["actuator_retries"], 1);
+        assert_eq!(detail["frozen"], true);
     }
 }
