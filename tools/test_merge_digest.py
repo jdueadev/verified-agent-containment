@@ -262,7 +262,11 @@ class ReportTests(unittest.TestCase):
         merges = [{"sha": full(LANE_C), "pulls": [1], "pr": pr(full(LANE_C), title=hostile)}]
         _, text = self.run_report(merges)
         lines = [line for line in text.splitlines() if "ping" in line]
-        self.assertEqual(len(lines), 2)  # the alert and the lane C row
+        # The alert, the lane C row, and one line per escalation: since #125 the gate also
+        # reports this fixture commit's edit to an existing test file.
+        self.assertGreaterEqual(len(lines), 2)
+        self.assertTrue(any(line.startswith("- **#1 ping") for line in lines))
+        self.assertTrue(any(line.startswith("| #1 ping") for line in lines))
         # Read it as GitHub renders it: entities decoded, the digest's own "#1 " link removed.
         shown = html.unescape("\n".join(lines)).replace("**#1 ", "**").replace("| #1 ", "| ")
         self.assertIn("ping", shown)
