@@ -31,6 +31,10 @@ C = [
   # Verifiers: a change to a checker is a change to the proof.
   "tools/claims_check.py",
   "tools/policy_check.py",
+  # Runs the base branch's spec against a head checkout (#125).
+  "tools/spec_run.py",
+  # Runs the known-bad corpus in ci/corpus/ against a head checkout (#125).
+  "tools/corpus_run.py",
   "tools/pins_check.py",
   "tools/rust_tokens.py",
   "tools/test_*.py",

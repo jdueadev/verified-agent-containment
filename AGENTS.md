@@ -29,10 +29,13 @@ Whether committed lab output is authentic is review-only.
 **INV-2. Never weaken evidence to get a green check.** Do not remove or reword
 a law, a mutant, a scenario or a sabotage control. Do not reword a claim's
 `statement` or `falsifier`, shrink its `files`, `evidence` or `depends_on`, or
-raise its `status`. If a check fails, the change is wrong or the claim is, and
-the maintainer decides which.
+raise its `status`. Do not edit or remove a test file (`tools/test_*.py`), a
+kernel test (`crates/containment-kernel/tests/`) or a corpus entry
+(`ci/corpus/`) that `main` already has: add new spec in new files. If a check
+fails, the change is wrong or the claim is, and the maintainer decides which.
 *Enforced by:* the ratchets in `tools/policy_check.py`, which move such a
-change to lane C.
+change to lane C. The spec ratchet compares by code, not text, so reformatting
+or a comment is not an edit (`docs/decisions/0005-root-judges-and-immutable-spec.md`).
 
 **INV-3. A checker is part of the proof.** Workflows, `scripts/`, the checker
 and verifier tools, the attack harness and suites, the kernel law tests, `ci/`

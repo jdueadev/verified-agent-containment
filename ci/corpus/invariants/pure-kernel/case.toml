@@ -1,0 +1,3 @@
+checker = "invariants"
+origin = "#125 seed: twin of the #86 bypasses"
+expect = "accept"
