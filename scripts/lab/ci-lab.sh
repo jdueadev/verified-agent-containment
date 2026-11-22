@@ -297,6 +297,21 @@ PY
     sudo strace -f -qq -Z -e trace=all -o "$work/strace.txt" "$default" attack-suite --only benign --repeat 1 \
       --allow-missing-limits --out "$work/diag.json" >/dev/null 2>&1 || true
     grep -E 'EACCES|EPERM' "$work/strace.txt" | head -40 || true
+    # sandbox_escape alone, with cgroup limits enforced as in the suite, timed.
+    for attempt in 1 2; do
+      t0=$SECONDS
+      sudo "$default" attack-suite --only sandbox_escape --repeat 1 --out "$work/diag-alone-$attempt.json" >/dev/null 2>&1 || true
+      sudo python3 -I - "$work/diag-alone-$attempt.json" "$((SECONDS - t0))" <<'PY' || true
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception as error:
+    print(f"sandbox_escape alone: no results ({error}) after {sys.argv[2]}s"); sys.exit()
+for run in data.get("runs", []):
+    bad = [c for c in run.get("checks", []) if not c.get("passed")]
+    print(f"sandbox_escape alone, limits on: passed={run.get('passed')} in {sys.argv[2]}s; failed checks: {json.dumps(bad)[:400]}")
+PY
+    done
     # What the sandbox_escape agent does before the harness stops waiting for its scan.
     sudo strace -f -qq -tt -o "$work/escape.txt" "$default" attack-suite --only sandbox_escape --repeat 1 \
       --allow-missing-limits --out "$work/diag-escape.json" >/dev/null 2>&1 || true
