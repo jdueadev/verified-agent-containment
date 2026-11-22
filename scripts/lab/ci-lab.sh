@@ -147,33 +147,11 @@ mkdir -p "$out"
 # noexec /run below.)
 userns_knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
 userns_setting="$(cat "$userns_knob" 2>/dev/null || echo absent)"
-# The sandbox mounts the host's /usr read-only, and the sandbox_escape scenario
-# reads the header of every executable the agent can see (no_windows_images_
-# reachable). Hosted runner images carry tens of GB of preinstalled SDKs under
-# /usr/local and /usr/share (Android, .NET, Swift, ...), so that scan outlasts the
-# harness's wait, and .NET ships PE images. After the build, those trees are
-# removed from this disposable runner so its /usr is like a stock install, as on
-# the WSL2 and Linux VM labs. The check is unchanged; what was removed is recorded.
-usr_before="$(sudo du -sxh /usr 2>/dev/null | cut -f1)"
-trimmed=()
-# Also headers and documentation: the scan's cost is per file, and kernel headers,
-# Ruby docs, man pages and icons are a third of what is left. Kernel modules stay.
-for tree in /usr/local /usr/share/dotnet /usr/share/swift /usr/share/miniconda /usr/share/sbt \
-            /usr/share/kotlinc /usr/share/az_* /usr/lib/jvm /usr/lib/google-cloud-sdk /usr/lib/firefox \
-            /usr/src/* /usr/share/ri /usr/share/doc /usr/share/man /usr/share/icons /usr/share/help; do
-  [ -e "$tree" ] || continue
-  if [ "$tree" = /usr/local ]; then
-    sudo find /usr/local -mindepth 1 -maxdepth 1 -exec rm -rf {} + || fail "could not trim $tree"
-  else
-    sudo rm -rf "$tree" || fail "could not trim $tree"
-  fi
-  trimmed+=("$tree")
-done
-hash -r
-command -v python3 >/dev/null || fail "python3 is gone after trimming the runner image"
-usr_after="$(sudo du -sxh /usr 2>/dev/null | cut -f1)"
-usr_files="$(sudo find /usr /lib /lib64 -xdev 2>/dev/null | wc -l)"
-usr_note="/usr $usr_before -> $usr_after, $usr_files files under /usr and /lib*; removed: ${trimmed[*]:-nothing}"
+# The runner image is used as it ships, preinstalled SDKs and all. The sandbox no
+# longer shows the agent the host's /usr (#88), so what is installed there is not
+# part of what the agent can see. (Earlier versions deleted ~35 GB of it to keep a
+# scan of the whole host /usr inside the harness's wait.)
+usr_note="not trimmed: $(sudo find /usr /lib /lib64 -xdev 2>/dev/null | wc -l) files under /usr and /lib*"
 
 # The controller copies itself into /run/verified-agent-containment and executes
 # the copy, and hosted runners mount /run noexec (execve returns EACCES). Only
@@ -198,7 +176,7 @@ fi
   echo "cpus: $(nproc)"
   echo "kernel.apparmor_restrict_unprivileged_userns: $userns_setting (unchanged)"
   echo "run directory: $run_note"
-  echo "runner image trimmed: $usr_note"
+  echo "runner image: $usr_note"
   echo "rust-toolchain channel: $pin"
   sed 's/^/rustc: /' <<<"$rustc_vv"
   echo "cargo: $cargo_v"
@@ -217,7 +195,7 @@ fi
   echo "- cgroup controllers: \`$(cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null || echo none)\`"
   echo "- apparmor_restrict_unprivileged_userns: $userns_setting (unchanged)"
   echo "- run directory: $run_note"
-  echo "- runner image trimmed: $usr_note"
+  echo "- runner image: $usr_note"
   echo "- default build sha256: \`$default_sha\`"
   echo "- sabotage build sha256: \`$sabotage_sha\`"
   echo
@@ -259,7 +237,7 @@ if [ "$status" -ne 0 ]; then
   echo "apparmor_restrict_unprivileged_userns: $(cat "$userns_knob" 2>/dev/null || echo absent)"
   echo "unprivileged_userns_clone: $(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null || echo absent)"
   echo "max_user_namespaces: $(cat /proc/sys/user/max_user_namespaces 2>/dev/null || echo absent)"
-  echo "runner image trimmed: $usr_note"
+  echo "runner image: $usr_note"
   # What the sandbox_escape scan walks: the host's /usr and /lib* are bound read-only.
   echo "files under /usr and /lib*: $(sudo find /usr /lib /lib64 /lib32 /libx32 -xdev 2>/dev/null | wc -l)"
   echo "busiest directories:"
