@@ -22,7 +22,9 @@ Nothing is written unless all of this holds:
   - No claim already records this platform at this commit.
 
 It also requires environment.txt to name SHA and the two binaries the JSON is
-stamped with. Then it copies the three files to results/ci/lab-<sha>/ (the full
+stamped with. Only claims in a layer a CI run speaks for (CI_LAYERS: "host") are recorded; an "os"
+claim such as L-ISO-02 (WSL2's interop handler) is reported as skipped and keeps
+the entries of labs that run that operating system. Then it copies the three files to results/ci/lab-<sha>/ (the full
 SHA) and appends one entry,
 `{ name = NAME, commit = <sha>, result = "pass (lab evidence: results/ci/lab-<sha>; ...)" }`, to
 the `platforms` line of every lab claim. It re-reads claims.toml afterwards and
@@ -138,6 +140,17 @@ def claim_support(claim, results):
     return problems
 
 
+# The layers a CI run on a GitHub-hosted runner speaks for. An "os" claim is about one
+# operating system's behaviour (L-ISO-02 is WSL2's interop handler), which this runner
+# does not exercise: such a claim keeps the platform entries of labs that do.
+CI_LAYERS = {"host"}
+
+
+def skipped_claims(claims):
+    """Lab claims a CI run must not record, because their layer is not one it speaks for."""
+    return [c for c in lab_claims(claims) if c.get("layer") not in CI_LAYERS]
+
+
 def lab_claims(claims):
     """Claims a lab run speaks to: those with a passing platform already, and tested ones
     whose evidence names a lab scenario or control, so that a new claim gets its first
@@ -184,7 +197,7 @@ def record(root, results_dir, commit, platform):
     claims_path = root / "claims.toml"
     before_text = claims_path.read_text(encoding="utf-8")
     claims = tomllib.loads(before_text).get("claim", [])
-    targets = lab_claims(claims)
+    targets = [c for c in lab_claims(claims) if c.get("layer") in CI_LAYERS]
     if not targets:
         raise RecordError("claims.toml has no lab claims to record")
     problems = []
@@ -231,7 +244,7 @@ def record(root, results_dir, commit, platform):
         (out / name).write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     shutil.copyfile(Path(results_dir) / ENVIRONMENT, out / ENVIRONMENT)
     claims_path.write_text(text, encoding="utf-8", newline="\n")
-    return [c["id"] for c in targets], where
+    return [c["id"] for c in targets], where, [c["id"] for c in skipped_claims(claims)]
 
 
 RECORDED = re.compile(r"^pass \(lab evidence: (results/ci/lab-([0-9a-f]{40}));")
@@ -273,11 +286,17 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--verify", action="store_true",
                         help="re-check every recorded CI entry; writes nothing")
+    parser.add_argument("--list-skipped", action="store_true",
+                        help="print the ids of lab claims a CI run does not record; writes nothing")
     parser.add_argument("--results")
     parser.add_argument("--commit")
     parser.add_argument("--platform")
     parser.add_argument("--root", default=str(claims_check.ROOT))
     args = parser.parse_args(argv)
+    if args.list_skipped:
+        claims = tomllib.loads((Path(args.root) / "claims.toml").read_text(encoding="utf-8")).get("claim", [])
+        print("\n".join(c["id"] for c in skipped_claims(claims)))
+        return 0
     if args.verify:
         problems = verify(args.root)
         print(json.dumps({"verified": not problems, "problems": problems}, indent=2))
@@ -285,11 +304,11 @@ def main(argv=None):
     if not (args.results and args.commit and args.platform):
         parser.error("--results, --commit and --platform are required unless --verify")
     try:
-        ids, where = record(args.root, args.results, args.commit, args.platform)
+        ids, where, skipped = record(args.root, args.results, args.commit, args.platform)
     except RecordError as error:
         print(f"lab_record: {error}", file=sys.stderr)
         return 1
-    print(json.dumps({"recorded": where, "claims": ids}, indent=2))
+    print(json.dumps({"recorded": where, "claims": ids, "skipped": skipped}, indent=2))
     return 0
 
 
