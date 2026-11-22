@@ -5,7 +5,7 @@ Usage:
   policy_check.py classify --base REF [--head REF] [--map-ref REF] [--reviews FILE --head-sha SHA]
                            [--fork] [--enforce]
   policy_check.py codeowners [--write]
-  policy_check.py invariants
+  policy_check.py invariants [--ref REF]
 
 classify   prints the lane of the diff between two commits. Lanes are defined in
            ci/lanes.toml. A ratchet raises the lane to C when the change removes
@@ -16,7 +16,9 @@ codeowners checks that .github/CODEOWNERS is exactly lane C (--write regenerates
 invariants checks rules that hold on every commit: `sabotage` is not a default
            feature, the lane map parses, CODEOWNERS matches it, and the kernel
            stays pure (no_std, no unsafe, nothing beyond core, no build-time
-           file or environment reads).
+           file or environment reads). With --ref it checks that commit, read
+           through git, instead of the working tree, so `policy` can run it from
+           the base branch against an untrusted head.
 
 This script only reads the other commit's files through git. It never imports or
 runs them, so it is safe to run from the base branch against an untrusted head.
@@ -32,7 +34,6 @@ import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from claims_check import RANK  # noqa: E402
 import rust_tokens  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,6 +44,10 @@ KERNEL_SRC = "crates/containment-kernel/src"
 ORDER = {"A": 0, "B": 1, "C": 2}
 SHRINK_FIELDS = ("files", "evidence", "depends_on")
 FIXED_FIELDS = ("statement", "falsifier")
+# Claim statuses, weakest first. A copy of claims_check.RANK, kept here so that
+# `policy` imports nothing but the lexer: it runs from the base branch, and any
+# module it imports runs inside the gate (#125). A test keeps the two equal.
+RANK = {"proved": 5, "checked-bounded": 4, "tested": 3, "assumed": 2, "planned": 1, "stale": 0}
 
 
 # ---------- lanes ----------
@@ -370,14 +375,30 @@ def kernel_purity_errors(files):
     return out
 
 
-def kernel_sources():
-    base = ROOT / KERNEL_SRC
-    return {p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8") for p in sorted(base.rglob("*.rs"))}
+def kernel_sources(ref=None):
+    """Every .rs file under the kernel's src/, from the working tree or, with ref, from that commit."""
+    if ref is None:
+        base = ROOT / KERNEL_SRC
+        return {p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8") for p in sorted(base.rglob("*.rs"))}
+    get = reader(ref)
+    names = git("ls-tree", "-r", "--name-only", f"{ref}^{{commit}}", "--", f"{KERNEL_SRC}/").splitlines()
+    return {name: get(name) for name in sorted(names) if name.endswith(".rs")}
 
 
 def read(path):
     target = ROOT / path
     return target.read_text(encoding="utf-8") if target.exists() else None
+
+
+def invariant_errors(get, kernel_files):
+    """The rules that hold on every commit, over files read by `get`."""
+    lanes_text = get(LANES_FILE)
+    if lanes_text is None:
+        return [f"{LANES_FILE}: missing"]
+    owner, lanes = load_lanes(lanes_text)
+    manifest = get(HOST_MANIFEST)
+    manifest_errors = sabotage_default_errors(manifest) if manifest is not None else [f"{HOST_MANIFEST}: missing"]
+    return codeowners_errors(owner, lanes, get(CODEOWNERS_FILE)) + manifest_errors + kernel_purity_errors(kernel_files)
 
 
 def main(argv=None):
@@ -393,7 +414,8 @@ def main(argv=None):
     c.add_argument("--enforce", action="store_true")
     o = sub.add_parser("codeowners")
     o.add_argument("--write", action="store_true")
-    sub.add_parser("invariants")
+    i = sub.add_parser("invariants")
+    i.add_argument("--ref", help="check this commit, read through git, instead of the working tree")
     args = parser.parse_args(argv)
     try:
         return run(parser, args)
@@ -434,15 +456,16 @@ def run(parser, args):
             return 1 if args.enforce else 0
         return 0
 
-    owner, lanes = load_lanes(read(LANES_FILE))
     if args.command == "codeowners":
+        owner, lanes = load_lanes(read(LANES_FILE))
         if args.write:
             (ROOT / CODEOWNERS_FILE).write_text(codeowners_text(owner, lanes), encoding="utf-8", newline="\n")
             return 0
         errors = codeowners_errors(owner, lanes, read(CODEOWNERS_FILE))
+    elif args.ref:
+        errors = invariant_errors(reader(args.ref), kernel_sources(args.ref))
     else:
-        errors = (codeowners_errors(owner, lanes, read(CODEOWNERS_FILE)) + sabotage_default_errors(read(HOST_MANIFEST))
-                  + kernel_purity_errors(kernel_sources()))
+        errors = invariant_errors(read, kernel_sources())
     print(json.dumps({"errors": errors}, indent=2))
     return 1 if errors else 0
 
