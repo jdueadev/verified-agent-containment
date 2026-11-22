@@ -121,11 +121,19 @@ def analyze(merge):
     owner, lanes = policy_check.load_lanes(lanes_text)
     result = policy_check.classify(paths, policy_check.reader(parent), policy_check.reader(sha), lanes)
     claims_text = policy_check.reader(sha)("claims.toml") or ""
-    claims = tomllib.loads(claims_text).get("claim", []) if claims_text else []
-    hits = claims_check.affected_claims(claims, paths)
+    try:
+        claims = tomllib.loads(claims_text).get("claim", []) if claims_text else []
+        hits = claims_check.affected_claims(claims, paths)
+        claims_error = None
+    except (tomllib.TOMLDecodeError, TypeError, KeyError, AttributeError) as error:
+        # A merge that leaves claims.toml unreadable is itself something to report; it
+        # must not stop the digest from listing every other merge.
+        hits, claims_error = [], f"claims.toml at this merge cannot be read: {error}"
     pr = merge.get("pr")
     login = owner.lstrip("@").lower()
-    if pr is None:
+    if claims_error:
+        state = claims_error
+    elif pr is None:
         state = "several pull requests" if len(merge.get("pulls", [])) > 1 else "no pull request"
     elif not pr.get("merged_at") or pr.get("base") != "main" or pr.get("merge_commit_sha") != sha:
         state = "pull request data does not match this merge"

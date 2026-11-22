@@ -108,6 +108,17 @@ class AnalyzeTests(unittest.TestCase):
         _, after = pc.load_lanes(pc.reader(self.c)(pc.LANES_FILE))
         self.assertEqual(pc.lane_of("crates/containment-host/src/sandbox.rs", after)[0], "C")
 
+    def test_an_unreadable_claims_file_is_an_alert_not_a_crash(self):
+        real = pc.reader
+
+        def reader(ref):
+            get = real(ref)
+            return lambda path: "[[claim]\nid = " if path == "claims.toml" and ref == self.b else get(path)
+        with mock.patch.object(md.policy_check, "reader", reader):
+            row = md.analyze({"sha": self.b, "pr": pr(self.b), "pulls": [1]})
+        self.assertTrue(row["alert"])
+        self.assertIn("claims.toml at this merge cannot be read", row["approval"])
+
     def test_a_merge_before_the_lane_map_is_not_judged(self):
         row = md.analyze({"sha": full(BEFORE_MAP), "pr": pr(full(BEFORE_MAP)), "pulls": [1]})
         self.assertEqual((row["lane"], row["alert"]), ("-", False))
