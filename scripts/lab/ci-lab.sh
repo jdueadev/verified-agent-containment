@@ -36,6 +36,11 @@ work="${RUNNER_TEMP:-$(mktemp -d)}"
 summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
 fail() { echo "ci-lab: $*" >&2; echo "**lab failed:** $*" >> "$summary"; exit 1; }
 
+# Every recorded CI evidence entry must still hold against the files it names and
+# the claims as they are now. Cheap, builds nothing, and runs in every mode, so an
+# evidence PR whose claims changed after recording fails here.
+python3 tools/lab_record.py --verify || fail "recorded CI lab evidence does not hold (tools/lab_record.py --verify)"
+
 base_sha=""
 if [ "${1:-}" = "--if-affected" ]; then
   base_sha="${2:?--if-affected needs BASE_SHA}"

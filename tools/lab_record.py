@@ -3,6 +3,7 @@
 
 Usage:
   lab_record.py --results DIR --commit SHA --platform NAME [--root DIR]
+  lab_record.py --verify [--root DIR]
 
 DIR is what scripts/lab/ci-lab.sh produced on a disposable runner:
 attack-suite-local.json and live-suite-local.json (each holds the honest runs and
@@ -20,11 +21,17 @@ Nothing is written unless all of this holds:
     can show, which is an error.
   - No claim already records this platform at this commit.
 
-Then it copies the three files to results/ci/lab-<sha7>/ and appends one entry,
-`{ name = NAME, commit = <sha7>, result = "pass (results/ci/lab-<sha7>; ...)" }`, to
+It also requires environment.txt to name SHA and the two binaries the JSON is
+stamped with. Then it copies the three files to results/ci/lab-<sha>/ (the full
+SHA) and appends one entry,
+`{ name = NAME, commit = <sha>, result = "pass (lab evidence: results/ci/lab-<sha>; ...)" }`, to
 the `platforms` line of every lab claim. It re-reads claims.toml afterwards and
 refuses if anything but those entries changed. It never writes a failing claim as
 "pass": a claim the run does not support stops the whole record.
+
+--verify re-checks every recorded CI entry against the files it names and the claims
+as they are now, and writes nothing. scripts/lab/ci-lab.sh runs it on every pull
+request, so an evidence PR whose claims changed after recording fails `lab`.
 
 This runs in the lab workflow's record job, which does not build or run host code.
 The entries it writes are a `platforms` edit, so the evidence PR is lane C and the
@@ -51,11 +58,13 @@ class RecordError(Exception):
     """The run cannot be recorded as evidence."""
 
 
-def load_results(results_dir):
+def load_results(results_dir, committed=False):
+    """The two suites' JSON from a run directory (`*-local.json`) or, with `committed`,
+    from a recorded results/ci/lab-<sha>/ directory (`attack-suite.json`, ...)."""
     results_dir = Path(results_dir)
     out = {}
     for name, source in SUITES.items():
-        path = results_dir / source
+        path = results_dir / (name if committed else source)
         if not path.is_file():
             raise RecordError(f"{path} is missing")
         out[name] = json.loads(path.read_text(encoding="utf-8"))
@@ -81,6 +90,25 @@ REF_KINDS = {
     "live": ("live-suite.json", "runs"),
     "live-sabotage": ("live-suite.json", "sabotage"),
 }
+
+
+def environment_errors(text, commit, results):
+    """environment.txt must name this commit and the two binaries the JSON is stamped with,
+    so results cannot be recorded against a commit they did not come from."""
+    fields = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition(": ")
+        if sep and key not in fields:
+            fields[key] = value.strip()
+    out = []
+    if fields.get("commit id") != commit:
+        out.append(f"environment.txt names commit {fields.get('commit id')!r}, not {commit}")
+    for part, key in (("honest", "default binary sha256"), ("sabotage", "sabotage binary sha256")):
+        for name, data in results.items():
+            stamp = ((data.get("build") or {}).get(part) or {}).get("binary_sha256")
+            if fields.get(key) != stamp:
+                out.append(f"environment.txt {key} does not match the {part} stamp in {name}")
+    return out
 
 
 def claim_support(claim, results):
@@ -137,9 +165,9 @@ def record(root, results_dir, commit, platform):
         raise RecordError(f"--commit must be a full 40-character SHA, got {commit!r}")
     if not PLATFORM_NAME.fullmatch(platform):
         raise RecordError(f"--platform {platform!r} is not a plain platform name")
-    short = commit[:7]
     results = load_results(results_dir)
-    errors = build_errors(results)
+    errors = build_errors(results) + environment_errors(
+        (Path(results_dir) / ENVIRONMENT).read_text(encoding="utf-8"), commit, results)
     if errors:
         raise RecordError("CI-8 does not hold:\n  " + "\n  ".join(errors))
     kernel = str(results["attack-suite.json"].get("kernel", ""))
@@ -154,15 +182,19 @@ def record(root, results_dir, commit, platform):
         raise RecordError("claims.toml has no lab claims to record")
     problems = []
     for claim in targets:
-        if any(p.get("name") == platform and p.get("commit") == short for p in claim.get("platforms", [])):
-            problems.append(f"{claim['id']}: already records {platform} at {short}")
+        if any(p.get("name") == platform and p.get("commit") == commit for p in claim.get("platforms", [])):
+            problems.append(f"{claim['id']}: already records {platform} at {commit}")
         problems += [f"{claim['id']}: {p}" for p in claim_support(claim, results)]
     if problems:
         raise RecordError("the run does not support every lab claim:\n  " + "\n  ".join(problems))
 
-    where = f"results/ci/lab-{short}"
-    result = f"pass ({where}; GitHub-hosted runner, kernel {kernel}; honest runs on the default build, controls on the sabotage build)"
-    entry = f'{{ name = "{platform}", commit = "{short}", result = "{result}" }}'
+    # The full SHA: CI-9 matches the commit as a substring of a path, and a 7-character
+    # prefix is cheap to collide with.
+    where = f"results/ci/lab-{commit}"
+    # The entry vouches for the lab evidence only; law and tla refs are `check`'s job.
+    result = (f"pass (lab evidence: {where}; GitHub-hosted runner, kernel {kernel}; "
+              "honest runs on the default build, controls on the sabotage build)")
+    entry = f'{{ name = "{platform}", commit = "{commit}", result = "{result}" }}'
     text = before_text
     for claim in targets:
         text = append_platform(text, claim["id"], entry)
@@ -170,7 +202,7 @@ def record(root, results_dir, commit, platform):
     # Nothing but the appended entries may differ.
     after = {c["id"]: c for c in tomllib.loads(text).get("claim", [])}
     before = {c["id"]: c for c in claims}
-    want = {"name": platform, "commit": short, "result": result}
+    want = {"name": platform, "commit": commit, "result": result}
     for cid, old in before.items():
         new = dict(after.get(cid, {}))
         added = new.pop("platforms", []) if cid in {c["id"] for c in targets} else None
@@ -195,13 +227,55 @@ def record(root, results_dir, commit, platform):
     return [c["id"] for c in targets], where
 
 
+RECORDED = re.compile(r"^pass \(lab evidence: (results/ci/lab-([0-9a-f]{40}));")
+
+
+def verify(root):
+    """Re-check every recorded CI entry against the files it names, with the claims as they
+    are now. A claim row edited after its entry was written (for example a merge into the
+    evidence branch) is judged by its current evidence, not by what was checked then."""
+    root = Path(root)
+    claims = tomllib.loads((root / "claims.toml").read_text(encoding="utf-8")).get("claim", [])
+    problems, seen = [], {}
+    for claim in claims:
+        for platform in claim.get("platforms", []):
+            match = RECORDED.match(str(platform.get("result", "")))
+            if not match:
+                continue
+            where, sha = match.groups()
+            if platform.get("commit") != sha:
+                problems.append(f"{claim['id']}: entry names {where} but commit {platform.get('commit')!r}")
+                continue
+            if where not in seen:
+                try:
+                    results = load_results(root / where, committed=True)
+                    errors = build_errors(results) + environment_errors(
+                        (root / where / ENVIRONMENT).read_text(encoding="utf-8"), sha, results)
+                except (RecordError, OSError, ValueError) as error:
+                    results, errors = None, [str(error)]
+                seen[where] = (results, errors)
+            results, errors = seen[where]
+            problems += [f"{claim['id']}: {where}: {e}" for e in errors]
+            if results is not None:
+                problems += [f"{claim['id']}: {where}: {p}" for p in claim_support(claim, results)]
+    return problems
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--results", required=True)
-    parser.add_argument("--commit", required=True)
-    parser.add_argument("--platform", required=True)
+    parser.add_argument("--verify", action="store_true",
+                        help="re-check every recorded CI entry; writes nothing")
+    parser.add_argument("--results")
+    parser.add_argument("--commit")
+    parser.add_argument("--platform")
     parser.add_argument("--root", default=str(claims_check.ROOT))
     args = parser.parse_args(argv)
+    if args.verify:
+        problems = verify(args.root)
+        print(json.dumps({"verified": not problems, "problems": problems}, indent=2))
+        return 1 if problems else 0
+    if not (args.results and args.commit and args.platform):
+        parser.error("--results, --commit and --platform are required unless --verify")
     try:
         ids, where = record(args.root, args.results, args.commit, args.platform)
     except RecordError as error:
