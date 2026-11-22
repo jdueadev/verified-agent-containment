@@ -231,7 +231,13 @@ def remove_copy(work, as_user):
     shutil.rmtree(work, ignore_errors=True)
 
 
-def run_python_module(head, path, base_text=None, as_user=None, isolate=False):
+def hand_over(copy, as_user):
+    """Give the copy to the child's user, so the child may write to it."""
+    if as_user:
+        subprocess.run(["sudo", "-n", "chown", "-R", as_user, str(copy)], check=True, capture_output=True)
+
+
+def run_python_module(head, path, base_text=None, as_user=None, isolate=False, prepared=False):
     """Run one test module in a fresh isolated interpreter and return {id: outcome}.
 
     With base_text, the module file is first rewritten from the base commit, so an
@@ -242,9 +248,13 @@ def run_python_module(head, path, base_text=None, as_user=None, isolate=False):
     if isolate:
         work, copy = own_copy(head)
         try:
-            if as_user:
-                subprocess.run(["sudo", "-n", "chown", "-R", as_user, str(copy)], check=True, capture_output=True)
-            return run_python_module(copy, path, base_text, as_user, isolate=False)
+            # Every write this process makes to the copy happens before it is handed to the
+            # child's user: after hand_over, this process may no longer write there.
+            if base_text is not None:
+                (copy / "tools" / f"{Path(path).stem}.py").write_text(base_text, encoding="utf-8")
+            clear_pycache(copy)
+            hand_over(copy, as_user)
+            return run_python_module(copy, path, None, as_user, isolate=False, prepared=True)
         finally:
             remove_copy(work, as_user)
     module = Path(path).stem
@@ -254,7 +264,8 @@ def run_python_module(head, path, base_text=None, as_user=None, isolate=False):
     found = shadows(head, module)
     if found:
         return {"<module>": f"files that could shadow {module}.py: {found}"}
-    clear_pycache(head)
+    if not prepared:
+        clear_pycache(head)
     results_dir = Path(tempfile.mkdtemp(prefix="spec-result-"))
     try:
         results_dir.chmod(0o777)
