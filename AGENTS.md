@@ -161,8 +161,9 @@ Say which tier you reached. Never report a higher one.
 
 - **T0:** the checks you actually ran locally, named one by one. On Windows
   this is usually the tool unit tests and the kernel crate.
-- **T1:** all of `scripts/check.sh`, on Linux or WSL2 with every tool present.
-  A run that printed `SKIPPED` is T0.
+- **T1:** all of `scripts/check.sh`, on Linux or WSL2 with every tool present,
+  or in `ci/check.Dockerfile` via `scripts/check-in-container.sh`, reported
+  with the image digest. A run that printed `SKIPPED` is T0.
 - **T2:** the root lab run. Only the maintainer does this.
 
 No merge rests on a local result. The `check` workflow is the gate.

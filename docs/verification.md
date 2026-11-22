@@ -19,6 +19,15 @@ scripts/verdict.sh        # Lean recheck; needs Lean v4.34.0, or BENDTT set to a
 
 `scripts/check.sh` ends with `python3 tools/claims_check.py --strict`, which fails if any row of [`claims.toml`](../claims.toml) has evidence that no longer holds, if any host claim is stale, if `results/attack-suite.json` is not a full unwaived dual-binary run (`timed_repeat >= 30`, no cgroup waiver), or if [`claims.md`](claims.md) is out of date (`--write` regenerates it). Pass `--no-strict` to keep all proof, test, differential, mutation, TLA+, and coverage checks mandatory while treating host lab staleness as a warning.
 
+### In the pinned container
+
+With Docker or Podman, `scripts/check-in-container.sh` builds `ci/check.Dockerfile` from `ci/pins.env` and `rust-toolchain.toml` and runs `scripts/check.sh` in it: network off, read-only, no capabilities, uid 1000, on a copy of the checkout. It works from a git worktree, refuses a shallow clone or an image built from other pins, and asserts every tool's version before it starts. A passing run ends with `Tier: T1 (container, image sha256:...)`; report it with that image id. Arguments go to `scripts/check.sh` (`--no-strict`); `ENGINE=podman` picks Podman. The image is linux/amd64. Why it is built this way: [`decisions/0006-check-container.md`](decisions/0006-check-container.md).
+
+```bash
+scripts/check-in-container.sh --no-strict
+scripts/check-in-container.sh --affected origin/main  # claims_check.py --affected, in the container
+```
+
 To check locally which claims your current edits invalidate before running the root lab:
 
 ```bash
