@@ -1,0 +1,110 @@
+name: spec
+
+# Runs the base branch's spec against the pull request (#125). The runner, the list of
+# spec files and the test ids all come from the base commit; the pull request's code
+# runs only as the thing being judged. Each part runs in a fresh job, so nothing one
+# part does can reach another's verdict.
+#
+# - base:   every spec file the base has, run against the head (tools/spec_run.py base).
+#           A red run passes only when the owner approved exactly this head commit.
+# - new:    the head's new spec files, run on their own (tools/spec_run.py new).
+# - corpus: the known-bad corpus, run against the head's checkers (tools/corpus_run.py).
+#
+# The runner runs as the runner user from the base checkout. Every child that runs the
+# head's code runs as the unprivileged user `spec`, with a clean environment and no sudo,
+# and cannot write to either checkout. Nothing here reads the head's ci/pins.env or writes
+# $GITHUB_ENV or $GITHUB_PATH.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: spec-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  spec:
+    # One fresh job per part. Their checks are named spec (base), spec (new) and spec (corpus).
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [base, new, corpus]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Only pull requests into main
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          if [ "$BASE_REF" != "main" ]; then
+            echo "spec: only pull requests into main are judged (base is '$BASE_REF')." >&2
+            exit 1
+          fi
+
+      - name: Check out the judge (base) and the defendant (head)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: judge
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: head
+          persist-credentials: false
+
+      - name: Toolchain from the base branch, and an unprivileged user
+        run: |
+          # Installed from judge/, so its rust-toolchain.toml (channel and components) is the one used.
+          (cd judge && rustup toolchain install)
+          sudo useradd --create-home spec
+          # The spec user may read the checkouts and the toolchain, and write nothing in them.
+          # Every directory above the workspace must be traversable for that.
+          dir="$GITHUB_WORKSPACE"
+          while [ "$dir" != "/" ]; do sudo chmod o+x "$dir"; dir="$(dirname "$dir")"; done
+          chmod -R a+rX head judge "$HOME/.rustup" "$HOME/.cargo"
+          # Children run git inside head/ (repository-state tests), which the runner user owns.
+          sudo git config --system --add safe.directory "$GITHUB_WORKSPACE/head"
+          sudo git config --system --add safe.directory "$GITHUB_WORKSPACE/judge"
+
+      - name: Reviews (read before any head code runs)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews?per_page=100" > "$RUNNER_TEMP/reviews.json"
+
+      - name: Judge
+        env:
+          PART: ${{ matrix.part }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ ! -f judge/tools/spec_run.py ]; then
+            echo "The base branch has no spec runner yet; nothing to judge with."
+            exit 0
+          fi
+          # The runner runs as this user, from the base checkout; every child that runs head
+          # code runs as `spec` (--as-user), and is killed with everything it started.
+          export RUSTUP_HOME="$HOME/.rustup" PATH="$HOME/.cargo/bin:$PATH"
+          code=0
+          case "$PART" in
+            base)   python3 -I -B judge/tools/spec_run.py base --rust --as-user spec --base-ref "$BASE_SHA" \
+                      --head head --reviews "$RUNNER_TEMP/reviews.json" --head-sha "$HEAD_SHA" \
+                      > "$RUNNER_TEMP/out.json" || code=$? ;;
+            new)    python3 -I -B judge/tools/spec_run.py new --rust --as-user spec --base-ref "$BASE_SHA" \
+                      --head head > "$RUNNER_TEMP/out.json" || code=$? ;;
+            # The corpus runner builds its own repositories and runs the head's checkers in them,
+            # so the whole runner runs as `spec`.
+            corpus) sudo -n -u spec env -i PATH="/usr/bin:/bin" HOME=/home/spec \
+                      python3 -I -B judge/tools/corpus_run.py --head head --corpus head/ci/corpus \
+                      > "$RUNNER_TEMP/out.json" || code=$? ;;
+          esac
+          sudo -n pkill -KILL -u spec || true
+          { echo '```json'; cat "$RUNNER_TEMP/out.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
