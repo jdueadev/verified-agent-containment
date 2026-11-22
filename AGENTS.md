@@ -103,16 +103,13 @@ branch, so a change cannot reclassify itself.
 
 A pull request from a fork needs the maintainer whatever its lane.
 
-While agents and the maintainer push under the same GitHub account, the lanes
-are policy: the required checks are the real gate, the maintainer merges lane C
-by hand, and an agent must not merge a lane C change on its own.
-
-Once agents push under their own identity (`docs/decisions/0003-lane-c-friction.md`),
-the maintainer's approval of a pull request's head commit is the gate for lane
-C: `policy` passes on it, and auto-merge does the rest. A push after the
-approval needs a new one. The agent identity has no administration rights and
-no Workflows permission, is not a code owner and is on no bypass list. A
-change under `.github/workflows/` is therefore pushed by the maintainer.
+Agents push under their own identity (`docs/decisions/0003-lane-c-friction.md`).
+For lane C, the maintainer's approval of a pull request's head commit is the
+gate: `policy` passes only on an approved head, and auto-merge does the rest.
+A push after the approval needs a new one. The agent identity has no
+administration rights and no Workflows permission, is not a code owner and is
+on no bypass list. A change under `.github/workflows/` is therefore pushed by
+the maintainer.
 
 ## When your change makes a claim stale
 
@@ -182,8 +179,7 @@ No merge rests on a local result. The `check` workflow is the gate.
    request: the maintainer merges those. Never
    merge with `--admin` or a ruleset bypass, and never change a ruleset or the
    `POLICY_ENFORCE` variable to get a change in. A lane C change merges only
-   after the maintainer approves its head commit, or, while agents share the
-   maintainer's account, when the maintainer merges it.
+   after the maintainer approves its head commit.
 
 ## Rust
 
