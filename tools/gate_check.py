@@ -2,8 +2,8 @@
 """Turn the required checks into gate App check runs (#137, stage 2).
 
 Usage:
-  gate_check.py judge --head-sha SHA [--out FILE]
-  gate_check.py post --app-id ID --head-sha SHA --judge-result RESULT   (verdicts in $VERDICTS)
+  gate_check.py judge (--head-sha SHA | --sweep) [--out FILE]
+  gate_check.py post --app-id ID (--head-sha SHA | --sweep) --judge-result RESULT   (verdicts in $VERDICTS)
 
 The `gate` workflow runs from main on `workflow_run`. Its `judge` job has no
 secret. It calls `judge` with a read-only token, which writes one verdict per
@@ -70,10 +70,21 @@ a close or a reopen here. Whether a retarget away from main is seen depends
 on the new base's copy of that workflow, which is why the stale results get
 updated whenever this workflow next runs for that head.
 
-judge waits, up to its deadline, for qualifying runs that are still going.
-After an approval, policy-refresh re-runs `policy` and `spec`, and when it
-finishes this workflow runs again and reads the reviews fresh. Whether a
-re-run started by GITHUB_TOKEN fires `workflow_run` itself is not known.
+judge never waits. It judges what has finished when it runs: a qualifying run
+still going leaves its context undecided, and over an existing check run that
+is posted as a failure. So a withdrawn approval or a new run takes effect at
+once, and a stale success is never held open. Each completion of check, spec,
+policy, policy-refresh or gate-events runs the gate again for that head. A
+sweep every ten minutes (`--sweep`, on schedule) judges the head of every open
+pull request from this repository, whatever its base. That covers re-runs
+started by GITHUB_TOKEN, which may not fire `workflow_run`, and pull requests
+retargeted away from main, whose new base's workflows the agent controls.
+
+Known residual: a pull request retargeted away from main and back within one
+sweep keeps its earlier gate results until the gate runs for the `edited`
+event, which takes about a minute. It matters only if the owner withdrew an
+approval in between. For .github and code-owner paths, the ruleset's
+code-owner review still blocks that merge.
 
 What this rests on:
 - The ruleset's up-to-date rule. A head that predates a change to main's
@@ -111,7 +122,6 @@ RUN_WORKFLOWS = {
 }
 POLICY = "gate/policy"
 CONTEXTS = [c for jobs in RUN_WORKFLOWS.values() for c in jobs] + [POLICY]
-WAIT_SECONDS, POLL_SECONDS = 40 * 60, 30
 ISSUER = "https://token.actions.githubusercontent.com"
 JWKS_URL = ISSUER + "/.well-known/jwks"
 AUDIENCE = "gate"
@@ -268,6 +278,10 @@ def verdicts(pr, runs_by_path, jobs_by_run, changed_paths, reviews, owner, polic
 
 
 def run_verdict(context, job_name, runs, jobs_by_run, changed, approved, owner):
+    if changed and not approved:
+        return verdict(context, "completed", "failure",
+                       f"This pull request changes {len(changed)} path(s) under .github, so the head's own "
+                       f"workflows decide `{job_name}`. It needs {owner}'s approval of this head commit.")
     if not runs:
         return verdict(context, "in_progress", None, f"No qualifying run with job `{job_name}` yet.")
     if any(r.get("status") != "completed" for r in runs):
@@ -284,11 +298,6 @@ def run_verdict(context, job_name, runs, jobs_by_run, changed, approved, owner):
         return verdict(context, "completed", "failure",
                        "Job `{}` did not succeed: {}.".format(job_name, ", ".join(f"run {i} {c}" for i, c in bad)))
     ids = ", ".join(str(i) for i, _ in counted)
-    if changed and not approved:
-        return verdict(context, "completed", "failure",
-                       f"Job `{job_name}` succeeded (runs {ids}), but this pull request changes {len(changed)} "
-                       f"path(s) under .github, so the head's own workflows decided it. "
-                       f"It needs {owner}'s approval of this head commit.")
     note = f" Its .github changes are approved by {owner} at this head." if changed else ""
     return verdict(context, "completed", "success", f"Job `{job_name}` succeeded in runs {ids}.{note}")
 
@@ -361,6 +370,12 @@ def signing_keys(tries=3, sleep=time.sleep):
             sleep(5)
 
 
+def sweep_heads(repo):
+    """The head of every open pull request from this repository, whatever its base."""
+    prs = pages(f"repos/{repo}/pulls?state=open&per_page=100")
+    return sorted({p["head"]["sha"] for p in prs if (p["head"].get("repo") or {}).get("full_name") == repo})
+
+
 def fetch_head(pr):
     git("fetch", "--quiet", "--no-tags", "origin", pr["base"]["sha"])
     git("fetch", "--quiet", "--no-tags", "origin", f"pull/{pr['number']}/head")
@@ -389,7 +404,7 @@ def policy_result(pr, merge_base, reviews_file, enforce):
     return True, "main's lane classifier, invariants and workflow lint passed on this head."
 
 
-def judge(head_sha, now=time.monotonic, sleep=time.sleep):
+def judge(head_sha):
     """(pr number or None, verdicts). With no open PR into main, the verdicts are all
     failures with pr None, which post only applies to check runs that already exist."""
     repo = os.environ["GITHUB_REPOSITORY"]
@@ -400,14 +415,7 @@ def judge(head_sha, now=time.monotonic, sleep=time.sleep):
         return None, all_failed("No open pull request into main has this head commit.")
     owner, _ = policy_check.load_lanes((ROOT / policy_check.LANES_FILE).read_text(encoding="utf-8"))
     workflow_ids = {p: gh(f"repos/{repo}/actions/workflows/{p.rsplit('/', 1)[1]}")["id"] for p in RUN_WORKFLOWS}
-    deadline = now() + WAIT_SECONDS
-    while True:
-        by_path = qualifying(pages(f"repos/{repo}/actions/runs?head_sha={head_sha}&per_page=100"),
-                             repo, pr, workflow_ids)
-        going = [r for rs in by_path.values() for r in rs if r.get("status") != "completed"]
-        if not going or now() >= deadline:
-            break
-        sleep(POLL_SECONDS)
+    by_path = qualifying(pages(f"repos/{repo}/actions/runs?head_sha={head_sha}&per_page=100"), repo, pr, workflow_ids)
     reviews = pages(f"repos/{repo}/pulls/{pr['number']}/reviews?per_page=100")
     merge_base = fetch_head(pr)
     changed = changed_paths(merge_base, head_sha)
@@ -425,13 +433,12 @@ def judge(head_sha, now=time.monotonic, sleep=time.sleep):
 
 # ---------- posting ----------
 
-def checked_verdicts(text, head_sha):
-    """The post job takes only what judge can produce, for the commit it was triggered for."""
-    data = json.loads(text)
+def checked_batch(data, head_sha=None):
+    """One head's verdicts, as judge produces them. With `head_sha`, it must be that commit."""
     if not isinstance(data, dict) or set(data) != {"head_sha", "pr", "verdicts"}:
         raise ValueError("verdicts: expected head_sha, pr and verdicts")
-    if data["head_sha"] != head_sha or not SHA.fullmatch(head_sha) \
-            or not (data["pr"] is None or isinstance(data["pr"], int)):
+    if not SHA.fullmatch(str(data["head_sha"])) or (head_sha is not None and data["head_sha"] != head_sha) \
+            or not (data["pr"] is None or (isinstance(data["pr"], int) and not isinstance(data["pr"], bool))):
         raise ValueError("verdicts: bad head_sha or pr")
     seen = []
     for v in data["verdicts"]:
@@ -444,6 +451,18 @@ def checked_verdicts(text, head_sha):
         seen.append(v["context"])
     if sorted(seen) != sorted(CONTEXTS):
         raise ValueError(f"verdicts: expected every context once, got {seen}")
+    return data
+
+
+def checked_verdicts(text, head_sha=None):
+    """The post job takes only what judge can produce: a list of batches, one per head.
+    For a workflow_run trigger there is exactly one, for the triggering commit."""
+    data = json.loads(text)
+    if not isinstance(data, list) or (head_sha is not None and len(data) != 1):
+        raise ValueError("verdicts: expected a list of batches (one for a triggered run)")
+    heads = [checked_batch(b, head_sha)["head_sha"] for b in data]
+    if len(set(heads)) != len(heads):
+        raise ValueError("verdicts: a head appears twice")
     return data
 
 
@@ -489,39 +508,65 @@ def post_one(v, head, where, app_id, repo, create=True):
     print(f"{v['context']}: {status} {conclusion or ''}")
 
 
+def judged(head_sha):
+    """One batch for one head; any error fails every context with no PR."""
+    try:
+        pr, result = judge(head_sha)
+    except Exception as error:  # noqa: BLE001  every failure must fail the contexts
+        print(f"gate_check: judging {head_sha} failed: {error} {getattr(error, 'stderr', '') or ''}".strip(),
+              file=sys.stderr)
+        pr, result = None, all_failed(f"Judging this commit failed ({type(error).__name__}); see the gate run's log.")
+    return {"head_sha": head_sha, "pr": pr, "verdicts": result}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    j = sub.add_parser("judge")
-    j.add_argument("--head-sha", required=True)
-    j.add_argument("--out", help="append `verdicts=<json>` here (the job's GITHUB_OUTPUT)")
-    p = sub.add_parser("post")
-    p.add_argument("--app-id", required=True)
-    p.add_argument("--head-sha", required=True)
-    p.add_argument("--judge-result", required=True, help="the judge job's result: success, failure, ...")
+    for name in ("judge", "post"):
+        p = sub.add_parser(name)
+        which = p.add_mutually_exclusive_group(required=True)
+        which.add_argument("--head-sha")
+        which.add_argument("--sweep", action="store_true", help="every open pull request's head (on schedule)")
+        if name == "judge":
+            p.add_argument("--out", help="append `verdicts=<json>` here (the job's GITHUB_OUTPUT)")
+        else:
+            p.add_argument("--app-id", required=True)
+            p.add_argument("--judge-result", required=True, help="the judge job's result: success, failure, ...")
     args = parser.parse_args(argv)
     if args.command == "judge":
-        try:
-            pr, result = judge(args.head_sha)
-        except Exception as error:  # noqa: BLE001  every failure must fail the contexts
-            print(f"gate_check: judging failed: {error} {getattr(error, 'stderr', '') or ''}".strip(), file=sys.stderr)
-            pr, result = 0, all_failed(f"Judging this commit failed ({type(error).__name__}); see the gate run's log.")
-        print(json.dumps({"pr": pr or None, "verdicts": result}, indent=2))
-        line = json.dumps({"head_sha": args.head_sha, "pr": pr or None, "verdicts": result}, separators=(",", ":"))
+        if args.sweep:
+            try:
+                heads = sweep_heads(os.environ["GITHUB_REPOSITORY"])
+            except Exception as error:  # noqa: BLE001  nothing known to fail; the next sweep retries
+                sys.exit(f"gate_check: sweep could not list pull requests: {error}")
+        else:
+            heads = [args.head_sha]
+        batches = [judged(h) for h in heads]
+        print(json.dumps(batches, indent=2))
         if args.out:
             with open(args.out, "a", encoding="utf-8") as handle:
-                handle.write(f"verdicts={line}\n")
+                handle.write(f"verdicts={json.dumps(batches, separators=(',', ':'))}\n")
         return 0
     try:
         if not re.fullmatch(r"[0-9]+", args.app_id):
             raise ValueError("--app-id must be a number")
         text = os.environ.get("VERDICTS", "")
         if not text:
+            if args.sweep:
+                print("The sweep's judge produced nothing; the next sweep retries.")
+                return 0
             # judge itself died (it always writes verdicts otherwise): fail every context
             # on this commit that already has a check run.
-            text = json.dumps({"head_sha": args.head_sha, "pr": None,
-                               "verdicts": all_failed(f"The judge job ended '{args.judge_result}'.")})
-        post(checked_verdicts(text, args.head_sha), args.app_id, os.environ["GITHUB_REPOSITORY"])
+            text = json.dumps([{"head_sha": args.head_sha, "pr": None,
+                                "verdicts": all_failed(f"The judge job ended '{args.judge_result}'.")}])
+        errors = []
+        for batch in checked_verdicts(text, None if args.sweep else args.head_sha):
+            try:
+                post(batch, args.app_id, os.environ["GITHUB_REPOSITORY"])
+            except (subprocess.CalledProcessError, RuntimeError) as error:
+                errors.append(f"{batch['head_sha'][:12]}: {error}")
+        if errors:
+            raise RuntimeError("; ".join(errors))
         return 0
     except (subprocess.CalledProcessError, ValueError, RuntimeError, KeyError) as error:
         sys.exit(f"gate_check: {error} {getattr(error, 'stderr', '') or ''}".strip())

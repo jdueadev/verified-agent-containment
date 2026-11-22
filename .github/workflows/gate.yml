@@ -21,14 +21,18 @@ on:
   workflow_run:
     workflows: [check, spec, policy, policy-refresh, gate-events]
     types: [completed]
+  # The sweep: every open pull request's head, every ten minutes. It catches re-runs
+  # that do not fire workflow_run and pull requests retargeted away from main.
+  schedule:
+    - cron: '*/10 * * * *'
 
 permissions:
   contents: read
 
 concurrency:
-  # One judgement per head commit at a time. A newer trigger waits, then judges
-  # afresh, so the last one to run sees every result.
-  group: gate-${{ github.event.workflow_run.head_sha }}
+  # One judgement per head commit at a time, and one sweep. A newer trigger waits,
+  # then judges afresh, so the last one to run sees every result.
+  group: gate-${{ github.event.workflow_run.head_sha || 'sweep' }}
   cancel-in-progress: false
 
 jobs:
@@ -51,8 +55,14 @@ jobs:
         id: judge
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: python3 tools/gate_check.py judge --head-sha "$HEAD_SHA" --out "$GITHUB_OUTPUT"
+        run: |
+          if [ "$EVENT" = schedule ]; then
+            python3 tools/gate_check.py judge --sweep --out "$GITHUB_OUTPUT"
+          else
+            python3 tools/gate_check.py judge --head-sha "$HEAD_SHA" --out "$GITHUB_OUTPUT"
+          fi
 
   post:
     needs: judge
@@ -81,6 +91,12 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           APP_ID: ${{ vars.GATE_APP_ID }}
           VERDICTS: ${{ needs.judge.outputs.verdicts }}
+          EVENT: ${{ github.event_name }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           JUDGE_RESULT: ${{ needs.judge.result }}
-        run: python3 tools/gate_check.py post --app-id "$APP_ID" --head-sha "$HEAD_SHA" --judge-result "$JUDGE_RESULT"
+        run: |
+          if [ "$EVENT" = schedule ]; then
+            python3 tools/gate_check.py post --app-id "$APP_ID" --sweep --judge-result "$JUDGE_RESULT"
+          else
+            python3 tools/gate_check.py post --app-id "$APP_ID" --head-sha "$HEAD_SHA" --judge-result "$JUDGE_RESULT"
+          fi

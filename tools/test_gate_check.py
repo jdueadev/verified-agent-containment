@@ -129,6 +129,11 @@ class Verdicts(unittest.TestCase):
 
 
 class WorkflowChanges(unittest.TestCase):
+    def test_without_approval_a_workflow_change_says_so_even_with_no_runs(self):
+        result = judge([], {}, paths=[".github/workflows/check.yml"])
+        self.assertIn("needs @owner's approval", result["gate/check"]["summary"])
+        self.assertEqual(result["gate/check"]["conclusion"], "failure")
+
     def test_a_workflow_change_needs_the_owners_approval_of_this_head(self):
         for path in (".github/workflows/check.yml", ".github"):
             with self.subTest(path=path):
@@ -166,8 +171,17 @@ def good():
 
 class PostInput(unittest.TestCase):
     def test_good_verdicts_pass(self):
-        self.assertEqual(gc.checked_verdicts(json.dumps(good()), HEAD), good())
-        self.assertEqual(gc.checked_verdicts(json.dumps(dict(good(), pr=None)), HEAD)["pr"], None)
+        self.assertEqual(gc.checked_verdicts(json.dumps([good()]), HEAD), [good()])
+        self.assertEqual(gc.checked_verdicts(json.dumps([dict(good(), pr=None)]), HEAD)[0]["pr"], None)
+        both = [good(), dict(good(), head_sha=OLD)]
+        self.assertEqual(gc.checked_verdicts(json.dumps(both)), both)       # a sweep
+
+    def test_batches_must_fit_the_trigger(self):
+        for data, head in (([good(), dict(good(), head_sha=OLD)], HEAD),   # a triggered run judges one head
+                           ([], HEAD), ([good(), good()], None),           # none, or a head twice
+                           (good(), None)):                                # not a list
+            with self.subTest(data=str(data)[:60]), self.assertRaises(ValueError):
+                gc.checked_verdicts(json.dumps(data), head)
 
     def test_anything_judge_cannot_produce_is_refused(self):
         bad = []
@@ -180,9 +194,10 @@ class PostInput(unittest.TestCase):
         d = good(); d["verdicts"].pop(); bad.append(d)
         d = good(); d["verdicts"].append(dict(d["verdicts"][0])); bad.append(d)
         d = good(); d["verdicts"][0]["details_url"] = "x"; bad.append(d)
+        d = good(); d["pr"] = True; bad.append(d)
         for d in bad:
             with self.subTest(d=str(d)[:80]), self.assertRaises(ValueError):
-                gc.checked_verdicts(json.dumps(d), HEAD)
+                gc.checked_verdicts(json.dumps([d]), HEAD)
 
 
 class Post(unittest.TestCase):
@@ -270,11 +285,11 @@ class Main(unittest.TestCase):
                 mock.patch.object(gc, "judge", side_effect=RuntimeError("two open pull requests")):
             out = Path(tmp) / "out"
             code, _, err = self.run_main(["judge", "--head-sha", HEAD, "--out", str(out)])
-            data = json.loads(out.read_text().split("=", 1)[1])
+            data = gc.checked_verdicts(out.read_text().split("=", 1)[1], HEAD)
         self.assertEqual(code, 0)
         self.assertIn("two open pull requests", err)
-        self.assertEqual(gc.checked_verdicts(json.dumps(data), HEAD)["pr"], None)
-        self.assertTrue(all(v["conclusion"] == "failure" for v in data["verdicts"]))
+        self.assertEqual(data[0]["pr"], None)
+        self.assertTrue(all(v["conclusion"] == "failure" for v in data[0]["verdicts"]))
 
     def test_no_pull_request_writes_failures_with_no_pr(self):
         with tempfile.TemporaryDirectory() as tmp, \
@@ -282,7 +297,30 @@ class Main(unittest.TestCase):
             out = Path(tmp) / "out"
             self.run_main(["judge", "--head-sha", HEAD, "--out", str(out)])
             data = gc.checked_verdicts(out.read_text().split("=", 1)[1], HEAD)
-        self.assertIsNone(data["pr"])
+        self.assertIsNone(data[0]["pr"])
+
+    def test_a_sweep_judges_every_open_pull_requests_head(self):
+        judged = []
+
+        def judge(head):
+            judged.append(head)
+            if head == OLD:
+                raise RuntimeError("boom")
+            return 7, gc.all_failed("x")
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(gc, "sweep_heads", lambda repo: [HEAD, OLD]), \
+                mock.patch.object(gc, "judge", judge):
+            out = Path(tmp) / "out"
+            self.run_main(["judge", "--sweep", "--out", str(out)])
+            data = gc.checked_verdicts(out.read_text().split("=", 1)[1])
+        self.assertEqual(judged, [HEAD, OLD])
+        self.assertEqual([(b["head_sha"], b["pr"]) for b in data], [(HEAD, 7), (OLD, None)])
+
+    def test_sweep_heads_lists_open_prs_from_this_repository_whatever_their_base(self):
+        prs = [dict(PR), dict(PR, base={"ref": "evil", "sha": OLD}, head={"sha": OLD, "ref": "x", "repo": {"full_name": REPO}}),
+               dict(PR, head={"sha": "c" * 40, "ref": "y", "repo": {"full_name": "fork/r"}})]
+        with mock.patch.object(gc, "pages", lambda path: prs):
+            self.assertEqual(gc.sweep_heads(REPO), sorted([HEAD, OLD]))
 
     def test_post_without_verdicts_after_a_failed_judge_fails_every_context(self):
         posted = []
@@ -292,10 +330,14 @@ class Main(unittest.TestCase):
             self.run_main(["post", "--app-id", "1", "--head-sha", HEAD, "--judge-result", "cancelled"])
         self.assertEqual(len(posted), 2)
         self.assertTrue(all(d["pr"] is None for d in posted))
+        with mock.patch.dict(os.environ, {"VERDICTS": ""}), \
+                mock.patch.object(gc, "post", lambda data, app, repo: posted.append(data)):
+            self.run_main(["post", "--app-id", "1", "--sweep", "--judge-result", "failure"])
+        self.assertEqual(len(posted), 2)                                   # a sweep knows no head to fail
         self.assertTrue(all(v["conclusion"] == "failure" for d in posted for v in d["verdicts"]))
 
     def test_post_refuses_verdicts_for_another_commit(self):
-        with mock.patch.dict(os.environ, {"VERDICTS": json.dumps(dict(good(), head_sha=OLD))}), \
+        with mock.patch.dict(os.environ, {"VERDICTS": json.dumps([dict(good(), head_sha=OLD)])}), \
                 mock.patch.object(gc, "post", lambda *a: self.fail("posted")), self.assertRaises(SystemExit):
             self.run_main(["post", "--app-id", "1", "--head-sha", HEAD, "--judge-result", "success"])
 
@@ -344,28 +386,17 @@ class Judge(unittest.TestCase):
         with self.fake([PR, dict(PR, number=8)], [[]], {}), self.assertRaises(RuntimeError):
             gc.judge(HEAD)
 
-    def test_waits_for_runs_still_going_then_judges(self):
+    def test_a_run_still_going_is_judged_at_once_never_waited_for(self):
+        # Waiting would hold an earlier success open after an approval is withdrawn.
         runs, jobs = green()
         going = [dict(r, status="in_progress") if r["id"] == 20 else r for r in runs]
-        clock, slept = [0.0], []
-
-        def sleep(seconds):
-            slept.append(seconds)
-            clock[0] += seconds
-
-        with self.fake([PR], [going, runs], jobs):
-            number, result = gc.judge(HEAD, now=lambda: clock[0], sleep=sleep)
-        self.assertEqual((number, slept), (7, [gc.POLL_SECONDS]))
-        self.assertTrue(all(v["conclusion"] == "success" for v in result))
-
-    def test_stops_waiting_at_the_deadline(self):
-        runs, jobs = green()
-        going = [dict(r, status="in_progress") if r["id"] == 20 else r for r in runs]
-        clock = [0.0]
         with self.fake([PR], [going], jobs):
-            _, result = gc.judge(HEAD, now=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + s))
-        self.assertEqual({v["context"]: v["status"] for v in result}["gate/spec (base)"], "in_progress")
-        self.assertGreaterEqual(clock[0], gc.WAIT_SECONDS)
+            number, result = gc.judge(HEAD)
+        self.assertEqual(number, 7)
+        states = {v["context"]: (v["status"], v["conclusion"]) for v in result}
+        self.assertEqual(states["gate/spec (base)"], ("in_progress", None))
+        self.assertEqual(states["gate/check"], ("completed", "success"))
+        self.assertFalse(hasattr(gc, "WAIT_SECONDS"))
 
     def test_refuses_a_head_that_is_not_a_commit_id(self):
         with self.assertRaises(ValueError):
@@ -621,7 +652,8 @@ class Repository(unittest.TestCase):
         allowed = wl.load_allowed((ROOT / wl.ALLOW_FILE).read_text(encoding="utf-8"))
         self.assertEqual(wl.lint("gate.yml", text, allowed), [])
         for needle in ("workflows: [check, spec, policy, policy-refresh, gate-events]", "environment: gate",
-                       "permission-checks: write", "if: always()"):
+                       "permission-checks: write", "if: always()", "cron: '*/10 * * * *'",
+                       "judge --sweep", "post --app-id \"$APP_ID\" --sweep"):
             self.assertIn(needle, text)
 
     def test_gate_events_brings_retargets_closes_and_reopens_to_the_gate(self):
