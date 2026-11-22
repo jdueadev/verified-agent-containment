@@ -5,7 +5,7 @@ Usage:
   policy_check.py classify --base REF [--head REF] [--map-ref REF] [--reviews FILE --head-sha SHA]
                            [--fork] [--enforce]
   policy_check.py codeowners [--write]
-  policy_check.py invariants
+  policy_check.py invariants [--ref REF]
 
 classify   prints the lane of the diff between two commits. Lanes are defined in
            ci/lanes.toml. A ratchet raises the lane to C when the change removes
@@ -16,7 +16,9 @@ codeowners checks that .github/CODEOWNERS is exactly lane C (--write regenerates
 invariants checks rules that hold on every commit: `sabotage` is not a default
            feature, the lane map parses, CODEOWNERS matches it, and the kernel
            stays pure (no_std, no unsafe, nothing beyond core, no build-time
-           file or environment reads).
+           file or environment reads). With --ref it checks that commit, read
+           through git, instead of the working tree, so `policy` can run it from
+           the base branch against an untrusted head.
 
 This script only reads the other commit's files through git. It never imports or
 runs them, so it is safe to run from the base branch against an untrusted head.
@@ -32,7 +34,6 @@ import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from claims_check import RANK  # noqa: E402
 import rust_tokens  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,6 +44,10 @@ KERNEL_SRC = "crates/containment-kernel/src"
 ORDER = {"A": 0, "B": 1, "C": 2}
 SHRINK_FIELDS = ("files", "evidence", "depends_on")
 FIXED_FIELDS = ("statement", "falsifier")
+# Claim statuses, weakest first. A copy of claims_check.RANK, kept here so that
+# `policy` imports nothing but the lexer: it runs from the base branch, and any
+# module it imports runs inside the gate (#125). A test keeps the two equal.
+RANK = {"proved": 5, "checked-bounded": 4, "tested": 3, "assumed": 2, "planned": 1, "stale": 0}
 
 
 # ---------- lanes ----------
@@ -92,6 +97,10 @@ def git(*args):
                           encoding="utf-8", check=True).stdout
 
 
+def git_bytes(*args):
+    return subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, check=True).stdout
+
+
 def reader(ref):
     """Read files of one commit. A path the commit does not contain reads as None;
     any other git failure (an unknown ref, a broken repository) is raised. Treating
@@ -101,7 +110,11 @@ def reader(ref):
 
     def get(path):
         try:
-            return git("show", f"{commit}:{path}").replace("\r\n", "\n")
+            # Bytes, decoded strictly, with only CRLF folded: text mode would turn a lone
+            # CR into a newline, and rustc does not end a `//` comment at a lone CR, so
+            # the ratchets would see code that the compiler skips (#125, stage 2 review).
+            # A file that is not UTF-8 raises, which fails closed.
+            return git_bytes("show", f"{commit}:{path}").decode("utf-8").replace("\r\n", "\n")
         except subprocess.CalledProcessError:
             if git("ls-tree", "--name-only", commit, "--", path).strip():
                 raise
@@ -223,13 +236,171 @@ def ratchets(base_get, head_get):
     return out
 
 
+# ---------- spec immutability ----------
+
+# Spec: the tests and known-bad inputs that judge the code (#125). Once a spec file
+# is on the base branch it must be the same at head. New spec goes in new files.
+# Equal means equal code: Python compares by ast, Rust by the lexer's code tokens, so
+# reformatting or a changed comment is not an edit. Everything else compares as text.
+SPEC_PATTERNS = ("tools/test_*.py", "crates/containment-kernel/tests/**", "ci/corpus/**")
+KERNEL_TESTS = "crates/containment-kernel/tests/"
+
+
+def spec_links(ref, paths):
+    """Spec paths that are symbolic links at `ref`. A link to a file in a freer lane
+    would let later edits to that file change an immutable test unseen."""
+    spec = [p for p in paths if is_spec(p)]
+    if not spec:
+        return []
+    out = git("ls-tree", "-z", f"{ref}^{{commit}}", "--", *spec)
+    return sorted(entry.split("\t", 1)[1] for entry in out.split("\0")
+                  if "\t" in entry and entry.split(" ", 1)[0] == "120000")
+
+
+def is_spec(path):
+    return any(lane_match(path, pattern) for pattern in SPEC_PATTERNS)
+
+
+def declared_encoding(text):
+    """The source encoding Python would use for this file (PEP 263), normalised."""
+    import io
+    import tokenize
+    try:
+        name, _ = tokenize.detect_encoding(io.BytesIO(text.encode("utf-8")).readline)
+    except SyntaxError as error:
+        return f"an unknown one ({error.msg})"
+    return name.lower().replace("_", "-")
+
+
+def python_ast(text):
+    """The ast as the interpreter would build it. A coding declaration other than UTF-8
+    is refused: `# coding: raw_unicode_escape` or `utf-7` can turn a comment into code
+    on import while UTF-8 text shows only the comment (#125, stage 2 review). The bytes
+    are parsed, as the interpreter reads them, so anything else that depends on the
+    declaration is seen the same way."""
+    declared = declared_encoding(text)
+    if declared not in ("utf-8", "utf-8-sig"):
+        raise ValueError(f"declares the source encoding {declared}, which is not UTF-8")
+    try:
+        return ast.parse(text.encode("utf-8"))
+    except SyntaxError as error:
+        raise ValueError(f"does not parse ({error.msg})") from error
+
+
+def rust_tokens_strict(text):
+    """Code tokens, refusing a lone CR: rustc ends a `//` comment only at a newline, so
+    a CR in a comment can hide code from a reader that treats it as a line break."""
+    if "\r" in text.replace("\r\n", ""):
+        raise ValueError("contains a carriage return that does not end a line")
+    try:
+        return rust_tokens.code_tokens(text)
+    except rust_tokens.LexError as error:
+        raise ValueError(f"cannot be lexed ({error})") from error
+
+
+def spec_form(path, text):
+    """What has to stay equal. Raises ValueError when the text cannot be read, which the
+    caller treats as an edit: an unreadable head file is never the same as its base.
+    Corpus entries are data, often hostile on purpose, so they compare as text whatever
+    their extension."""
+    if path.startswith("ci/corpus/"):
+        return text
+    if path.endswith(".py"):
+        return ast.dump(python_ast(text))
+    if path.endswith(".rs"):
+        return rust_tokens_strict(text)
+    return text
+
+
+def spec_ratchets(paths, base_get, head_get):
+    """Reasons the head edits or removes spec that the base has. A rename is a removal:
+    the diff is read with --no-renames, so the old path is gone at head."""
+    out = []
+    for path in sorted(p for p in paths if is_spec(p)):
+        # Cargo also builds tests/<dir>/main.rs as a test target, which `spec` does not
+        # run on its own. Only direct tests/<name>.rs files are spec there.
+        rest = path[len(KERNEL_TESTS):] if path.startswith(KERNEL_TESTS) else None
+        if rest is not None and ("/" in rest or not rest.endswith(".rs")) and head_get(path) is not None:
+            out.append(f"spec {path} is not a direct {KERNEL_TESTS}<name>.rs file")
+        old = base_get(path)
+        if old is None:
+            continue
+        new = head_get(path)
+        if new is None:
+            out.append(f"spec {path} was removed")
+            continue
+        try:
+            base_form = spec_form(path, old)
+        except ValueError:
+            # A base file that cannot be read can only stay byte-for-byte the same.
+            base_form = None
+        if base_form is None:
+            same = new == old
+        else:
+            try:
+                same = spec_form(path, new) == base_form
+            except ValueError as error:
+                out.append(f"spec {path} {error}")
+                continue
+        if not same:
+            out.append(f"spec {path} was edited")
+    return out
+
+
+# ---------- data modules ----------
+
+# Lane B Python modules that a base test imports. Importing a module runs its top-level
+# code inside the importing test's process, where it could patch that test, so such a
+# module must stay pure data: a docstring and assignments of literals, nothing that
+# runs. A change that adds anything else is lane C (#125, stage 2).
+DATA_MODULES = ("tools/kernel_mutants.py",)
+
+
+def data_module_errors(path, text):
+    """Why `text` is not pure data, or [] when it is. Unparsable text is not data."""
+    try:
+        tree = python_ast(text)
+    except ValueError as error:
+        return [f"{path} {error}"]
+    out, seen = [], set()
+    for index, node in enumerate(tree.body):
+        if index == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) \
+                and isinstance(node.value.value, str):
+            continue
+        # One plain upper-case name per assignment, each assigned once: a second
+        # `BEND_MUTANTS = []` or `X = BEND_MUTANTS = []` would empty a list that the
+        # mutant ratchet reads from its first assignment.
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) \
+                and re.fullmatch(r"[A-Z][A-Z0-9_]*", node.targets[0].id) and node.targets[0].id not in seen:
+            try:
+                ast.literal_eval(node.value)
+                seen.add(node.targets[0].id)
+                continue
+            except ValueError:
+                pass
+        out.append(f"{path}:{node.lineno} is not a single literal assignment of a new UPPER_CASE name, "
+                   "so importing it could run code or replace data")
+    return out
+
+
+def data_module_ratchets(paths, head_get):
+    out = []
+    for path in sorted(set(paths) & set(DATA_MODULES)):
+        text = head_get(path)
+        if text is not None:
+            out.extend(data_module_errors(path, text))
+    return out
+
+
 # ---------- classify ----------
 
-def classify(paths, base_get, head_get, lanes):
+def classify(paths, base_get, head_get, lanes, head_links=()):
     head_claims = head_get("claims.toml") or ""
     doc_cited = set(re.findall(r'"doc:([^#"]+)', head_claims)) | set(re.findall(r'"doc:([^#"]+)', base_get("claims.toml") or ""))
     by_path = {path: lane_of(path, lanes, doc_cited) for path in paths}
-    escalations = ratchets(base_get, head_get)
+    escalations = ratchets(base_get, head_get) + spec_ratchets(paths, base_get, head_get)
+    escalations += data_module_ratchets(paths, head_get)
+    escalations += [f"spec {path} is a symbolic link" for path in head_links]
     lane = max([entry[0] for entry in by_path.values()] + ["A"], key=ORDER.get)
     if escalations:
         lane = "C"
@@ -370,14 +541,31 @@ def kernel_purity_errors(files):
     return out
 
 
-def kernel_sources():
-    base = ROOT / KERNEL_SRC
-    return {p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8") for p in sorted(base.rglob("*.rs"))}
+def kernel_sources(ref=None):
+    """Every .rs file under the kernel's src/, from the working tree or, with ref, from that commit."""
+    if ref is None:
+        base = ROOT / KERNEL_SRC
+        return {p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8") for p in sorted(base.rglob("*.rs"))}
+    get = reader(ref)
+    # -z: without it git quotes an unusual name, and a quoted name would be skipped.
+    names = git("ls-tree", "-r", "-z", "--name-only", f"{ref}^{{commit}}", "--", f"{KERNEL_SRC}/").split("\0")
+    return {name: get(name) for name in sorted(names) if name.endswith(".rs")}
 
 
 def read(path):
     target = ROOT / path
     return target.read_text(encoding="utf-8") if target.exists() else None
+
+
+def invariant_errors(get, kernel_files):
+    """The rules that hold on every commit, over files read by `get`."""
+    lanes_text = get(LANES_FILE)
+    if lanes_text is None:
+        return [f"{LANES_FILE}: missing"]
+    owner, lanes = load_lanes(lanes_text)
+    manifest = get(HOST_MANIFEST)
+    manifest_errors = sabotage_default_errors(manifest) if manifest is not None else [f"{HOST_MANIFEST}: missing"]
+    return codeowners_errors(owner, lanes, get(CODEOWNERS_FILE)) + manifest_errors + kernel_purity_errors(kernel_files)
 
 
 def main(argv=None):
@@ -393,7 +581,8 @@ def main(argv=None):
     c.add_argument("--enforce", action="store_true")
     o = sub.add_parser("codeowners")
     o.add_argument("--write", action="store_true")
-    sub.add_parser("invariants")
+    i = sub.add_parser("invariants")
+    i.add_argument("--ref", help="check this commit, read through git, instead of the working tree")
     args = parser.parse_args(argv)
     try:
         return run(parser, args)
@@ -420,7 +609,12 @@ def run(parser, args):
         if args.head_sha and git("rev-parse", "--verify", f"{args.head}^{{commit}}").strip() != args.head_sha:
             sys.exit(f"policy: --head {args.head} is not --head-sha {args.head_sha}; an approval is of one commit")
         paths = [p for p in git("diff", "--name-only", "--no-renames", args.base, args.head).splitlines() if p]
-        result = classify(paths, base_get, head_get, lanes)
+        # git quotes a name with unusual characters, and a quoted name matches no lane
+        # pattern and no ratchet. Refuse rather than judge a path we cannot read.
+        quoted = [p for p in paths if p.startswith('"')]
+        if quoted:
+            sys.exit(f"policy: paths with unusual characters cannot be classified: {quoted}")
+        result = classify(paths, base_get, head_get, lanes, spec_links(args.head, paths))
         needs_owner = result["lane"] == "C" or args.fork
         reviews = json.loads(Path(args.reviews).read_text(encoding="utf-8")) if args.reviews else []
         result["fork"] = args.fork
@@ -434,15 +628,16 @@ def run(parser, args):
             return 1 if args.enforce else 0
         return 0
 
-    owner, lanes = load_lanes(read(LANES_FILE))
     if args.command == "codeowners":
+        owner, lanes = load_lanes(read(LANES_FILE))
         if args.write:
             (ROOT / CODEOWNERS_FILE).write_text(codeowners_text(owner, lanes), encoding="utf-8", newline="\n")
             return 0
         errors = codeowners_errors(owner, lanes, read(CODEOWNERS_FILE))
+    elif args.ref:
+        errors = invariant_errors(reader(args.ref), kernel_sources(args.ref))
     else:
-        errors = (codeowners_errors(owner, lanes, read(CODEOWNERS_FILE)) + sabotage_default_errors(read(HOST_MANIFEST))
-                  + kernel_purity_errors(kernel_sources()))
+        errors = invariant_errors(read, kernel_sources())
     print(json.dumps({"errors": errors}, indent=2))
     return 1 if errors else 0
 

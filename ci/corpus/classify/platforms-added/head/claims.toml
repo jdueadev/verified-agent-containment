@@ -1,0 +1,9 @@
+[[claim]]
+id = "K-1"
+statement = "The kernel fails closed."
+layer = "bend-kernel"
+status = "tested"
+evidence = ["law:a"]
+falsifier = "A state that stays live."
+files = ["formal/LAWS.bend"]
+platforms = [{ name = "wsl2", commit = "abc1234", result = "pass" }]

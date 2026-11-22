@@ -1,0 +1,5 @@
+checker = "classify"
+origin = "#125 seed: the status ratchet"
+twin = "status-lowered"
+expect_lane = "C"
+expect_escalation = "status raised from planned to tested"

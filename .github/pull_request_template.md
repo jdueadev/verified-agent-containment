@@ -10,7 +10,7 @@ Closes #
 ## Process tier
 <!-- Heavy or routine, as AGENTS.md (Workflow, step 1) defines them. Heavy needs an issue and a design review first. -->
 - [ ] Touches the rules or the gate (`AGENTS.md`, `CLAUDE.md`, `ci/`, `.github/`, `docs/decisions/`, `tools/policy_check.py`)
-- [ ] Touches what decides "passed" (`scripts/check.sh`, `tools/mutation_check.py`, kernel law tests, harness, live suite, red-team runner, lab results)
+- [ ] Touches what decides "passed" (`scripts/check.sh`, `tools/mutation_check.py`, an existing kernel law test, harness, live suite, red-team runner, lab results)
 - [ ] Crosses a trust boundary (kernel events, controller, gateway, reset, sandbox isolation, claims schema)
 - [ ] Removes, narrows or loosens a check, widens what a checker accepts, or modifies or deletes an existing test assertion
 
