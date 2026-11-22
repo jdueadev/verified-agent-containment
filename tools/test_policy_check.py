@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """Unit tests for tools/policy_check.py. Each rule has a case that makes it fire."""
+import contextlib
+import io
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import policy_check as pc
@@ -199,10 +204,69 @@ class ApprovalTests(unittest.TestCase):
         self.assertFalse(pc.approved([self.review("jdueadev", "APPROVED"), self.review("jdueadev", "CHANGES_REQUESTED")], "@jdueadev", "h1"))
         self.assertTrue(pc.approved([self.review("jdueadev", "APPROVED"), self.review("jdueadev", "COMMENTED")], "@jdueadev", "h1"))
 
+    def test_a_dismissal_cancels_an_earlier_approval(self):
+        reviews = [self.review("jdueadev", "APPROVED"), self.review("jdueadev", "DISMISSED")]
+        self.assertFalse(pc.approved(reviews, "@jdueadev", "h1"))
+        reviews.append(self.review("jdueadev", "APPROVED"))
+        self.assertTrue(pc.approved(reviews, "@jdueadev", "h1"))
+
+    def test_a_deleted_reviewer_is_nobody(self):
+        ghost = {"user": None, "state": "APPROVED", "commit_id": "h1"}
+        self.assertFalse(pc.approved([ghost], "@jdueadev", "h1"))
+        self.assertTrue(pc.approved([ghost, self.review("jdueadev", "APPROVED")], "@jdueadev", "h1"))
+
+    def test_an_unknown_commit_never_matches(self):
+        self.assertFalse(pc.approved([self.review("jdueadev", "APPROVED", None)], "@jdueadev", None))
+        self.assertFalse(pc.approved([self.review("jdueadev", "APPROVED", "")], "@jdueadev", ""))
+        self.assertFalse(pc.approved([self.review("jdueadev", "APPROVED", None)], "@jdueadev", "h1"))
+
     def test_paginated_reviews_are_read_in_order(self):
         pages = [[self.review("jdueadev", "APPROVED")], [self.review("jdueadev", "CHANGES_REQUESTED")]]
         self.assertFalse(pc.approved(pages, "@jdueadev", "h1"))
         self.assertTrue(pc.approved(list(reversed(pages)), "@jdueadev", "h1"))
+
+
+class EnforceExitTests(unittest.TestCase):
+    """`classify --enforce` is the gate the `policy` workflow runs. These drive it end to
+    end, with git replaced by fixed trees so the result depends on nothing local."""
+
+    LANES_TEXT = (ROOT / "ci/lanes.toml").read_text(encoding="utf-8")
+
+    def run_classify(self, paths, *extra, reviews=None):
+        files = dict(BASE, **{"ci/lanes.toml": self.LANES_TEXT})
+        argv = ["classify", "--base", "b", "--head", "h", *extra]
+        with tempfile.TemporaryDirectory() as tmp:
+            if reviews is not None:
+                review_file = Path(tmp) / "reviews.json"
+                review_file.write_text(json.dumps(reviews), encoding="utf-8")
+                argv += ["--reviews", str(review_file)]
+            with mock.patch.object(pc, "reader", lambda ref: files.get), \
+                    mock.patch.object(pc, "git", lambda *args: "\n".join(paths) + "\n"), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                return pc.main(argv)
+
+    def approval(self, sha="h1"):
+        return [{"user": {"login": "jdueadev"}, "state": "APPROVED", "commit_id": sha}]
+
+    def test_lane_c_without_approval_fails_only_when_enforced(self):
+        self.assertEqual(self.run_classify(["AGENTS.md"], "--head-sha", "h1", "--enforce", reviews=[]), 1)
+        self.assertEqual(self.run_classify(["AGENTS.md"], "--head-sha", "h1", reviews=[]), 0)
+
+    def test_lane_c_approved_at_this_head_passes(self):
+        self.assertEqual(self.run_classify(["AGENTS.md"], "--head-sha", "h1", "--enforce", reviews=self.approval()), 0)
+
+    def test_lane_c_approved_at_an_older_head_fails(self):
+        self.assertEqual(self.run_classify(["AGENTS.md"], "--head-sha", "h2", "--enforce", reviews=self.approval("h1")), 1)
+
+    def test_a_fork_needs_approval_whatever_its_lane(self):
+        self.assertEqual(self.run_classify(["docs/reference.md"], "--head-sha", "h1", "--fork", "--enforce", reviews=[]), 1)
+        self.assertEqual(self.run_classify(["docs/reference.md"], "--head-sha", "h1", "--enforce", reviews=[]), 0)
+
+    def test_reviews_or_enforce_without_a_head_commit_is_refused(self):
+        for extra, reviews in ((("--enforce",), None), ((), self.approval())):
+            with self.subTest(extra=extra), self.assertRaises(SystemExit) as stop:
+                self.run_classify(["AGENTS.md"], *extra, reviews=reviews)
+            self.assertEqual(stop.exception.code, 2)
 
 
 class CodeownersAndInvariantTests(unittest.TestCase):

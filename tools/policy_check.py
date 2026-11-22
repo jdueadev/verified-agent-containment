@@ -227,7 +227,11 @@ def classify(paths, base_get, head_get, lanes):
 
 
 def approved(reviews, owner, head_sha):
-    """True when the owner's latest review approves exactly this head commit."""
+    """True when the owner's latest review approves exactly this head commit.
+    Without a head commit nothing is approved: a review whose commit is unknown
+    must never match a head that is unknown too."""
+    if not head_sha:
+        return False
     latest = None
     flat = [r for page in reviews for r in (page if isinstance(page, list) else [page])]
     for review in flat:
@@ -294,6 +298,8 @@ def main(argv=None):
     o.add_argument("--write", action="store_true")
     sub.add_parser("invariants")
     args = parser.parse_args(argv)
+    if args.command == "classify" and (args.reviews or args.enforce) and not args.head_sha:
+        parser.error("--reviews and --enforce need --head-sha: approval is only ever of one commit")
 
     if args.command == "classify":
         base_get, head_get = reader(args.base), reader(args.head)
