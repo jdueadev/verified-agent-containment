@@ -11,6 +11,7 @@ policy_check = importlib.import_module("policy_check")
 workflow_lint = importlib.import_module("workflow_lint")
 pins_check = importlib.import_module("pins_check")
 vac_verify = importlib.import_module("vac_verify")
+vac_safety = importlib.import_module("vac_safety")
 
 Finding = vac_core.Finding
 Rule = vac_core.Rule
@@ -139,6 +140,62 @@ def formal_in_sync(ctx):
             for cid, files in sorted(vac_verify.stale(ctx.root).items())]
 
 
+def base_ref(ctx):
+    if ctx.base:
+        return ctx.base
+    return ctx.once("base", lambda: vac_core.git(ctx, "merge-base", "HEAD", "origin/main").strip())
+
+
+def escalations(ctx):
+    def compute():
+        base = base_ref(ctx)
+        base_get, head_get = policy_check.reader(base), policy_check.reader("HEAD")
+        paths = [p for p in vac_core.git(ctx, "diff", "--name-only", "--no-renames", base, "HEAD").splitlines() if p]
+        c = vac_safety.core(base_get)
+        core_hits, waivable = vac_safety.split(vac_safety.escalation_reasons(base, head_get, base_get, paths), c)
+        return core_hits + vac_safety.status_drops(c, head_get), waivable, base_get, head_get
+    return ctx.once("escalations", compute)
+
+
+def core_intact(ctx):
+    core_hits = escalations(ctx)[0]
+    return [Finding("SAFE-CORE", "claims.toml", 0, f"{r}: evidence a claim cites is never waivable; restore it, or add new evidence in a new name")
+            for r in core_hits]
+
+
+def waivers_cover(ctx):
+    _, waivable, base_get, head_get = escalations(ctx)
+    out = []
+    try:
+        base_rows = vac_safety.load_waivers(base_get(vac_safety.WAIVERS_FILE))
+        head_rows = vac_safety.load_waivers(head_get(vac_safety.WAIVERS_FILE))
+    except ValueError as error:
+        return [Finding("WAIVE-1", vac_safety.WAIVERS_FILE, 0, str(error))]
+    if head_rows[:len(base_rows)] != base_rows:
+        out.append(Finding("WAIVE-1", vac_safety.WAIVERS_FILE, 0, "waivers are append-only: an existing row was changed or removed"))
+    covered = {row["reason"] for row in head_rows}
+    out += [Finding("WAIVE-1", vac_safety.WAIVERS_FILE, 0, f"{r}: no waiver; run vac waive") for r in waivable if r not in covered]
+    for row in head_rows[len(base_rows):]:
+        receipt_path = ctx.root / "ci/waiver-receipts" / f"{row['receipt']}.json"
+        if not receipt_path.exists():
+            out.append(Finding("WAIVE-1", str(receipt_path.relative_to(ctx.root)), 0, f"{row['reason']}: receipt missing"))
+            continue
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        body = {k: v for k, v in receipt.items() if k != "digest"}
+        digest = __import__("hashlib").sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+        if digest != row["receipt"] or receipt.get("digest") != digest:
+            out.append(Finding("WAIVE-1", str(receipt_path.relative_to(ctx.root)), 0, f"{row['reason']}: receipt digest does not match"))
+        elif not receipt.get("ok") or row["reason"] not in receipt.get("waivable", []):
+            out.append(Finding("WAIVE-1", str(receipt_path.relative_to(ctx.root)), 0, f"{row['reason']}: the safety loop did not pass for it"))
+        else:
+            moved = [p for p in vac_core.git(ctx, "diff", "--name-only", row["head"], "HEAD").splitlines()
+                     if p and p != vac_safety.WAIVERS_FILE and not p.startswith("ci/waiver-receipts/")]
+            if moved:
+                out.append(Finding("WAIVE-1", vac_safety.WAIVERS_FILE, 0,
+                                   f"{row['reason']}: the tree changed after the safety loop ran ({', '.join(moved[:5])}); run vac waive again"))
+    return out
+
+
 def tool_run(rule_id, argv, path, timeout=3600):
     def check(ctx):
         code, out, err = vac_core.run_tool(ctx, rule_id, argv, timeout)
@@ -221,6 +278,11 @@ RULES = (
     Rule("FV-SYNC", "Every formal claim was confirmed against the code it covers at its current files", RC,
          ("claims.toml", "formal/**", "crates/**", "results/formal-sync.json"), formal_in_sync,
          "rerun the formal checks (vac check --t1), then vac verify record", (209,)),
+    Rule("SAFE-CORE", "No change removes, rewords or lowers evidence that a claim cites", T0,
+         ("claims.toml", "formal/**", "tools/kernel_mutants.py", "crates/**"), core_intact,
+         "restore the cited law, mutant, scenario or claim; strengthen by adding a new one under a new name", (209,)),
+    Rule("WAIVE-1", "Every other weakening carries a waiver backed by a passing safety loop", T0,
+         ("**",), waivers_cover, "vac waive --reason '<the reason>' --issue N", (209,)),
     Rule("TOOL-TESTS", "The tool unit tests pass", T0, ("tools/**", "ci/**", "claims.toml", "results/**", "formal/**"),
          tool_run("TOOL-TESTS", [sys.executable, "-m", "unittest", "discover", "-s", "tools", "-p", "test_*.py"], "tools"),
          "python3 -m unittest discover -s tools -p 'test_*.py'", (65,)),

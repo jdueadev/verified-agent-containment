@@ -31,6 +31,7 @@ the snapshot from the start. A change under results/ is a loud warning.
 The tier line is always T0, and it names only checks that passed.
 """
 import argparse
+import json
 import os
 import shlex
 import shutil
@@ -219,6 +220,47 @@ def cmd_verify(args):
     head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     ids = verify.record(ROOT, head)
     print(f"vac: recorded {len(ids)} formal claims as synced at {head[:12]}")
+    return 0
+
+
+def cmd_safety(args):
+    import importlib
+    load_registry()
+    safety = importlib.import_module("vac_safety")
+    base = args.base or subprocess.run(["git", "-C", str(ROOT), "merge-base", "HEAD", "origin/main"],
+                                       capture_output=True, text=True).stdout.strip()
+    receipt = safety.loop(ROOT, base, run_tools=not args.no_tools)
+    print(json.dumps(receipt, indent=2))
+    return 0 if receipt["ok"] else 1
+
+
+def cmd_waive(args):
+    import importlib
+    load_registry()
+    safety = importlib.import_module("vac_safety")
+    dirty = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no"],
+                           capture_output=True, text=True).stdout.strip()
+    if dirty:
+        print("vac: waive refused: commit the change first, so the safety loop judges exactly what lands", file=sys.stderr)
+        return 2
+    base = args.base or subprocess.run(["git", "-C", str(ROOT), "merge-base", "HEAD", "origin/main"],
+                                       capture_output=True, text=True).stdout.strip()
+    receipt = safety.loop(ROOT, base)
+    if not receipt["ok"]:
+        print(json.dumps(receipt, indent=2))
+        print("vac: waive refused: the safety loop failed; nothing was written", file=sys.stderr)
+        return 1
+    if args.reason not in receipt["waivable"]:
+        print(f"vac: waive refused: {args.reason!r} is not a waivable reason here. Waivable: {receipt['waivable']}", file=sys.stderr)
+        return 2
+    receipts = ROOT / "ci/waiver-receipts"
+    receipts.mkdir(parents=True, exist_ok=True)
+    (receipts / f"{receipt['digest']}.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path = ROOT / safety.WAIVERS_FILE
+    rows = safety.load_waivers(path.read_text(encoding="utf-8") if path.exists() else "")
+    rows.append({"reason": args.reason, "issue": args.issue, "receipt": receipt["digest"], "head": receipt["head"]})
+    path.write_text(safety.waiver_toml(rows), encoding="utf-8")
+    print(f"vac: waiver written for {args.reason!r} (issue #{args.issue}, receipt {receipt['digest'][:12]}); commit ci/")
     return 0
 
 
@@ -613,6 +655,17 @@ def build_parser():
     verify.add_argument("action", choices=("touched", "status", "record"))
     verify.add_argument("--base", default="origin/main")
     verify.set_defaults(func=cmd_verify)
+
+    safety = sub.add_parser("safety", help="run the safety loop: is the formally verified base intact from BASE to HEAD")
+    safety.add_argument("--base")
+    safety.add_argument("--no-tools", action="store_true", help="only the core comparison, no bend/cargo/mutation runs")
+    safety.set_defaults(func=cmd_safety)
+
+    waive = sub.add_parser("waive", help="waive a non-core weakening, only if the safety loop passes")
+    waive.add_argument("--reason", required=True)
+    waive.add_argument("--issue", required=True, type=int)
+    waive.add_argument("--base")
+    waive.set_defaults(func=cmd_waive)
 
     rules = sub.add_parser("rules", help="list every rule: id, stages, title")
     rules.set_defaults(func=cmd_rules)
