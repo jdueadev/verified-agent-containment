@@ -21,7 +21,8 @@ One command surface for the paths that do not need root:
       it records nothing.
   vac lab plan
       Print the steps for the maintainer's root lab run (T2) on main, and the
-      stale claims it would refresh. Prints only; runs nothing.
+      stale claims it would refresh. It runs only the read-only strict claims
+      check and git rev-parse.
   vac attack-suite|live|live-suite|redteam|ctl|hud
       Refused with exit 2. AGENTS.md INV-11: throwaway machine only.
 
@@ -530,8 +531,12 @@ Commit: {commit} (main). Lab evidence counts only for a commit on main (AGENTS.m
 
 
 def cmd_lab(args):
-    code, out, _err = git(["rev-parse", "origin/main"])
-    commit = out.strip() if code == 0 and out.strip() else "<origin/main: fetch it first>"
+    code, out, _err = git(["rev-parse", "--verify", "--quiet", "origin/main^{commit}"])
+    commit = out.strip() if code == 0 else ""
+    if not commit:
+        print("vac: origin/main is missing; run `git fetch origin main` first, so the plan names a real commit",
+              file=sys.stderr)
+        return 1
     head_code, head, _err = git(["rev-parse", "HEAD"])
     head = head.strip() if head_code == 0 else ""
     note = "" if head == commit else (
@@ -633,10 +638,11 @@ def build_parser():
                            help="auto (default), podman, docker, or host")
     preflight.set_defaults(func=cmd_preflight)
 
-    lab = sub.add_parser("lab", help="print the steps for the maintainer's root lab run")
+    lab = sub.add_parser("lab", help="print the steps for the maintainer's root lab run (runs nothing)")
     lab_sub = lab.add_subparsers(dest="lab_command", required=True)
-    plan = lab_sub.add_parser("plan", help="print the root lab run steps; runs nothing",
-                              description="Print the maintainer's root lab run (T2) as steps. Runs nothing.")
+    plan = lab_sub.add_parser("plan", help="print the root lab run steps",
+                              description=("Print the maintainer's root lab run (T2) as steps. It runs only "
+                                           "the read-only strict claims check and git rev-parse."))
     plan.set_defaults(func=cmd_lab)
 
     for name in REFUSED:

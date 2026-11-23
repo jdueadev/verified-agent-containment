@@ -53,6 +53,9 @@ C = [
   "tools/generate_proof.py",
   # After-the-fact audit of merges to main (#54, #71).
   "tools/merge_digest.py",
+  # A no-root driver (#180). It starts commands as the person who runs it, so it
+  # is trusted base, listed by name rather than left to the unlisted default.
+  "tools/vac.py",
   # Writes lab evidence from a CI run (#53).
   "tools/lab_record.py",
   # The attack harness, live suite and red-team runner decide what "passed"
