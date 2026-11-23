@@ -261,6 +261,15 @@ main() {
   cp -R /opt/cargo/registry "$WORK/cargo/registry"
   export CARGO_HOME="$WORK/cargo" CARGO_NET_OFFLINE=true
   check_tools
+  # From here on git finds the gitdir through a gitfile in the copy, not the
+  # environment. The tests build throwaway repositories with `git -C <tmp> init`,
+  # and an exported GIT_DIR and GIT_WORK_TREE would send every one of them to the
+  # read-only /git mount instead (58 errors in the first container run).
+  printf 'gitdir: %s\n' "$GIT_DIR" > "$REPO/.git"
+  unset GIT_DIR GIT_WORK_TREE
+  [ "$(git rev-parse --verify --quiet 'HEAD^{commit}')" = "$HEAD_SHA" ] \
+    || die "the gitfile in $REPO does not resolve to HEAD $HEAD_SHA"
+  [ "$(git rev-parse --show-toplevel)" = "$REPO" ] || die "git does not see $REPO as the work tree"
 
   say "image $CHECK_IMAGE_ID, context hash $CONTEXT_HASH"
   say "ci/check.Dockerfile sha256 $(sha256sum ci/check.Dockerfile | cut -d' ' -f1)"
