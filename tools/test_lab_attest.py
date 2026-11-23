@@ -202,6 +202,23 @@ class TreeTests(unittest.TestCase):
             self.assertTrue(key["kid"])
 
 
+class KeyRefreshTests(unittest.TestCase):
+    def key(self, kid, n="AQAB"):
+        return {"kty": "RSA", "kid": kid, "alg": "RS256", "use": "sig", "n": n, "e": "AQAB"}
+
+    def test_a_key_github_rotated_out_stays_pinned(self):
+        merged = la.merge_keys({"keys": [self.key("old")]}, {"keys": [self.key("new"), {"kty": "EC", "kid": "x"}]})
+        self.assertEqual([k["kid"] for k in merged["keys"]], ["new", "old"])
+
+    def test_a_pinned_kid_with_new_material_is_refused(self):
+        with self.assertRaises(ValueError):
+            la.merge_keys({"keys": [self.key("k", n="AAAA")]}, {"keys": [self.key("k", n="BBBB")]})
+
+    def test_refetching_the_same_keys_changes_nothing(self):
+        pinned = {"keys": [self.key("a"), self.key("b")]}
+        self.assertEqual(la.merge_keys(pinned, {"keys": [self.key("b"), self.key("a")]}), pinned)
+
+
 class RecordTests(unittest.TestCase):
     def test_the_manifest_names_match_what_lab_record_commits(self):
         self.assertEqual({k: v for k, v in la.MANIFEST_NAMES.items() if k in lab_record.SUITES},
