@@ -202,3 +202,70 @@ runs before you trust a folder"), `hooks` and `cli-reference`. The `env` block
 is ambiguous there: settings says most values apply only after trust, and
 permissions lists `env` as used before trust. This record treats it as
 running before review.
+
+## Amendment, 2026-11-23: shared permissions (#173)
+
+Appended; the record above is not edited. The first settings key, `permissions`,
+is allowed, and only in a form that restricts.
+
+- **What is accepted.** `SETTINGS_KEYS` is `("permissions",)`. In base code,
+  `invariants` accepts a non-empty `permissions` object holding only `deny`, `ask`
+  and `disableBypassPermissionsMode` set to exactly `"disable"`. The checks on
+  `deny` and `ask`:
+  - each is a list, by `type`, of at most 64 strings, also by `type`;
+  - each string is unique, at most 200 characters, and printable ASCII, which
+    excludes Unicode `Cc` and `Cf`;
+  - the file must not use `NaN`, `Infinity` or `-Infinity`, because Python
+    accepts them and JavaScript's `JSON.parse` does not, and a file Claude Code
+    cannot parse would silently carry no rules.
+
+  An empty `permissions` is refused with one error naming the key. It does
+  nothing, and `tools/test_policy_claude.py` (immutable on `main`) already pins
+  that behaviour.
+- **What is refused, and why.**
+  - **`allow` runs checkout code without a prompt.** The tool tests import every
+    `tools/test_*.py`. `policy_check.py` and `claims_check.py` put `tools/` first
+    on `sys.path`, so a planted `tools/json.py` shadows the standard library.
+    `cargo test` runs `build.rs`. Today those commands stop at a prompt in a
+    maintainer's session; a shared `allow` would run a branch's code with the
+    maintainer's credentials, including `gh pr review --approve`.
+  - **Every scalar is refused**, `defaultMode` and `additionalDirectories`
+    included, and so are the "restrictive" ones such as
+    `blockWritesOutsideWorkingDirectories`: a project value overrides the user's
+    own, so `false` would loosen a user's `true`.
+  - **Anyone who wants T0 without prompts** sets it in their own user or local
+    settings, where the risk is theirs.
+- **What it rests on** (Claude Code docs, `permissions` and `permission-modes`, read
+  2026-11-23):
+  - deny is evaluated first in every scope, and an `allow` elsewhere cannot carve
+    an exception out of it;
+  - deny holds in every mode, including `bypassPermissions`;
+  - deny and ask apply before the folder is trusted;
+  - a path rule `/x` is relative to the settings source, the project root;
+  - a Bash rule is "not a security boundary". It misses `/usr/bin/x`,
+    `sh -c '…'` and `git -C . …`, and a Read or Edit deny does not stop a script
+    opening the file itself.
+
+  So these rules are defense in depth, never evidence, and no claim lists them.
+- **Scope of the check.**
+  - Falsifier (a) covers the root `.claude/settings.json`. A nested
+    `<dir>/.claude/settings.json` escalates in `classify` (rule 2), and the
+    maintainer reviews it.
+  - The untracked `.claude/settings.local.json` is outside the check.
+  - Deny and ask entries are also reviewed for blinding or blocking the
+    maintainer, for example `Read(/AGENTS.md)` or `Bash(gh *)`, not only for
+    loosening.
+- **Review without running, again.** A running session reloads settings files,
+  so `gh pr checkout` of an agent branch inside a trusted session loads that
+  branch's settings. Rule 7 now says: a separate `git worktree`, started with
+  `claude --bare --setting-sources user`.
+- **Two pull requests.**
+  - **The checker.** `policy` runs base `invariants`, which rejected every
+    settings key until this change. So the checker, its tests and the corpus
+    cases (`ci/corpus/invariants/claude-permissions-*`) land first, with no
+    tracked file.
+  - **The file.** `.claude/settings.json` lands next, judged on base by the new
+    code. It brings a test that its required deny rules are present.
+- **Design review.** Three angles (invariants, attack, testing), recorded on #173.
+  The two blocking findings were `allow` and the bootstrapping order, and both
+  are taken.

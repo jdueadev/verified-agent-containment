@@ -1,0 +1,1 @@
+{"permissions": {"deny": ["Edit(/results/**)"], "allow": ["Bash(python3 -m unittest discover -s tools -p test_*.py)"]}}

@@ -425,8 +425,19 @@ CLAUDE_ALLOWED = ("settings.json", "hooks/", "skills/", "agents/", "handover/")
 # Top-level keys a tracked .claude/settings.json may use. Settings such as hooks,
 # env, apiKeyHelper, statusLine and MCP servers take effect when a session starts,
 # before anyone has reviewed the branch, so each key is added here by its own
-# reviewed change. Empty: no shared settings yet.
-SETTINGS_KEYS = ()
+# reviewed change. `permissions` is the first (#173), and only in a form that
+# restricts: see PERMISSION_KEYS.
+SETTINGS_KEYS = ("permissions",)
+# What a shared `permissions` object may hold. `deny` and `ask` only restrict, and
+# Claude Code evaluates deny first in every scope and mode. Everything else is
+# refused: `allow` would run checkout code without a prompt in a trusted session
+# (the tool tests import every tools/test_*.py; cargo test runs build.rs), and a
+# project scalar such as `defaultMode` or `blockWritesOutsideWorkingDirectories`
+# overrides the user's own value, so even a "restrictive" one can loosen it.
+PERMISSION_KEYS = ("deny", "ask", "disableBypassPermissionsMode")
+PERMISSION_RULE_LISTS = ("deny", "ask")
+PERMISSION_RULES_MAX = 64
+PERMISSION_RULE_MAX_CHARS = 200
 CLAUDE_SETTINGS = ".claude/settings.json"
 SETTINGS_MAX_BYTES = 64 * 1024
 # Frontmatter keys a shared skill or agent prompt may use. The others
@@ -603,13 +614,58 @@ def settings_errors(text):
     if len(text.encode("utf-8")) > SETTINGS_MAX_BYTES:
         return [f"{CLAUDE_SETTINGS}: is larger than {SETTINGS_MAX_BYTES} bytes"]
     try:
-        settings = json.loads(text, object_pairs_hook=_unique_object)
+        # parse_constant: Python accepts NaN and Infinity, JavaScript's JSON.parse does
+        # not, and a file Claude Code cannot parse would silently carry no rules.
+        settings = json.loads(text, object_pairs_hook=_unique_object, parse_constant=_no_constant)
     except (ValueError, RecursionError) as error:
         return [f"{CLAUDE_SETTINGS}: is not a JSON object ({type(error).__name__}: {error})"]
     if not isinstance(settings, dict):
         return [f"{CLAUDE_SETTINGS}: is not a JSON object"]
-    return [f"{CLAUDE_SETTINGS}: key {key!r} is not allowed yet; each settings key is added "
-            "to SETTINGS_KEYS by its own reviewed change" for key in sorted(set(settings) - set(SETTINGS_KEYS))]
+    out = [f"{CLAUDE_SETTINGS}: key {key!r} is not allowed yet; each settings key is added "
+           "to SETTINGS_KEYS by its own reviewed change" for key in sorted(set(settings) - set(SETTINGS_KEYS))]
+    if "permissions" in settings:
+        out.extend(permission_errors(settings["permissions"]))
+    return out
+
+
+def _no_constant(name):
+    raise ValueError(f"{name} is not JSON")
+
+
+def permission_errors(value):
+    """A shared `permissions` object restricts and nothing else (#173)."""
+    where = f"{CLAUDE_SETTINGS}: 'permissions'"
+    if type(value) is not dict:
+        return [f"{where} is not an object"]
+    if not value:
+        return [f"{where} is empty; it holds at least one of {', '.join(PERMISSION_KEYS)}"]
+    out = [f"{where}: key {key!r} is not allowed; a shared permissions object holds only "
+           f"{', '.join(PERMISSION_KEYS)}, which restrict" for key in sorted(set(value) - set(PERMISSION_KEYS))]
+    if "disableBypassPermissionsMode" in value and value["disableBypassPermissionsMode"] != "disable":
+        out.append(f"{where}: 'disableBypassPermissionsMode' must be exactly \"disable\"")
+    for name in PERMISSION_RULE_LISTS:
+        if name not in value:
+            continue
+        rules = value[name]
+        if type(rules) is not list:
+            out.append(f"{where}: {name!r} is not a list")
+            continue
+        if len(rules) > PERMISSION_RULES_MAX:
+            out.append(f"{where}: {name!r} has {len(rules)} rules, more than {PERMISSION_RULES_MAX}")
+        seen = set()
+        for index, rule in enumerate(rules):
+            label = f"{where}: {name}[{index}]"
+            if type(rule) is not str:
+                out.append(f"{label} is not a string")
+            elif not rule or len(rule) > PERMISSION_RULE_MAX_CHARS:
+                out.append(f"{label} is empty or longer than {PERMISSION_RULE_MAX_CHARS} characters")
+            elif not (rule.isascii() and rule.isprintable()):
+                out.append(f"{label} is not printable ASCII")
+            elif rule in seen:
+                out.append(f"{label} repeats {rule!r}")
+            else:
+                seen.add(rule)
+    return out
 
 
 def claude_path_errors(entries, get):

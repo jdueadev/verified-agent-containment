@@ -132,11 +132,12 @@ on no bypass list. A change under `.github/workflows/` is therefore pushed by
 the maintainer.
 
 Approval gates the merge, not the checkout. Shared settings and hooks run when
-a Claude Code session starts, so review a branch that touches `.claude/` or any
-agent configuration by reading its diff, or start Claude Code there with
-`claude --bare --setting-sources user` (both flags: `--bare` alone may still
-apply a project's `env` or credential helper). Never open an ordinary session on
-it first.
+a Claude Code session starts, and a running session reloads settings files when
+they change. So review a branch that touches `.claude/` or any agent
+configuration by reading its diff, or check it out in a separate `git worktree`
+and start Claude Code there with `claude --bare --setting-sources user` (both
+flags: `--bare` alone may still apply a project's `env` or credential helper).
+Never open an ordinary session on it, and never check it out inside one.
 
 ## When your change makes a claim stale
 

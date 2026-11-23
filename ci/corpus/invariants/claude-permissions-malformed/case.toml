@@ -1,0 +1,5 @@
+checker = "invariants"
+origin = "#173: a rule list with a non-string and a repeat"
+twin = "claude-permissions-allowed"
+expect = "reject"
+expect_error = "deny[1] is not a string"

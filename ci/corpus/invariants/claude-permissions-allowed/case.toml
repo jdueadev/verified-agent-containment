@@ -1,0 +1,3 @@
+checker = "invariants"
+origin = "#173: a shared permissions block that only restricts, twin of the permissions cases"
+expect = "accept"

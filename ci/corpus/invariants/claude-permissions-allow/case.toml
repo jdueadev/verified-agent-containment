@@ -1,0 +1,5 @@
+checker = "invariants"
+origin = "#173 review: a shared allow rule runs checkout code without a prompt in a trusted session"
+twin = "claude-permissions-allowed"
+expect = "reject"
+expect_error = "key 'allow' is not allowed"

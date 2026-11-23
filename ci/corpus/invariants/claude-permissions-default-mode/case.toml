@@ -1,0 +1,5 @@
+checker = "invariants"
+origin = "#173: defaultMode in a shared settings.json would set every session's permission mode"
+twin = "claude-permissions-allowed"
+expect = "reject"
+expect_error = "key 'defaultMode' is not allowed"
