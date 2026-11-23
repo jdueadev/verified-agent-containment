@@ -10,6 +10,7 @@ vac_core = importlib.import_module("vac_core")
 policy_check = importlib.import_module("policy_check")
 workflow_lint = importlib.import_module("workflow_lint")
 pins_check = importlib.import_module("pins_check")
+vac_comments = importlib.import_module("vac_comments")
 
 Finding = vac_core.Finding
 Rule = vac_core.Rule
@@ -133,6 +134,26 @@ def lean_pinned(ctx):
     return []
 
 
+def comment_tree(ctx):
+    return ctx.once("comment-tree", lambda: vac_comments.Tree(ctx.root, ctx.base or vac_comments.MAIN))
+
+
+def no_new_comments(ctx):
+    try:
+        spans = vac_comments.new_comments(comment_tree(ctx), ctx.changed)
+    except ValueError as error:
+        return [Finding("NC-1", vac_comments.DEBT_FILE, 0, str(error))]
+    return [Finding("NC-1", s.path, s.line, vac_comments.describe(s)) for s in spans]
+
+
+def comment_debt_shrinks(ctx):
+    try:
+        errors = vac_comments.debt_errors(comment_tree(ctx))
+    except ValueError as error:
+        errors = [str(error)]
+    return findings("NC-2", errors, vac_comments.DEBT_FILE)
+
+
 def tool_run(rule_id, argv, path, timeout=3600):
     def check(ctx):
         code, out, err = vac_core.run_tool(ctx, rule_id, argv, timeout)
@@ -212,6 +233,12 @@ RULES = (
          "python3 tools/generate_proof.py, then commit formal/PROOF.bend", (209,)),
     Rule("FV-PIN", "The Lean version that rechecks the proofs is pinned in ci/pins.env", T0, ("ci/pins.env",),
          lean_pinned, "add LEAN_VERSION=X.Y.Z to ci/pins.env", (209,)),
+    Rule("NC-1", "No tracked file outside ci/comment_debt.toml has a comment", T0, EVERYWHERE, no_new_comments,
+         "turn the comment into a rule in tools/vac_rules.py, a message the code prints, or a name; else delete it",
+         (209,)),
+    Rule("NC-2", "ci/comment_debt.toml only shrinks, and lists only files that still have comments", T0, EVERYWHERE,
+         comment_debt_shrinks, "python3 tools/vac.py comments --debt-write; a file can leave the list, never join it",
+         (209,)),
     Rule("TOOL-TESTS", "The tool unit tests pass", T0, ("tools/**", "ci/**", "claims.toml", "results/**", "formal/**"),
          tool_run("TOOL-TESTS", [sys.executable, "-m", "unittest", "discover", "-s", "tools", "-p", "test_*.py"], "tools"),
          "python3 -m unittest discover -s tools -p 'test_*.py'", (65,)),
