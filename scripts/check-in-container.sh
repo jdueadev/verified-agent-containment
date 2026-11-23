@@ -8,6 +8,17 @@
 #   scripts/check-in-container.sh [--no-strict]   build if needed, run scripts/check.sh
 #   scripts/check-in-container.sh --affected REF  run claims_check.py --affected REF in it
 #   scripts/check-in-container.sh --build-only    build, print the image id and context hash
+#   scripts/check-in-container.sh --checkout DIR [args]
+#       judge another checkout DIR (for example an agent's branch in its own
+#       git worktree) with this checkout's wrapper and image: run it from a
+#       trusted checkout of main. The image is built only from this checkout's
+#       committed inputs; DIR is mounted read-only as data. If DIR changes any
+#       image input (the Dockerfile, the entrypoint, ci/pins.env, the toolchain
+#       or a Cargo manifest or lock) the run is refused, so review those first.
+#
+# Running this script runs it as you, on your machine, and its build has the
+# network. On a branch you do not trust, never run that branch's own copy: run
+# main's copy with --checkout instead.
 #
 # ENGINE=docker (the default) or ENGINE=podman. Nothing else can be set: every
 # pin comes from ci/pins.env and rust-toolchain.toml, passed as build-args.
@@ -22,6 +33,12 @@ die() { echo "check-in-container: error: $*" >&2; exit 1; }
 ENGINE="${ENGINE:-docker}"
 case "$ENGINE" in docker|podman) ;; *) die "ENGINE must be docker or podman, not '$ENGINE'" ;; esac
 command -v "$ENGINE" >/dev/null || die "$ENGINE is not installed"
+target=""
+if [ "${1:-}" = --checkout ]; then
+  [ $# -ge 2 ] && [ -n "$2" ] || die "--checkout needs a directory"
+  target="$2"
+  shift 2
+fi
 build_only=0
 if [ "${1:-}" = --build-only ]; then
   [ $# = 1 ] || die "--build-only takes no other argument"
@@ -39,20 +56,30 @@ else
   native() { printf '%s\n' "$1"; }
 fi
 
+# The image comes from this script's own checkout (root). The checkout that is
+# judged (src) is the same one, or --checkout DIR.
 root="$(cd "$(dirname "$0")/.." && pwd -P)"
 cd "$root"
+src="$root"
+if [ -n "$target" ]; then
+  src="$(cd "$target" && pwd -P)" || die "cannot enter $target"
+fi
 # Each git answer is checked before it is used: `cd ""` succeeds, so a failed
 # rev-parse inside the path resolution would quietly become the current directory.
-resolve() {  # rev-parse option -> physical directory
+resolve() {  # checkout, rev-parse option -> physical directory
   local raw
-  raw="$(git rev-parse --path-format=absolute "$1")" && [ -n "$raw" ] || die "git rev-parse $1 failed in $root"
+  raw="$(git -C "$1" rev-parse --path-format=absolute "$2")" && [ -n "$raw" ] || die "git rev-parse $2 failed in $1"
   raw="$(posix "$raw")"
   (cd "$raw" && pwd -P) || die "cannot enter $raw"
 }
-top="$(resolve --show-toplevel)"
+top="$(resolve "$root" --show-toplevel)"
 [ "$top" = "$root" ] || die "$root is not the top of its git checkout ($top is)"
-gitdir="$(resolve --git-dir)"
-common="$(resolve --git-common-dir)"
+if [ "$src" != "$root" ]; then
+  top="$(resolve "$src" --show-toplevel)"
+  [ "$top" = "$src" ] || die "$src is not the top of its git checkout ($top is)"
+fi
+gitdir="$(resolve "$src" --git-dir)"
+common="$(resolve "$src" --git-common-dir)"
 # A worktree's .git file names an absolute host path, which means nothing in
 # the container. Mount the common gitdir instead and point GIT_DIR at this
 # worktree's entry in it.
@@ -64,7 +91,7 @@ else
     *) die "cannot place gitdir $gitdir under the common gitdir $common" ;;
   esac
 fi
-case "$root$common" in *,*) die "a path with a comma cannot be mounted: $root or $common" ;; esac
+case "$src$common" in *,*) die "a path with a comma cannot be mounted: $src or $common" ;; esac
 
 # The build context holds only what the Dockerfile copies. Its hash (the
 # context hash) names the image, so a change to any of them builds a new
@@ -91,6 +118,17 @@ for f in ci/check.Dockerfile ci/check-entrypoint.sh ci/pins.env rust-toolchain.t
   mkdir -p "$ctx/$(dirname "$f")"
   git show "HEAD:$f" > "$ctx/$f" || die "cannot read $f from HEAD"
 done
+# --checkout: the judged checkout must carry exactly these inputs, committed and
+# on disk. The entrypoint checks the same inside, but this says why, up front.
+if [ "$src" != "$root" ]; then
+  mapfile -t theirs < <(git -C "$src" ls-tree -r --name-only HEAD -- crates | grep -E '^crates/[^/]+/Cargo\.toml$' || true)
+  [ "${theirs[*]}" = "${manifests[*]}" ] || die "$src has other crate manifests than $root; review the change, then judge it with a wrapper you trust"
+  changed=()
+  for f in ci/check.Dockerfile ci/check-entrypoint.sh ci/pins.env rust-toolchain.toml Cargo.toml Cargo.lock "${manifests[@]}"; do
+    [ "$(git -C "$src" rev-parse "HEAD:$f" 2>/dev/null)" = "$(git rev-parse "HEAD:$f")" ] || changed+=("$f")
+  done
+  [ ${#changed[@]} = 0 ] || die "$src changes the image's inputs (${changed[*]}); review them, then judge it with a wrapper you trust"
+fi
 context_hash="$(cd "$ctx" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
 [[ "$context_hash" =~ ^[0-9a-f]{64}$ ]] || die "could not hash the build context"
 tag="vac-check:${context_hash:0:16}"
@@ -122,7 +160,7 @@ fi
 
 run=(run --rm --platform linux/amd64
   --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --user 1000:1000
-  --mount "type=bind,src=$(native "$root"),dst=/src,readonly"
+  --mount "type=bind,src=$(native "$src"),dst=/src,readonly"
   --mount "type=bind,src=$(native "$common"),dst=/git,readonly"
   --volume /work
   --tmpfs /tmp:rw,exec,nosuid,nodev
