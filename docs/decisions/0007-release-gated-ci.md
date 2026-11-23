@@ -184,10 +184,11 @@ tests that never ran. The full design is in the review recorded on #206.
 
 ## Process for trusted authors
 
-Issue-first and the design review (AGENTS.md, Workflow steps 1 and 2) apply
-only to authors not on the `trusted` list. A trusted author goes straight to a
-pull request whose description states the behaviour, the claims affected and
-the falsifier.
+Every pull request, in any lane and from any author, trusted or not, starts
+from an open issue that states the behaviour, the claims affected and the
+falsifier (AGENTS.md, Workflow step 1). #211 makes `policy` check it. The
+design review (step 2) applies only to heavy changes by authors not on the
+`trusted` list.
 
 ## Open questions for the maintainer
 
