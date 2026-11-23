@@ -24,7 +24,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import claims_check as cc
 
 ROOT = Path(__file__).resolve().parent.parent
-CLAIMS = [{"id": "K-1", "status": "tested"}, {"id": "K-2", "status": "proved"}]
+CLAIMS = [{"id": "K-1", "status": "tested", "evidence": ["law:x", "mutant:m1", "scenario:x", "scenario:exfil_race",
+                                                         "scenario:a", "sabotage:b", "sabotage:y"]},
+          {"id": "K-2", "status": "proved"}]
 HEAD = "# Claims\n\nheader\n\n| id | statement | layer | status | evidence | falsifier | platforms |\n|---|---|---|---|---|---|---|\n"
 
 
@@ -74,6 +76,22 @@ class StalenessOnlyTests(unittest.TestCase):
                               row("K-1", "stale (pending lab: scenario:x) (pending lab: scenario:y)"),
                               row("K-1", "stale", "linux @abc: pass, verified")):
             self.assertFalse(self.drift(table(committed_row, row("K-2", "proved")), expected, self.FRESH), committed_row)
+
+    def test_notes_on_an_unchanged_row_must_match(self):
+        # Rescan finding: stripping "predates later changes" from a row that is still fresh.
+        expected = table(row("K-1", "tested", "linux @abc: pass (predates later changes); wsl @def: pass"),
+                         row("K-2", "proved"))
+        committed = table(row("K-1", "tested", "linux @abc: pass; wsl @def: pass"), row("K-2", "proved"))
+        self.assertFalse(self.drift(committed, expected, self.FRESH))
+
+    def test_pending_refs_must_be_the_claims_own_lab_evidence(self):
+        # Rescan finding: a stale suffix naming refs the claim does not have.
+        expected = table(row("K-1", "tested"), row("K-2", "proved"))
+        for suffix in ("verified:lean-proof-ok", "ci:passed", "scenario:not_mine", "mutant:m1", "law:x"):
+            committed = table(row("K-1", f"stale (pending lab: {suffix})"), row("K-2", "proved"))
+            self.assertFalse(self.drift(committed, expected, self.FRESH), suffix)
+        own = table(row("K-1", "stale (pending lab: scenario:x, sabotage:y)"), row("K-2", "proved"))
+        self.assertTrue(self.drift(own, expected, self.FRESH))
 
     def test_other_cells_and_lines_are_not(self):
         expected = table(row("K-1", "tested"), row("K-2", "proved"))

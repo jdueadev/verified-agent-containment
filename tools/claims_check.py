@@ -643,6 +643,7 @@ def main(argv=None):
 
 PENDING_SUFFIX = re.compile(r" \(pending lab: [a-z]+(?:-[a-z]+)*:[A-Za-z0-9_./#:-]+(?:, [a-z]+(?:-[a-z]+)*:[A-Za-z0-9_./#:-]+)*\)")
 PREDATES_NOTE = " (predates later changes)"
+PENDING_KINDS = ("scenario", "sabotage", "live", "live-sabotage")  # what not_yet_run can report
 TABLE_COLUMNS = 7  # id, statement, layer, status, evidence, falsifier, platforms
 
 
@@ -673,6 +674,7 @@ def staleness_only_drift(committed, expected, claims, effective):
     if len(old) != len(new):
         return False
     declared = {c["id"]: c.get("status") for c in claims}
+    evidence = {c["id"]: set(c.get("evidence", [])) for c in claims}
     for a, b in zip(old, new):
         if a == b:
             continue
@@ -686,6 +688,15 @@ def staleness_only_drift(committed, expected, claims, effective):
             return False
         if ca[6].replace(PREDATES_NOTE, "") != cb[6].replace(PREDATES_NOTE, ""):
             return False
+        # A row whose status cell did not change is the same render, so its platform
+        # notes must match too: dropping one would claim a platform covers current code.
+        if ca[3] == cb[3] and ca[6] != cb[6]:
+            return False
+        suffix = PENDING_SUFFIX.search(ca[3])
+        if suffix:
+            refs = suffix.group(0)[len(" (pending lab: "):-1].split(", ")
+            if any(r.partition(":")[0] not in PENDING_KINDS or r not in evidence[cid] for r in refs):
+                return False
         stripped = PENDING_SUFFIX.sub("", ca[3], count=1)
         if "(pending lab:" in stripped:
             return False
