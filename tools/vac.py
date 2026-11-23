@@ -150,7 +150,7 @@ def cmd_check(args):
             print(f"vac: unknown rule {', '.join(unknown)}; vac rules lists them", file=sys.stderr)
             return core.EXIT_USAGE
     outcomes = core.run(rules, stage, ctx)
-    (core.render_json if args.json else core.render_text)(outcomes, stage)
+    (core.render_json if args.json else core.render_text)(outcomes, stage, complete=not (args.rule or args.changed))
     return core.exit_code(outcomes)
 
 
@@ -170,17 +170,16 @@ def cmd_verify(args):
             print(f"STALE {cid} {', '.join(files)} | fix: vac check --t1, then vac verify record")
         print(f"vac: {len(stale)} formal claims stale")
         return core.EXIT_FAIL if stale else 0
-    gate = ("CL-1", "CL-3", "LAW-KILL", "FV-PROOF-GEN", "FV-PIN")
-    outcomes = core.run(tuple(r for r in registry.RULES if r.id in gate), "t0", core.Ctx(root=ROOT))
-    core.render_text(outcomes, "t0")
-    if core.exit_code(outcomes) != 0:
-        print("vac: verify record refused: the formal checks are not green", file=sys.stderr)
-        return core.exit_code(outcomes)
     dirty = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain", "--", "claims.toml", "formal", "crates", "results"],
                            capture_output=True, text=True).stdout.strip()
     if dirty:
         print("vac: verify record refused: commit claims.toml, formal/, crates/ and results/ first", file=sys.stderr)
         return core.EXIT_USAGE
+    outcomes = core.run(registry.RULES, "t1", core.Ctx(root=ROOT))
+    core.render_text(outcomes, "t1")
+    if core.tier(outcomes, "t1") != "T1":
+        print("vac: verify record refused: vac check --t1 must pass in full at this commit first", file=sys.stderr)
+        return core.exit_code(outcomes) or core.EXIT_FAIL
     head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     ids = verify.record(ROOT, head)
     print(f"vac: recorded {len(ids)} formal claims as synced at {head[:12]}")

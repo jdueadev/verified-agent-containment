@@ -91,20 +91,20 @@ def exit_code(outcomes):
     return EXIT_PASS
 
 
-def tier(outcomes, stage):
-    if stage != "t1" or not outcomes or any(o.status != "PASS" for o in outcomes):
+def tier(outcomes, stage, complete=True):
+    if stage != "t1" or not complete or not outcomes or any(o.status != "PASS" for o in outcomes):
         return "T0"
     return "T1"
 
 
-def summary(outcomes, stage):
+def summary(outcomes, stage, complete=True):
     failed = sum(o.status == "FAIL" for o in outcomes)
     lacking = sorted({t for o in outcomes for t in o.missing})
     return {"result": ["pass", "fail", "usage", "missing"][exit_code(outcomes)], "stage": stage,
-            "ran": len(outcomes), "failed": failed, "tier": tier(outcomes, stage), "missing": lacking}
+            "ran": len(outcomes), "failed": failed, "tier": tier(outcomes, stage, complete), "missing": lacking}
 
 
-def render_text(outcomes, stage, out=sys.stdout):
+def render_text(outcomes, stage, out=sys.stdout, complete=True):
     for o in outcomes:
         for f in o.findings:
             where = f"{f.path}:{f.line}" if f.line else f.path
@@ -112,12 +112,12 @@ def render_text(outcomes, stage, out=sys.stdout):
         if o.status == "MISSING":
             print(f"MISSING {o.rule.id} needs {', '.join(o.missing)} | fix: install them or run in the pinned container",
                   file=out)
-    s = summary(outcomes, stage)
+    s = summary(outcomes, stage, complete)
     print(f"vac: {s['result']} {s['failed']}/{s['ran']} rules failed stage={stage} tier={s['tier']}"
           + (f" missing={','.join(s['missing'])}" if s["missing"] else ""), file=out)
 
 
-def render_json(outcomes, stage, out=sys.stdout):
+def render_json(outcomes, stage, out=sys.stdout, complete=True):
     for o in outcomes:
         for f in o.findings:
             print(json.dumps({"rule": f.rule, "status": "FAIL", "path": f.path, "line": f.line,
@@ -125,7 +125,7 @@ def render_json(outcomes, stage, out=sys.stdout):
         if o.status == "MISSING":
             print(json.dumps({"rule": o.rule.id, "status": "MISSING", "missing": list(o.missing),
                               "fix": "install them or run in the pinned container"}), file=out)
-    print(json.dumps({"summary": summary(outcomes, stage)}), file=out)
+    print(json.dumps({"summary": summary(outcomes, stage, complete)}), file=out)
 
 
 def run_tool(ctx, key, argv, timeout=1800):

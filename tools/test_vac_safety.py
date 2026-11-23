@@ -69,7 +69,12 @@ class MutationTests(unittest.TestCase):
     def test_a_mutant_that_stops_being_rejected_or_vanishes_regresses(self):
         base = {"bend": [{"mutant": "m1", "rejected": True}, {"mutant": "m2", "rejected": True}], "rust": []}
         head = {"bend": [{"mutant": "m1", "rejected": False}, {"mutant": "m3", "rejected": True}], "rust": []}
-        self.assertEqual(safety.mutation_regressions(base, head), ["m1", "m2"])
+        self.assertEqual(safety.mutation_regressions(base, head), ["bend:m1", "bend:m2"])
+
+    def test_a_lost_mutant_is_caught_when_the_other_language_shares_its_name(self):
+        base = {"bend": [{"mutant": "same", "rejected": True}], "rust": [{"mutant": "same", "rejected": True}]}
+        head = {"bend": [], "rust": [{"mutant": "same", "rejected": True}]}
+        self.assertEqual(safety.mutation_regressions(base, head), ["bend:same"])
 
     def test_an_added_mutant_is_not_a_regression(self):
         base = {"bend": [{"mutant": "m1", "rejected": True}]}

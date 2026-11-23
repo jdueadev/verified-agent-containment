@@ -179,7 +179,8 @@ def waivers_cover(ctx):
         out.append(Finding("WAIVE-1", vac_safety.WAIVERS_FILE, 0, "waivers are append-only: an existing row was changed or removed"))
     covered = {row["reason"] for row in head_rows}
     out += [Finding("WAIVE-1", vac_safety.WAIVERS_FILE, 0, f"{r}: no waiver; run vac waive") for r in waivable if r not in covered]
-    for row in head_rows[len(base_rows):]:
+    latest = {row["reason"]: row for row in head_rows[len(base_rows):]}
+    for row in latest.values():
         receipt_path = ctx.root / "ci/waiver-receipts" / f"{row['receipt']}.json"
         if not receipt_path.exists():
             out.append(Finding("WAIVE-1", str(receipt_path.relative_to(ctx.root)), 0, f"{row['reason']}: receipt missing"))
@@ -191,8 +192,15 @@ def waivers_cover(ctx):
             out.append(Finding("WAIVE-1", str(receipt_path.relative_to(ctx.root)), 0, f"{row['reason']}: receipt digest does not match"))
         elif not receipt.get("ok") or row["reason"] not in receipt.get("waivable", []):
             out.append(Finding("WAIVE-1", str(receipt_path.relative_to(ctx.root)), 0, f"{row['reason']}: the safety loop did not pass for it"))
+        elif row["head"] != receipt.get("head"):
+            out.append(Finding("WAIVE-1", vac_safety.WAIVERS_FILE, 0, f"{row['reason']}: the waiver names head {row['head'][:12]}, its receipt ran at {str(receipt.get('head'))[:12]}"))
         else:
-            moved = [p for p in vac_core.git(ctx, "diff", "--name-only", row["head"], "HEAD").splitlines()
+            try:
+                diff = vac_core.git(ctx, "diff", "--name-only", row["head"], "HEAD")
+            except subprocess.CalledProcessError:
+                out.append(Finding("WAIVE-1", vac_safety.WAIVERS_FILE, 0, f"{row['reason']}: head {row['head'][:12]} is not in this history; run vac waive again"))
+                continue
+            moved = [p for p in diff.splitlines()
                      if p and p != vac_safety.WAIVERS_FILE and not p.startswith("ci/waiver-receipts/")]
             if moved:
                 out.append(Finding("WAIVE-1", vac_safety.WAIVERS_FILE, 0,
@@ -373,7 +381,7 @@ RULES = (
          lean_pinned, "add LEAN_VERSION=X.Y.Z to ci/pins.env", (209,)),
     Rule("FV-SYNC", "Every formal claim was confirmed against the code it covers at its current files", RC,
          ("claims.toml", "formal/**", "crates/**", "results/formal-sync.json"), formal_in_sync,
-         "rerun the formal checks (vac check --t1), then vac verify record", (209,)),
+         "vac verify record (it runs vac check --t1 in full first)", (209,)),
     Rule("SAFE-CORE", "No change removes, rewords or lowers evidence that a claim cites", T0,
          ("claims.toml", "formal/**", "tools/kernel_mutants.py", "crates/**"), core_intact,
          "restore the cited law, mutant, scenario or claim; strengthen by adding a new one under a new name", (209,)),

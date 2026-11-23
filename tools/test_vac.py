@@ -119,7 +119,8 @@ class Summary(unittest.TestCase):
 class Checks(unittest.TestCase):
     def test_a_missing_driver_fails_with_a_clear_message(self):
         original = vac.DRIVER_REL
-        vac.DRIVER_REL = Path(".claude/skills/run-verified-agent-containment/missing-driver.mjs")
+        missing = Path(".claude/skills/run-verified-agent-containment/missing-driver.mjs")
+        vac.DRIVER_REL = missing
         err = io.StringIO()
         try:
             with contextlib.redirect_stderr(err):
@@ -129,15 +130,15 @@ class Checks(unittest.TestCase):
         self.assertEqual(code, 1)
         message = err.getvalue()
         self.assertIn("absent", message)
-        self.assertIn(str(vac.DRIVER_REL), message)
+        self.assertIn(str(missing), message)
         self.assertNotIn("Traceback", message)
 
 
 class Shape(unittest.TestCase):
     def test_shebang_and_executable_bit(self):
-        text = VAC_PATH.read_text(encoding="utf-8")
-        self.assertTrue(text.startswith("#!/usr/bin/env python3\n"))
-        self.assertNotIn("\r", text)
+        raw = VAC_PATH.read_bytes()
+        self.assertTrue(raw.startswith(b"#!/usr/bin/env python3\n"))
+        self.assertNotIn(b"\r", raw)
         self.assertTrue(VAC_PATH.stat().st_mode & 0o111)
 
 
@@ -239,11 +240,12 @@ class Preflight(unittest.TestCase):
             calls.append(list(argv))
             return real_run(argv, *args, **kwargs)
         vac.subprocess.run = spy
+        vac.git = lambda argv: (0, "f" * 40 + "\n", "")
         try:
             with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
                 vac.cmd_lab(None)
         finally:
-            vac.subprocess.run = real_run
+            vac.subprocess.run, vac.git = real_run, real_git
         ran = [argv for argv in calls if argv[:1] != ["git"]]
         self.assertEqual(ran, [[sys.executable, "tools/claims_check.py", "--strict"]])
         self.assertIn("Root lab run (T2)", out.getvalue())

@@ -56,6 +56,12 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(core.tier(passed, "t0"), "T0")
         failed = core.run((rule(stages=frozenset({"t1"}), check=failing("X-1")),), "t1", core.Ctx())
         self.assertEqual(core.tier(failed, "t1"), "T0")
+        self.assertEqual(core.tier(passed, "t1", complete=False), "T0")
+
+    def test_a_filtered_t1_run_never_reports_t1(self):
+        child = subprocess.run([sys.executable, str(ROOT / "tools/vac.py"), "check", "--t1", "--rule", "FV-PIN", "--json"],
+                               cwd=ROOT, capture_output=True, text=True, timeout=300)
+        self.assertEqual(json.loads(child.stdout.splitlines()[-1])["summary"]["tier"], "T0")
 
     def test_text_names_the_rule_the_place_and_the_fix(self):
         out = io.StringIO()
@@ -102,6 +108,7 @@ class RegistryTests(unittest.TestCase):
         text = (ROOT / "tools/claims_check.py").read_text(encoding="utf-8")
         documented = {int(n) for n in __import__("re").findall(r"^CI-(\d+)\s", text, __import__("re").M)}
         ids = {r.id for r in registry.RULES}
+        self.assertGreaterEqual(len(documented), 10)
         self.assertEqual({n for n in documented if f"CL-{n}" not in ids}, set())
 
 
@@ -159,6 +166,47 @@ class RustRuleTests(unittest.TestCase):
         self.assertEqual(registry.allow_count(files.get, ["a.rs", "b.rs", "gone.rs"]), 3)
 
 
+class WaiverRowTests(unittest.TestCase):
+    def repo(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, tmp)
+        run = lambda *a: subprocess.run(["git", "-C", str(tmp), *a], check=True, capture_output=True, text=True).stdout
+        run("init", "-q")
+        (tmp / "f").write_text("x", encoding="utf-8")
+        run("add", "f")
+        run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x")
+        return tmp, run("rev-parse", "HEAD").strip()
+
+    def receipt(self, root, head, reason="r", ok=True):
+        body = {"base": "b" * 40, "head": head, "ok": ok, "waivable": [reason], "steps": []}
+        digest = __import__("hashlib").sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+        (root / "ci/waiver-receipts").mkdir(parents=True, exist_ok=True)
+        (root / f"ci/waiver-receipts/{digest}.json").write_text(json.dumps({**body, "digest": digest}), encoding="utf-8")
+        return digest
+
+    def check(self, root, rows, waivable=("r",)):
+        text = __import__("vac_safety").waiver_toml(rows)
+        ctx = core.Ctx(root=root)
+        ctx.memo["escalations"] = ([], list(waivable), lambda p: None, lambda p: text if p == "ci/waivers.toml" else None)
+        return [f.message for f in registry.waivers_cover(ctx)]
+
+    def test_a_row_naming_another_head_than_its_receipt_is_refused(self):
+        root, head = self.repo()
+        digest = self.receipt(root, "c" * 40)
+        found = self.check(root, [{"reason": "r", "issue": 1, "receipt": digest, "head": head}])
+        self.assertEqual(len(found), 1)
+        self.assertIn("its receipt ran at", found[0])
+
+    def test_a_newer_row_supersedes_an_obsolete_one_for_the_same_reason(self):
+        root, head = self.repo()
+        old = self.receipt(root, "c" * 40)
+        new = self.receipt(root, head)
+        rows = [{"reason": "r", "issue": 1, "receipt": old, "head": "c" * 40},
+                {"reason": "r", "issue": 1, "receipt": new, "head": head}]
+        self.assertEqual(self.check(root, rows), [])
+        self.assertEqual(len(self.check(root, rows[:1])), 1)
+
+
 class CommandTests(unittest.TestCase):
     def vac(self, *args):
         return subprocess.run([sys.executable, str(ROOT / "tools/vac.py"), *args], cwd=ROOT, capture_output=True,
@@ -192,9 +240,9 @@ class GenTests(unittest.TestCase):
         text = gen.render_agents(registry.RULES, registry.UNENFORCED)
         for r in registry.RULES:
             self.assertIn(f"| {r.id} |", text)
+        rows = {line.split("|")[1].strip(): line for line in text.splitlines() if line.startswith("| ")}
         for rule_id, _title, issue in registry.UNENFORCED:
-            self.assertIn(f"| {rule_id} |", text)
-            self.assertIn(f"#{issue}", text)
+            self.assertTrue(rows[rule_id].rstrip().endswith(f"| #{issue} |"), rows[rule_id])
         self.assertEqual(gen.render_claude(), "@AGENTS.md\n")
 
     def test_an_unenforced_id_never_shadows_an_enforced_one(self):

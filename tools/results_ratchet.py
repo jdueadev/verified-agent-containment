@@ -72,6 +72,8 @@ def tla(base, head):
             continue
         out += lost(f"config {name} as_expected", at(run, "as_expected"), at(now[name], "as_expected"), is_true)
         if at(run, "expected") == "pass" and is_true(at(run, "as_expected")):
+            if at(now[name], "expected") != "pass":
+                out.append(f"config {name} expected: pass -> {show(at(now[name], 'expected'))}")
             out += fell(f"config {name} distinct_states", at(run, "distinct_states"), at(now[name], "distinct_states"))
     return out
 

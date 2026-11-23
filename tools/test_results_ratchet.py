@@ -80,6 +80,10 @@ class TlaTests(Family, unittest.TestCase):
         self.assert_flags(lambda d: d["runs"][0].pop("distinct_states"),
                           "config HostModel distinct_states: 1000 -> absent")
 
+    def test_a_passing_config_relabelled_as_expected_to_fail_is_flagged(self):
+        self.assert_flags(lambda d: d["runs"][0].update(expected="violates TypeOK"),
+                          'config HostModel expected: pass -> "violates TypeOK"')
+
     def test_a_violating_config_may_find_its_counterexample_sooner(self):
         self.assert_holds(lambda d: d["runs"][1].update(distinct_states=10))
 

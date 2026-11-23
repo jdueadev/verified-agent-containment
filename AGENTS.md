@@ -30,7 +30,7 @@ Every pull request starts from an open issue and says `Closes #n` or `Part of #n
 | LAW-KILL | t0, t1, pr, rc, release | Every law is broken by at least one mutant | add a mutant to tools/kernel_mutants.py that breaks the law, then python3 tools/mutation_check.py |
 | FV-PROOF-GEN | t0, t1, pr, rc, release | formal/PROOF.bend is exactly what tools/generate_proof.py writes | python3 tools/generate_proof.py, then commit formal/PROOF.bend |
 | FV-PIN | t0, t1, pr, rc, release | The Lean version that rechecks the proofs is pinned in ci/pins.env | add LEAN_VERSION=X.Y.Z to ci/pins.env |
-| FV-SYNC | rc, release | Every formal claim was confirmed against the code it covers at its current files | rerun the formal checks (vac check --t1), then vac verify record |
+| FV-SYNC | rc, release | Every formal claim was confirmed against the code it covers at its current files | vac verify record (it runs vac check --t1 in full first) |
 | SAFE-CORE | t0, t1, pr, rc, release | No change removes, rewords or lowers evidence that a claim cites | restore the cited law, mutant, scenario or claim; strengthen by adding a new one under a new name |
 | WAIVE-1 | t0, t1, pr, rc, release | Every other weakening carries a waiver backed by a passing safety loop | vac waive --reason '<the reason>' --issue N |
 | RES-TLA | t0, t1, pr, rc, release | No TLC configuration stops behaving as expected, disappears or explores fewer states | rerun bash tools/tla_check.sh and fix the code until results/ is no weaker; a deliberate weakening needs its own issue (#213) |

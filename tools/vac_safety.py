@@ -68,7 +68,7 @@ def law_kill_gaps(c, mutation_report):
 
 
 def rejected_names(report):
-    return {m["mutant"] for key in ("bend", "rust") for m in report.get(key, []) if m.get("rejected")}
+    return {f"{key}:{m['mutant']}" for key in ("bend", "rust") for m in report.get(key, []) if m.get("rejected")}
 
 
 def mutation_regressions(base_report, head_report):
@@ -113,7 +113,8 @@ def loop(root, base, head="HEAD", run_tools=True):
 def run_formal(work, base_get, c, paths):
     out = []
     formal = any(p.startswith("formal/") for p in paths)
-    kernel = any(p.startswith(("formal/", "crates/containment-kernel/", "tools/kernel_mutants.py", "tools/law_audit.mjs"))
+    kernel = any(p.startswith(("formal/", "crates/containment-kernel/", "tools/kernel_mutants.py", "tools/law_audit.mjs",
+                                    "tools/mutation_check.py"))
                  for p in paths)
     host_model = any(p.startswith("formal/host/") for p in paths)
     out.append(step("bend-proof", ["bend", "PROOF.bend", "--check-only"], work / "formal"))
