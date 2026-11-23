@@ -198,6 +198,19 @@ def tree_errors(root=ROOT, tracked=None, policy=None, keys=None):
     return errors
 
 
+def merge_keys(pinned, fetched):
+    fields = ("kty", "kid", "alg", "use", "n", "e")
+    out = {key["kid"]: key for key in pinned.get("keys", [])}
+    for key in fetched.get("keys", []):
+        if key.get("kty") != "RSA":
+            continue
+        key = {k: key[k] for k in fields if k in key}
+        if key["kid"] in out and out[key["kid"]] != key:
+            raise ValueError(f"refresh-keys: kid {key['kid']} came back with different key material; refusing to replace a pinned key")
+        out[key["kid"]] = key
+    return {"keys": [out[kid] for kid in sorted(out)]}
+
+
 def provenance_record(run_dir, token, run_id, run_attempt):
     return {"manifest": run_manifest(run_dir), "token": token.strip(),
             "run_id": str(run_id), "run_attempt": str(run_attempt)}
@@ -231,11 +244,13 @@ def main(argv=None):
         return 1 if errors else 0
     with urllib.request.urlopen(gate_check.JWKS_URL, timeout=20) as response:
         keys = json.loads(response.read())
-    pinned = {"keys": sorted(({k: key[k] for k in ("kty", "kid", "alg", "use", "n", "e") if k in key}
-                              for key in keys.get("keys", []) if key.get("kty") == "RSA"),
-                             key=lambda key: key["kid"])}
-    if not pinned["keys"]:
+    if not any(key.get("kty") == "RSA" for key in keys.get("keys", [])):
         sys.exit(f"refresh-keys: {gate_check.JWKS_URL} returned no RSA keys")
+    path = ROOT / KEYS_FILE
+    try:
+        pinned = merge_keys(json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}, keys)
+    except ValueError as error:
+        sys.exit(str(error))
     (ROOT / KEYS_FILE).write_text(json.dumps(pinned, indent=2) + "\n", encoding="utf-8", newline="\n")
     print(f"pinned {len(pinned['keys'])} keys in {KEYS_FILE}")
     return 0
