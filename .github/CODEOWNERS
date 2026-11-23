@@ -24,6 +24,7 @@
 /tools/law_audit.mjs @jdueadev
 /tools/tla_check.sh @jdueadev
 /tools/generate_proof.py @jdueadev
+/tools/merge_digest.py @jdueadev
 /tools/lab_record.py @jdueadev
 /crates/containment-host/src/harness.rs @jdueadev
 /crates/containment-host/src/live_suite.rs @jdueadev
