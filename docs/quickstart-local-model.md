@@ -1,6 +1,6 @@
 # Quickstart: a local model in the containment (WSL2 + Ollama)
 
-> **On native Linux?** Skip Step 1 and run the commands directly inside a disposable Linux VM or container.
+> **On native Linux?** Skip the PowerShell that creates the WSL distro. Still run the `apt-get`, `rustup` and `cargo build` commands in Step 1, inside a disposable Linux VM or container. Step 2 starts `target/release/containment-lab`, which that build produces. Then continue from Step 2.
 
 This runs a real agent, backed by a model you serve on your own machine, inside the containment. You watch it on the HUD and red-team it. It takes about 20 minutes. Everything runs as root in a **disposable** WSL2 distribution: the controller needs namespaces, cgroups and seccomp.
 
