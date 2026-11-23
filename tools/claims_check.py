@@ -615,7 +615,12 @@ def main(argv=None):
     if write:
         target.write_text(markdown, encoding="utf-8", newline="\n")
     elif not target.exists() or target.read_text(encoding="utf-8") != markdown:
-        if strict or not (stale or pending):
+        committed = target.read_text(encoding="utf-8") if target.exists() else ""
+        # Without --strict, only drift that staleness explains is a warning: a status
+        # token that is the row's declared or effective status or "stale", a pending-lab
+        # suffix, or a platform's "predates later changes" note. Anything else, such as
+        # a hand-edited status, is an error in both modes (INV-1; #175 review).
+        if strict or not (stale or pending) or not staleness_only_drift(committed, markdown, claims, effective):
             errors.append("docs/claims.md is out of date; run tools/claims_check.py --write")
         else:
             warnings.append("docs/claims.md will need regeneration after refreshing stale lab evidence")
@@ -634,6 +639,47 @@ def main(argv=None):
             errors.extend(e.replace("results/", f"{ci.relative_to(ROOT)}/", 1) for e in build_errors(ci))
     print(json.dumps({"claims": len(claims), "status": counts, "errors": errors, "stale": warnings}, indent=2))
     return 1 if errors else 0
+
+
+PENDING_SUFFIX = re.compile(r" \(pending lab: [^)]*\)")
+PREDATES_NOTE = " (predates later changes)"
+TABLE_COLUMNS = 7  # id, statement, layer, status, evidence, falsifier, platforms
+
+
+def _row_cells(line):
+    """The cells of one rendered table row, or None. A literal | in a cell is escaped."""
+    if not (line.startswith("| ") and line.endswith(" |")):
+        return None
+    return re.split(r"(?<!\\) \| ", line[2:-2])
+
+
+def staleness_only_drift(committed, expected, claims, effective):
+    """True when the committed docs/claims.md differs from the expected render only in
+    what staleness changes. Every other line and cell must match exactly, and a status
+    token may only be the row's declared status, its effective status, or "stale"."""
+    old, new = committed.split("\n"), expected.split("\n")
+    if len(old) != len(new):
+        return False
+    declared = {c["id"]: c.get("status") for c in claims}
+    for a, b in zip(old, new):
+        if a == b:
+            continue
+        ca, cb = _row_cells(a), _row_cells(b)
+        if ca is None or cb is None or len(ca) != TABLE_COLUMNS or len(cb) != TABLE_COLUMNS:
+            return False
+        cid = cb[0]
+        if ca[0] != cid or cid not in declared:
+            return False
+        if [ca[i] for i in (0, 1, 2, 4, 5)] != [cb[i] for i in (0, 1, 2, 4, 5)]:
+            return False
+        if ca[6].replace(PREDATES_NOTE, "") != cb[6].replace(PREDATES_NOTE, ""):
+            return False
+        token_a, _, rest_a = PENDING_SUFFIX.sub("", ca[3]).partition(" ")
+        token_b, _, rest_b = PENDING_SUFFIX.sub("", cb[3]).partition(" ")
+        allowed = {declared[cid], effective.get(cid), "stale"}
+        if rest_a != rest_b or token_a not in allowed or token_b not in allowed:
+            return False
+    return True
 
 
 def esc(text):
