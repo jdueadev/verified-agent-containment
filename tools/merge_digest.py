@@ -134,7 +134,10 @@ def analyze(merge):
         return {"sha": sha, "pr": pr, "lane": "-", "escalations": [], "claims": [],
                 "lab_claims": [], "approval": state, "alert": bool(ever or problem)}
     owner, lanes = policy_check.load_lanes(lanes_text)
-    result = policy_check.classify(paths, policy_check.reader(parent), policy_check.reader(sha), lanes)
+    # The same inputs `policy` gives classify, symbolic-link spec included: without it a
+    # merge that went around the gate with a linked test file would read as lane B.
+    result = policy_check.classify(paths, policy_check.reader(parent), policy_check.reader(sha), lanes,
+                                   head_links=policy_check.spec_links(sha, paths))
     claims_text = policy_check.reader(sha)("claims.toml") or ""
     try:
         claims = tomllib.loads(claims_text).get("claim", []) if claims_text else []

@@ -13,6 +13,7 @@ The history, oldest first:
               and which has lab evidence (lane B)
   LANE_C      moves crates/containment-host/** to lane C in the lane map and adds a
               tool (lane C)
+  SPEC_LINK   adds tools/test_linked.py as a symbolic link (a spec ratchet escalation)
 """
 import contextlib
 import html
@@ -50,7 +51,7 @@ evidence = ["doc:README.md"]
 platforms = [{ name = "fixture", commit = "0000000", result = "pass" }]
 """
 
-ROOT_COMMIT = BEFORE_MAP = LANE_B = LANE_C = None
+ROOT_COMMIT = BEFORE_MAP = LANE_B = LANE_C = SPEC_LINK = None
 _tmp = None
 _patches = []
 
@@ -70,7 +71,7 @@ def _commit(repo, files, message):
 
 
 def setUpModule():
-    global ROOT_COMMIT, BEFORE_MAP, LANE_B, LANE_C, _tmp
+    global ROOT_COMMIT, BEFORE_MAP, LANE_B, LANE_C, SPEC_LINK, _tmp
     _tmp = Path(tempfile.mkdtemp(prefix="merge-digest-"))
     repo = _tmp / "repo"
     repo.mkdir()
@@ -84,6 +85,8 @@ def setUpModule():
                                 "crates/containment-host/src/sandbox.rs": "fn main() {}\n"}, "add the lane map")
     LANE_B = _commit(repo, {"crates/containment-kernel/src/lib.rs": "pub fn f() -> u8 { 1 }\n"}, "lane B")
     LANE_C = _commit(repo, {"ci/lanes.toml": LANES_AFTER, "tools/extra.py": "X = 1\n"}, "lane C")
+    (repo / "tools" / "test_linked.py").symlink_to("../README.md")
+    SPEC_LINK = _commit(repo, {}, "a linked spec file")
     # Every git call merge_digest and policy_check make goes to the fixture.
     for target in (pc, md):
         patch = mock.patch.object(target, "ROOT", repo)
@@ -249,6 +252,12 @@ class AnalyzeTests(unittest.TestCase):
             with self.subTest(want=want):
                 row = md.analyze({"sha": sha, "pr": data, "pulls": pulls})
                 self.assertEqual((row["approval"], row["alert"]), (want, True))
+
+    def test_a_linked_spec_file_is_escalated_as_policy_would(self):
+        sha = full(SPEC_LINK)
+        row = md.analyze({"sha": sha, "pr": pr(sha), "pulls": [1]})
+        self.assertEqual((row["lane"], row["approval"], row["alert"]), ("C", "UNAPPROVED", True))
+        self.assertIn("spec tools/test_linked.py is a symbolic link", row["escalations"])
 
     def test_a_parentless_commit_is_an_alert(self):
         sha = root_commit()
