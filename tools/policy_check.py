@@ -543,15 +543,28 @@ def frontmatter_errors(path, text):
     out = []
     lines = text.lstrip("﻿").split("\n")
     if lines and lines[0].rstrip() == "---":
+        # YAML lets the whole root mapping be indented, so the root's indent is that
+        # of its first key, not column 0. A line at that indent is a root key; a deeper
+        # one continues a value (a nested key there belongs to that value).
+        root_indent = None
         for number, line in enumerate(lines[1:], 2):
             if line.rstrip() == "---":
                 break
-            if not line.strip() or line[0] in " \t#":
+            content = line.lstrip(" ")
+            if not content.strip() or content.startswith("#"):
                 continue
-            if not FRONTMATTER_KEY.match(line):
+            indent = len(line) - len(content)
+            if content[0] == "\t":
+                out.append(f"{path}:{number}: frontmatter is indented with a tab")
+                continue
+            if root_indent is None:
+                root_indent = indent
+            if indent > root_indent:
+                continue
+            if indent < root_indent or not FRONTMATTER_KEY.match(content):
                 out.append(f"{path}:{number}: frontmatter line is not a plain `key: value`")
                 continue
-            key = line.split(":", 1)[0]
+            key = content.split(":", 1)[0]
             if key not in PROMPT_KEYS:
                 out.append(f"{path}:{number}: frontmatter key {key!r} is not allowed yet; each key is added "
                            "to PROMPT_KEYS by its own reviewed change")

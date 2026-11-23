@@ -201,6 +201,13 @@ class InsideClaudeTests(unittest.TestCase):
             self.assertEqual(len(found), 1, key)
             self.assertIn(repr(key), found[0])
 
+    def test_indented_root_keys_are_still_keys(self):
+        # YAML allows an indented root mapping, so indentation does not hide a key.
+        for text in ("---\n  allowed-tools: Bash\n---\n", "---\n  name: s\n  allowed-tools: Bash\n---\n",
+                     "---\n    name: s\n  allowed-tools: Bash\n---\n", "---\n\tallowed-tools: Bash\n---\n"):
+            self.assertTrue(self.errors({".claude/skills/s/SKILL.md": text}), text)
+        self.assertEqual(self.errors({".claude/skills/s/SKILL.md": "---\n  name: s\n  description: d\n    more\n---\n"}), [])
+
     def test_unplain_or_unclosed_frontmatter_fails(self):
         for text in ("---\n? allowed-tools\n: Bash\n---\n", '---\n"allowed-tools": x\n---\n',
                      "---\n{allowed-tools: x}\n---\n", "---\nname: s\n"):
