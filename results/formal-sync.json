@@ -1,0 +1,90 @@
+{
+  "claims": {
+    "C-MOD-1": {
+      "files": [
+        "crates/containment-host/src/controller.rs",
+        "crates/containment-host/src/controller/classifier.rs",
+        "formal/LAWS.bend",
+        "formal/PROOF.bend",
+        "formal/host/HostModel.tla",
+        "formal/kernel.bend"
+      ],
+      "synced_at": "94fbba339d587081fa4839465890e08ccf5d27ea"
+    },
+    "K-ACC-01": {
+      "files": [
+        "formal/LAWS.bend",
+        "formal/PROOF.bend",
+        "formal/kernel.bend"
+      ],
+      "synced_at": "94fbba339d587081fa4839465890e08ccf5d27ea"
+    },
+    "K-CLS-01": {
+      "files": [
+        "formal/LAWS.bend",
+        "formal/PROOF.bend",
+        "formal/kernel.bend"
+      ],
+      "synced_at": "94fbba339d587081fa4839465890e08ccf5d27ea"
+    },
+    "K-LEASE-01": {
+      "files": [
+        "formal/LAWS.bend",
+        "formal/PROOF.bend",
+        "formal/kernel.bend"
+      ],
+      "synced_at": "94fbba339d587081fa4839465890e08ccf5d27ea"
+    },
+    "K-LEASE-02": {
+      "files": [
+        "formal/LAWS.bend",
+        "formal/PROOF.bend",
+        "formal/kernel.bend"
+      ],
+      "synced_at": "94fbba339d587081fa4839465890e08ccf5d27ea"
+    },
+    "K-MONO-01": {
+      "files": [
+        "formal/LAWS.bend",
+        "formal/PROOF.bend",
+        "formal/kernel.bend"
+      ],
+      "synced_at": "94fbba339d587081fa4839465890e08ccf5d27ea"
+    },
+    "K-PLAN-01": {
+      "files": [
+        "formal/LAWS.bend",
+        "formal/PROOF.bend",
+        "formal/kernel.bend"
+      ],
+      "synced_at": "94fbba339d587081fa4839465890e08ccf5d27ea"
+    },
+    "K-RST-01": {
+      "files": [
+        "formal/LAWS.bend",
+        "formal/PROOF.bend",
+        "formal/kernel.bend"
+      ],
+      "synced_at": "94fbba339d587081fa4839465890e08ccf5d27ea"
+    },
+    "K-TIME-01": {
+      "files": [
+        "formal/LAWS.bend",
+        "formal/PROOF.bend",
+        "formal/kernel.bend"
+      ],
+      "synced_at": "94fbba339d587081fa4839465890e08ccf5d27ea"
+    },
+    "R-DIFF-01": {
+      "files": [
+        "crates/containment-host/src/differential.rs",
+        "crates/containment-kernel/src",
+        "crates/containment-wasm/src",
+        "formal/LAWS.bend",
+        "formal/PROOF.bend",
+        "formal/kernel.bend"
+      ],
+      "synced_at": "94fbba339d587081fa4839465890e08ccf5d27ea"
+    }
+  }
+}
