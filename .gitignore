@@ -2,7 +2,12 @@ target/
 results/*.tmp
 *.wasm.tmp
 __pycache__/
-.claude/
+
+# Custom .claude ignore rules, need .claude directory to be shared among maintainers/users
+# Ignore temporary files and local settings for Claude
+.claude/tmp/*
+.claude/settings.local.json
+.claude/worktrees/*
 
 # TLC trace dumps
 formal/host/*_TTrace_*
