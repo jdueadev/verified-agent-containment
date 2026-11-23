@@ -22,15 +22,21 @@
 #   - every tool reports exactly the version ci/pins.env and
 #     rust-toolchain.toml pin.
 # It also fails if check.sh printed SKIPPED or a unit test was skipped. A
-# passing run on a clean tree ends with a "Tier: ..." line naming the image id,
-# the context hash, HEAD and the arguments: T1 for a run with no arguments, T0
-# for --no-strict, which skips the strict claims verdict. On a tree with
-# uncommitted changes it says so and prints no tier line.
+# passing run on a clean tree ends with a "Tier: ..." line (tier_line) naming
+# the image id, the context hash, HEAD and the arguments. T1 is every step of a
+# plain scripts/check.sh (#176): no arguments or --no-strict, which check.sh
+# accepts as the default (#175). --strict is T1 too, labelled "strict claims
+# check passed at <sha>"; it is not a release, because release.yml judges the
+# committed files and reruns nothing (#178). Any other argument is T0. When a
+# path that judges "passed" (TRUSTED_PATHS) differs from the merge base with
+# origin/main, the line says "T1 (modified checker: ...)", because those
+# checks came from the head itself; without origin/main it says it could not
+# tell. On a tree with uncommitted changes it says so and prints no tier line.
 #
 # These checks catch accidents and honest mistakes. They are not a defence
 # against a hostile image, which could print anything.
 #
-# Usage (through the wrapper): [--no-strict]   run scripts/check.sh
+# Usage (through the wrapper): [--strict|--no-strict]   run scripts/check.sh
 #                              --affected REF  run claims_check.py --affected REF
 #                              --claims        run claims_check.py (not strict)
 set -euo pipefail
@@ -39,6 +45,10 @@ SRC=/src          # the checkout, mounted read-only
 WORK=/work        # a fresh scratch volume
 CONTEXT=/opt/check-context  # the build context the image was built from
 REPO="$WORK/repo"
+# What decides "passed": a tier line from a head that changed one of these is
+# that head's own verdict on itself, so it names them (#176).
+TRUSTED_PATHS=(scripts ci tools .github .cargo AGENTS.md CLAUDE.md Cargo.toml Cargo.lock rust-toolchain.toml
+  crates/containment-kernel/tests crates/containment-kernel/Cargo.toml crates/containment-kernel/build.rs)
 REQUIRED_PINS=(BUN_VERSION NODE_VERSION JAVA_VERSION CHECK_JRE_VERSION CHECK_PYTHON_VERSION BEND_COMMIT TLA_SHA256)
 
 say() { echo "check-container: $*" >&2; }
@@ -305,14 +315,36 @@ main() {
     say "scripts/check.sh passed on a tree with uncommitted changes, so this is no T1 result for HEAD $HEAD_SHA"
     return
   fi
-  # T1 is all of scripts/check.sh (AGENTS.md). --no-strict skips the strict
-  # claims verdict, so such a run is T0 however much else passed.
-  local tier=T1 why=""
-  if [ $# -gt 0 ]; then
+  tier_line "$@"
+}
+
+# The paths of TRUSTED_PATHS that differ between the merge base with
+# origin/main and HEAD, space-separated; fails when there is no merge base.
+modified_checkers() {
+  local base
+  base="$(git merge-base refs/remotes/origin/main HEAD 2>/dev/null)" || return 1
+  git diff --name-only "$base" HEAD -- "${TRUSTED_PATHS[@]}" | paste -sd " " -
+}
+
+# The tier of a passing run of scripts/check.sh "$@" on a clean tree at
+# $HEAD_SHA (#176, AGENTS.md "What checked means"). Sourced by
+# tools/test_check_entrypoint.py.
+tier_line() {
+  local tier=T1 label="" modified
+  if [ $# = 1 ] && [ "$1" = --strict ]; then
+    label=", strict claims check passed at $HEAD_SHA"
+  elif [ $# -gt 1 ] || { [ $# = 1 ] && [ "$1" != --no-strict ]; }; then
     tier=T0
-    why=": $* is not all of scripts/check.sh"
+    label=": $* is not a plain scripts/check.sh"
   fi
-  echo "Tier: $tier (container, image $CHECK_IMAGE_ID, context $CONTEXT_HASH) at HEAD $HEAD_SHA (clean), scripts/check.sh${*:+ $*}$why"
+  if [ "$tier" = T1 ]; then
+    if ! modified="$(modified_checkers)"; then
+      tier="T1 (modified checker: unknown, no merge base with origin/main)"
+    elif [ -n "$modified" ]; then
+      tier="T1 (modified checker: $modified)"
+    fi
+  fi
+  echo "Tier: $tier (container, image $CHECK_IMAGE_ID, context $CONTEXT_HASH) at HEAD $HEAD_SHA (clean), scripts/check.sh${*:+ $*}$label"
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

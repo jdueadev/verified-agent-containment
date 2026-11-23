@@ -23,7 +23,7 @@ Any box ticked: heavy. None ticked: say why the change does not widen what any c
 <!-- INV-n from AGENTS.md, and how the change keeps each one. -->
 
 ## Checked
-<!-- T0, T1 or T2 as AGENTS.md defines them, and the checks you ran. -->
+<!-- T0, T1 or T2 as AGENTS.md defines them, and the checks you ran. T1 is every step of a plain `scripts/check.sh`, with no SKIPPED and no skipped test; from the container, paste its Tier line as printed. `--strict` is the release gate, not a tier. -->
 
 ## Not run
 <!-- Every check you skipped, and why. -->

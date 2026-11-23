@@ -161,10 +161,15 @@ Say which tier you reached. Never report a higher one.
 
 - **T0:** the checks you actually ran locally, named one by one. On Windows
   this is usually the tool unit tests and the kernel crate.
-- **T1:** all of `scripts/check.sh`, on Linux or WSL2 with every tool present,
-  or in `ci/check.Dockerfile` via `scripts/check-in-container.sh`, reported
-  with the image id and context hash it prints. A run that printed `SKIPPED`
-  is T0.
+- **T1:** every step of a plain `scripts/check.sh` (no arguments) ran and
+  passed on a clean, committed tree, on Linux or WSL2 with every tool present
+  and `CI=true`, or in `ci/check.Dockerfile` via `scripts/check-in-container.sh`,
+  reported with the tier line it prints (image id, context hash, HEAD). A run
+  that printed `SKIPPED`, skipped or ignored a test, or ran with other
+  arguments is T0. On the host, tool versions are the host's own word; only
+  the container checks them against the pins. A tier line that says
+  `modified checker` came from a head that changed what judges it: report it
+  as printed. `scripts/check.sh --strict` is the release gate, not a tier.
 - **T2:** the root lab run. Only the maintainer does this.
 
 No merge rests on a local result. The `check` workflow is the gate.

@@ -81,9 +81,9 @@ entrypoint fails unless:
 
 It also fails if `check.sh` printed `SKIPPED` or a unit test was skipped. A
 passing run on a clean tree ends with `Tier: T1 (container, image
-sha256:..., context <hash>) at HEAD <sha> (clean), scripts/check.sh`. With
-`--no-strict` the line says `Tier: T0` and why: that run skips the strict
-claims verdict, so it is not all of `scripts/check.sh`.
+sha256:..., context <hash>) at HEAD <sha> (clean), scripts/check.sh`. Which
+arguments give which tier is in the amendment "One T1 on host and container"
+below (#176).
 On a tree with uncommitted changes it says that `check.sh` passed and prints
 no tier line: the result is not one for HEAD. A locally built image has no
 registry digest, so `AGENTS.md` asks for the image id and the context hash
@@ -216,3 +216,31 @@ variable silently. Now:
 
 Each layer was tested on its own, including the transport block with the
 lazy-fetch guard removed. A control run with both guards off ran the payload.
+
+## Amendment: one T1 on host and container (#176)
+
+#175 made a plain `scripts/check.sh` warn on stale claims and fail on wrong
+ones, with `--strict` as the release gate. T1 is now every step of a plain
+`scripts/check.sh` with no `SKIPPED` and no skipped test, in the container and
+on the host alike, so a PR can reach T1 while `main` honestly carries stale
+claims. The earlier rule above, that a `--no-strict` run is T0, is replaced:
+`--no-strict` is the plain run. The entrypoint's `tier_line` decides, and
+`tools/test_check_entrypoint.py` sources it with each argument list:
+
+- no arguments, or `--no-strict`: `T1`;
+- `--strict`: `T1`, with "strict claims check passed at <sha>". It is not
+  labelled a release, because `release.yml` judges committed files and reruns
+  nothing (#178);
+- anything else: `T0`, with the arguments and why.
+
+The design review's blocking point was that the tier line comes from the head's
+own checkers. A clean branch that weakens `check.sh` or `claims_check.py` would
+still print a plain T1. So when a path that judges "passed" (`scripts/`, `ci/`,
+`tools/`, `.github/`, `.cargo/`, `AGENTS.md`, `CLAUDE.md`, the Cargo manifests
+and lock, the toolchain file, the kernel's manifest, build script and tests)
+differs between `HEAD` and its merge base with `origin/main`, the line says
+`T1 (modified checker: <paths>)`. With no `origin/main` in the judged clone it
+says it cannot tell, and never prints a plain T1. The line still reports what
+the head's checks said; the base-judged `spec` and `policy` jobs are what judge
+the head from outside.
+
