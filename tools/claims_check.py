@@ -615,7 +615,12 @@ def main(argv=None):
     if write:
         target.write_text(markdown, encoding="utf-8", newline="\n")
     elif not target.exists() or target.read_text(encoding="utf-8") != markdown:
-        if strict or not (stale or pending):
+        committed = target.read_text(encoding="utf-8") if target.exists() else ""
+        # Without --strict, drift is a warning only when the committed table is staler
+        # than the evidence (rows shown stale that are fresh again). A table that shows
+        # more than the evidence supports, such as a hand-edited status or an old fresh
+        # row for a claim that is stale now, is an error in both modes (INV-1; #175).
+        if strict or not (stale or pending) or not staleness_only_drift(committed, markdown, claims, effective):
             errors.append("docs/claims.md is out of date; run tools/claims_check.py --write")
         else:
             warnings.append("docs/claims.md will need regeneration after refreshing stale lab evidence")
@@ -634,6 +639,80 @@ def main(argv=None):
             errors.extend(e.replace("results/", f"{ci.relative_to(ROOT)}/", 1) for e in build_errors(ci))
     print(json.dumps({"claims": len(claims), "status": counts, "errors": errors, "stale": warnings}, indent=2))
     return 1 if errors else 0
+
+
+PENDING_SUFFIX = re.compile(r" \(pending lab: [a-z]+(?:-[a-z]+)*:[A-Za-z0-9_./#:-]+(?:, [a-z]+(?:-[a-z]+)*:[A-Za-z0-9_./#:-]+)*\)")
+PREDATES_NOTE = " (predates later changes)"
+PENDING_KINDS = ("scenario", "sabotage", "live", "live-sabotage")  # what not_yet_run can report
+TABLE_COLUMNS = 7  # id, statement, layer, status, evidence, falsifier, platforms
+
+
+def _row_cells(line):
+    """The cells of one rendered table row, or None. A literal | in a cell is escaped."""
+    if not (line.startswith("| ") and line.endswith(" |")):
+        return None
+    return re.split(r"(?<!\\) \| ", line[2:-2])
+
+
+def staleness_only_drift(committed, expected, claims, effective):
+    """True when the committed docs/claims.md differs from the expected render only in
+    what staleness changes, so that without --strict it is a warning (decision 0002:
+    the table is regenerated when the lab evidence is refreshed). Each differing line
+    must be a table row whose id, statement, layer, evidence and falsifier match
+    exactly, and whose committed status cell is one of two whole renders of that row:
+
+    - an older fresh render: the declared status, with no pending-lab suffix; or
+    - a stale render: "stale", optionally with a pending-lab suffix that lists only
+      evidence refs.
+
+    In both, the platforms match apart from "predates later changes" notes, which a
+    fresh row can carry too (one platform predates a change, another still passes).
+
+    A stronger status than declared, free text in a suffix, or a mixed render is never
+    explained, in either mode (INV-1; #175 review and its security scan)."""
+    old, new = committed.split("\n"), expected.split("\n")
+    if len(old) != len(new):
+        return False
+    declared = {c["id"]: c.get("status") for c in claims}
+    evidence = {c["id"]: set(c.get("evidence", [])) for c in claims}
+    for a, b in zip(old, new):
+        if a == b:
+            continue
+        ca, cb = _row_cells(a), _row_cells(b)
+        if ca is None or cb is None or len(ca) != TABLE_COLUMNS or len(cb) != TABLE_COLUMNS:
+            return False
+        cid = cb[0]
+        if ca[0] != cid or cid not in declared:
+            return False
+        if [ca[i] for i in (0, 1, 2, 4, 5)] != [cb[i] for i in (0, 1, 2, 4, 5)]:
+            return False
+        if ca[6].replace(PREDATES_NOTE, "") != cb[6].replace(PREDATES_NOTE, ""):
+            return False
+        # A row whose status cell did not change is the same render, so its platform
+        # notes must match too: dropping one would claim a platform covers current code.
+        if ca[3] == cb[3] and ca[6] != cb[6]:
+            return False
+        suffix = PENDING_SUFFIX.search(ca[3])
+        if suffix:
+            # render() puts the suffix right after "stale" and before any "(needs ...)":
+            # anywhere else, such as inside the word, it is not a render.
+            if ca[3][:suffix.start()] != "stale":
+                return False
+            refs = suffix.group(0)[len(" (pending lab: "):-1].split(", ")
+            if any(r.partition(":")[0] not in PENDING_KINDS or r not in evidence[cid] for r in refs):
+                return False
+        stripped = PENDING_SUFFIX.sub("", ca[3], count=1)
+        if "(pending lab:" in stripped:
+            return False
+        token_a, _, rest_a = stripped.partition(" ")
+        token_b, _, rest_b = PENDING_SUFFIX.sub("", cb[3], count=1).partition(" ")
+        if rest_a != rest_b:
+            return False
+        if token_a == "stale":
+            continue
+        if token_a != declared[cid] or stripped != ca[3]:
+            return False
+    return True
 
 
 def esc(text):
