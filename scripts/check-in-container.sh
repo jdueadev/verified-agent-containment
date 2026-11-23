@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs scripts/check.sh in the pinned container ci/check.Dockerfile (#55,
-# docs/decisions/0007-check-container.md): network off, read-only root
+# docs/decisions/0008-check-container.md): network off, read-only root
 # filesystem, no capabilities, no new privileges, uid 1000, on a copy of this
 # checkout. Works from a git worktree too.
 #

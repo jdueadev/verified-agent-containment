@@ -1,4 +1,4 @@
-# 0007: T1 can be reached in a pinned container
+# 0008: T1 can be reached in a pinned container
 
 Status: accepted when its pull request merges, 2026-11-22 (#55). Changes the T1 definition in `AGENTS.md`
 ("What checked means"). Proposed as 0006; renumbered when 0006 went to the

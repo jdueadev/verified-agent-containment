@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The entrypoint of ci/check.Dockerfile (#55, docs/decisions/0007-check-container.md).
+# The entrypoint of ci/check.Dockerfile (#55, docs/decisions/0008-check-container.md).
 # scripts/check-in-container.sh starts it; it is not meant to be run by hand.
 #
 # It runs scripts/check.sh only when the run can honestly be called T1:
