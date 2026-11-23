@@ -93,7 +93,12 @@ while IFS= read -r line || [ -n "$line" ]; do
   build_args+=(--build-arg "$line")
 done < ci/pins.env
 
-"$ENGINE" build --platform linux/amd64 -f "$(native "$ctx/ci/check.Dockerfile")" -t "$tag" \
+# Podman builds OCI images by default, and the OCI format drops the Dockerfile's
+# SHELL line, so every RUN would run under /bin/sh instead of bash -euo pipefail.
+# Its pin checks then fail (bash's [[ is missing), which is closed but useless.
+format=()
+[ "$ENGINE" = podman ] && format=(--format docker)
+"$ENGINE" build "${format[@]}" --platform linux/amd64 -f "$(native "$ctx/ci/check.Dockerfile")" -t "$tag" \
   "${build_args[@]}" "$(native "$ctx")" >&2 || die "the image did not build"
 id="$("$ENGINE" image inspect --format '{{.Id}}' "$tag")" || die "cannot inspect $tag"
 id="sha256:${id#sha256:}"
