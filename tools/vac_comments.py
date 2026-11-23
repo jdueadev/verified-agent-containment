@@ -33,6 +33,8 @@ YAML_BLOCK = re.compile(r"[|>][-+]?(?=[ \t]|$)")
 ENV_ASSIGN = re.compile(r"[ \t]*(?:export[ \t]+)?[A-Za-z_][A-Za-z0-9_]*=")
 ENV_VALUE = re.compile(r"\"(?:[^\"\\\n]|\\.)*\"|'[^'\n]*'|[^\s'\"][^\s'\"]*|")
 BATCH_REM = re.compile(r"rem(?=[\s.:,;=/\\(+\[\]]|$)", re.I)
+TOML_ESCAPES = {"\\": "\\\\", '"': '\\"', "\b": "\\b", "\t": "\\t", "\n": "\\n", "\f": "\\f", "\r": "\\r"}
+UNREADABLE = "unreadable"
 
 
 class Span(NamedTuple):
@@ -111,7 +113,7 @@ def python_lexer(text):
     found = [(t.start[0], "comment", t.string) for t in tokens if t.type == tokenize.COMMENT]
     owners = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
     docs = {id(node.body[0]) for node in ast.walk(tree)
-            if isinstance(node, owners) and node.body and bare_string(node.body[0])}
+            if isinstance(node, owners) and node.body and is_docstring(node.body[0])}
     found += [(node.lineno, "docstring" if id(node) in docs else "string", lines[node.lineno - 1].strip())
               for node in ast.walk(tree) if bare_string(node)]
     return found
@@ -121,6 +123,10 @@ def bare_string(node):
     value = getattr(node, "value", None)
     return isinstance(node, ast.Expr) and (isinstance(value, ast.JoinedStr) or (
         isinstance(value, ast.Constant) and isinstance(value.value, (str, bytes))))
+
+
+def is_docstring(node):
+    return bare_string(node) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
 
 
 def rust_lexer(text):
@@ -191,42 +197,52 @@ class Shell(Scanner):
         return self.found
 
     def code(self, close):
-        s, depth = self.s, 0
+        s, depth, at_word = self.s, 0, True
         while self.i < len(s):
-            ch, at_word = s[self.i], self.i == 0 or s[self.i - 1] in self.WORD_BREAK
+            ch = s[self.i]
             if ch == "\n":
                 self.i += 1
                 self.bodies()
+                at_word = True
             elif ch == "\\":
+                at_word = at_word and s.startswith("\\\n", self.i)
                 self.i += 2
             elif ch == "'":
                 self.skip_quoted("'", escape=None)
+                at_word = False
             elif ch == '"':
                 self.dquote()
+                at_word = False
             elif ch == "$":
                 self.dollar(False)
+                at_word = False
             elif ch == "`":
                 self.i += 1
                 if close == "`":
                     return
                 self.code("`")
+                at_word = False
             elif ch == "#" and at_word:
                 if close == "`":
                     self.fail("a comment inside backticks")
                 self.take(self.eol(self.i))
             elif s.startswith("<<", self.i):
                 self.heredoc()
+                at_word = False
             elif ch == "(":
                 depth += 1
                 self.i += 1
+                at_word = True
             elif ch == ")":
                 self.i += 1
                 if close == ")" and not depth:
                     return
                 depth -= bool(depth)
+                at_word = True
             elif close == ")" and at_word and SHELL_CASE.match(s, self.i):
                 self.fail("a case statement inside $( ), whose ) this lexer cannot tell apart")
             else:
+                at_word = ch in self.WORD_BREAK
                 self.i += 1
         if close:
             self.fail(f"a {'$(' if close == ')' else '`'} is never closed")
@@ -423,7 +439,7 @@ class Script(Scanner):
             elif ch.isalnum() or ch in "_$#\\":
                 word = JS_WORD.match(s, self.i).group()
                 self.i += len(word)
-                prev = "op" if word in REGEX_AFTER else "value"
+                prev = "op" if word in REGEX_AFTER and prev != "member" else "value"
             elif s.startswith(("++", "--"), self.i):
                 self.i += 2
                 prev = "close"
@@ -439,7 +455,7 @@ class Script(Scanner):
                 prev = "close"
             else:
                 self.i += 1
-                prev = {")": "close", "]": "value"}.get(ch, "op")
+                prev = {")": "close", "]": "value", ".": "member"}.get(ch, "op")
         if close:
             self.fail("a ${ in a template literal is never closed")
 
@@ -700,8 +716,7 @@ def leading_hash(n, line):
 def dockerfile_hash(n, line):
     if "<<" in line:
         raise Unreadable(n, "a heredoc in a Dockerfile, whose body this lexer cannot classify")
-    found = re.search(r"(?:^|\s)#", line)
-    return found.end() - 1 if found else None
+    return leading_hash(n, line)
 
 
 def env_hash(n, line):
@@ -721,16 +736,24 @@ def env_hash(n, line):
 
 
 def batch_rem(n, line):
-    if line.lstrip(" \t@").startswith("::"):
-        return len(line) - len(line.lstrip(" \t@"))
-    i, quoted = 0, False
+    plain = line.lstrip(" \t@")
+    if plain.startswith("::"):
+        return len(line) - len(plain)
+    i, quoted, at_command = 0, False, True
     while i < len(line):
-        if line[i] == '"':
-            quoted = not quoted
-        elif line[i] == "^" and not quoted:
-            i += 1
-        elif not quoted and (i == 0 or line[i - 1] in " \t&|(@") and BATCH_REM.match(line, i):
+        ch = line[i]
+        if quoted:
+            quoted = ch != '"'
+        elif ch == '"':
+            quoted, at_command = True, False
+        elif ch == "^":
+            i, at_command = i + 1, False
+        elif at_command and BATCH_REM.match(line, i):
             return i
+        elif ch in "&|(":
+            at_command = True
+        elif ch not in " \t@":
+            at_command = False
         i += 1
     return None
 
@@ -804,7 +827,7 @@ def comment_spans(path, text):
     try:
         raw = lexer(text)
     except Unreadable as error:
-        return [Span(path, error.line, "unreadable", error.reason)]
+        return [Span(path, error.line, UNREADABLE, error.reason)]
     spans = sorted((Span(path, line, kind, body) for line, kind, body in raw), key=lambda span: span.line)
     return [span for span in spans if not any(exempt(span, text) for exempt in DIRECTIVES)]
 
@@ -815,7 +838,7 @@ def counted(path, data, frozen):
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
-        return [Span(path, 1, "unreadable", "is not UTF-8")] if lexer_key(path) else []
+        return [Span(path, 1, UNREADABLE, "is not UTF-8")] if lexer_key(path) else []
     spans = comment_spans(path, text)
     return [s for s in spans if s.kind not in FROZEN_SPEC_KINDS] if path in frozen else spans
 
@@ -851,8 +874,13 @@ def load_debt(text):
     return files
 
 
+def toml_string(value):
+    body = "".join(TOML_ESCAPES.get(ch) or (f"\\u{ord(ch):04X}" if ch < " " or ch == "\x7f" else ch) for ch in value)
+    return f'"{body}"'
+
+
 def debt_text(files):
-    return "files = [\n" + "".join(f"  {json.dumps(f)},\n" for f in sorted(set(files))) + "]\n"
+    return "files = [\n" + "".join(f"  {toml_string(f)},\n" for f in sorted(set(files))) + "]\n"
 
 
 class Tree:
@@ -886,26 +914,31 @@ class Tree:
         found = blobs(self.root, self.base, [DEBT_FILE]).get(DEBT_FILE)
         if found is not None:
             return self.base, load_debt(found.decode("utf-8")), None
+        if self.debt_existed():
+            return f"{self.base}, which deleted it", [], None
         merge = git(self.root, "merge-base", "HEAD", self.base)
         if merge.returncode:
             raise ValueError(f"HEAD has no merge-base with {self.base}")
         base = merge.stdout.decode().strip()
-        found = blobs(self.root, base, [DEBT_FILE]).get(DEBT_FILE)
-        if found is not None:
-            return base[:12], load_debt(found.decode("utf-8")), None
         added = git(self.root, "log", "--format=%H", "--diff-filter=A", "--reverse", f"{base}..HEAD", "--", DEBT_FILE)
-        first = added.stdout.decode().split()
         if added.returncode:
             raise ValueError(f"git log failed: {added.stderr.decode(errors='replace').strip()}")
+        first = added.stdout.decode().split()
         if not first:
             return "the working tree", self.debt(), base
         return first[0][:12], load_debt(blobs(self.root, first[0], [DEBT_FILE])[DEBT_FILE].decode("utf-8")), base
+
+    def debt_existed(self):
+        past = git(self.root, "log", "--format=%H", "-1", f"{self.base}^{{commit}}", "--", DEBT_FILE)
+        if past.returncode:
+            raise ValueError(f"git log failed: {past.stderr.decode(errors='replace').strip()}")
+        return bool(past.stdout.split())
 
 
 def describe(span):
     lines = span.text.strip().splitlines() or [""]
     shown = lines[0] if len(lines[0]) <= 120 else lines[0][:117] + "..."
-    if span.kind == "unreadable":
+    if span.kind == UNREADABLE:
         return f"unreadable: {span.text}; write it so the comment lexer can follow it"
     return f"{span.kind}: {shown}"
 
@@ -913,8 +946,8 @@ def describe(span):
 def new_comments(tree, changed=None):
     debt = set(tree.debt())
     wanted = None if changed is None else set(changed)
-    return [span for path in tree.checked() if path not in debt and (wanted is None or path in wanted)
-            for span in tree.spans(path)]
+    return [span for path in tree.checked() if wanted is None or path in wanted
+            for span in tree.spans(path) if path not in debt or span.kind == UNREADABLE]
 
 
 def debt_errors(tree):
@@ -967,15 +1000,25 @@ def listing(root, paths, as_json, out=sys.stdout, err=sys.stderr):
 def debt_write(root, out=sys.stdout):
     tree = Tree(root)
     target = tree.root / DEBT_FILE
+    if target.is_symlink():
+        print(f"vac: {DEBT_FILE} is a symbolic link; replace it with a regular file", file=out)
+        return 1
     if target.is_file():
         try:
             old = tree.debt()
         except ValueError as error:
             print(f"vac: {error}", file=out)
             return 1
-        keep = [p for p in old if tree.spans(p)]
+        candidates = old
     else:
-        old, keep = [], [p for p in tree.checked() if tree.spans(p)]
+        old, candidates = [], tree.checked()
+    blocked = [s for p in candidates for s in tree.spans(p) if s.kind == UNREADABLE]
+    if blocked:
+        for span in blocked:
+            print(f"vac: {span.path}:{span.line}: {describe(span)}", file=out)
+        print(f"vac: {DEBT_FILE} is unchanged while a file cannot be read", file=out)
+        return 1
+    keep = [p for p in candidates if tree.spans(p)]
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(debt_text(keep), encoding="utf-8")
     removed = sorted(set(old) - set(keep))

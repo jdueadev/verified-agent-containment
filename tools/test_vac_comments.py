@@ -27,6 +27,10 @@ CORPUS = {
         ("bare strings that are not docstrings", "a.py", 'x = 1\n"loose"\nif x:\n    "nested"\n',
          [(2, "string", '"loose"'), (4, "string", '"nested"')]),
         ("a bare f-string", "a.py", 'x = 1\nf"loose {x}"\n', [(2, "string", 'f"loose {x}"')]),
+        ("a leading bytes literal is no docstring", "a.py", 'b"loose"\nx = 1\n', [(1, "string", 'b"loose"')]),
+        ("a leading f-string is no docstring", "a.py", 'f"loose"\nx = 1\n', [(1, "string", 'f"loose"')]),
+        ("a leading bytes literal in a function is no docstring", "a.py", 'def f():\n    b"loose"\n',
+         [(2, "string", 'b"loose"')]),
         ("shebang on line 1 is exempt", "a.py", "#!/usr/bin/env python3\nx = 1\n", []),
         ("a shebang below line 1 counts", "a.py", "x = 1\n#!/bin/sh\n", [(2, "comment", "#!/bin/sh")]),
         ("a coding cookie counts", "a.py", "# -*- coding: utf-8 -*-\nx = 1\n",
@@ -83,6 +87,9 @@ CORPUS = {
         ("hash in quotes", "a.sh", "echo \"# no\" '# no'\n", []),
         ("hash inside a word", "a.sh", "echo a#b\nx=#y\n", []),
         ("comment after a separator", "a.sh", "true;# c\n", [(1, "comment", "# c")]),
+        ("a line continuation joins the next word", "a.sh", "echo a\\\n#b\n", []),
+        ("an escaped backslash ends the word", "a.sh", "echo a\\\\\n# c\n", [(2, "comment", "# c")]),
+        ("a line continuation keeps the word break before it", "a.sh", "echo \\\n# c\n", [(2, "comment", "# c")]),
         ("$# is a parameter", "a.sh", "[ $# -eq 0 ] && echo none\n", []),
         ("${#a} is a length", "a.sh", 'echo ${#a} "${#b}"\n', []),
         ("a spaced hash inside ${ }", "a.sh", "echo ${x:- #b}\n", []),
@@ -132,6 +139,8 @@ CORPUS = {
         ("regex with slashes in a class", "a.mjs", "const r = /[///]/;\n", []),
         ("regex after a paren", "a.mjs", "s.replace(/'/g, \"\");\n", []),
         ("regex after a keyword", "a.mjs", "return /\\/\\//.test(s);\n", []),
+        ("a member named like a keyword divides", "a.js", "const v = object.in / 2;\n", []),
+        ("an optional-chained member named like a keyword divides", "a.js", "const v = object?.in / 2;\n", []),
         ("division then a comment", "a.mjs", "const v = a / b; // c\n", [(1, "comment", "// c")]),
         ("an ambiguous slash fails closed", "a.mjs", "const v = (a) / b; // c\n", UNREADABLE),
         ("a plain ambiguous slash is division", "a.mjs", "const v = (a) / 2;\n", []),
@@ -156,6 +165,9 @@ CORPUS = {
         ("rem after &", "a.cmd", "echo x&rem c\n", [(1, "comment", "rem c")]),
         ("rem inside quotes", "a.cmd", 'echo "a & rem b"\n', []),
         ("remark and labels", "a.cmd", "echo remark\n:label\n", []),
+        ("rem as an argument", "a.cmd", "echo rem to continue\n", []),
+        ("rem after an at sign inside a word", "a.cmd", "echo a@rem b\n", []),
+        ("rem after a pipe", "a.cmd", "echo x|rem c\n", [(1, "comment", "rem c")]),
         ("@rem", "a.cmd", "@rem c\n", [(1, "comment", "rem c")]),
         ("CRLF lines", "a.cmd", "rem c\r\necho x\r\n", [(1, "comment", "rem c")]),
     ),
@@ -167,7 +179,9 @@ CORPUS = {
     ),
     "dockerfile": (
         ("comment line and a hash in a word", "Dockerfile", "# c\nFROM x\nRUN echo a#b\n", [(1, "comment", "# c")]),
-        ("hash after a space", "Dockerfile", "RUN x # c\n", [(1, "comment", "# c")]),
+        ("an indented comment line", "Dockerfile", "  # c\nFROM x\n", [(1, "comment", "# c")]),
+        ("a hash after a space is no Dockerfile comment", "Dockerfile", "RUN x # c\n", []),
+        ("a hash inside a quoted value", "Dockerfile", 'LABEL description="part #1"\n', []),
         ("heredoc fails closed", "Dockerfile", "RUN cat <<EOF\nx\nEOF\n", UNREADABLE),
     ),
     "git": (
@@ -298,6 +312,21 @@ class NoNewCommentTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertTrue(found[0].message.startswith("unreadable:"), found[0].message)
 
+    def test_a_listed_file_that_cannot_be_read_still_fails(self):
+        repo = Repo(self)
+        repo.commit({"a.py": "# a\n", DEBT: comments.debt_text(["a.py"])})
+        repo.main_here()
+        repo.commit({"a.py": "def (:\n"})
+        found = repo.check("NC-1")
+        self.assertEqual(where(found), [("a.py", 1)])
+        self.assertTrue(found[0].message.startswith("unreadable:"), found[0].message)
+
+    def test_a_listed_file_keeps_its_comments_exempt(self):
+        repo = Repo(self)
+        repo.commit({"a.py": "# a\n", DEBT: comments.debt_text(["a.py"])})
+        repo.main_here()
+        self.assertEqual(repo.check("NC-1"), [])
+
     def test_a_checked_file_that_is_not_utf8_fails_and_a_binary_blob_does_not(self):
         repo = Repo(self)
         repo.commit({"a.py": b"x = '\xff'\n", "blob": b"\x00\xff\xfe"})
@@ -404,16 +433,16 @@ class DebtTests(unittest.TestCase):
         repo.commit({"e.py": "# e\n", DEBT: comments.debt_text(["a.py", "e.py"])})
         self.assertEqual(len(repo.check("NC-2")), 1)
 
-    def test_without_a_debt_file_on_main_the_merge_base_is_the_base(self):
+    def test_a_list_deleted_on_main_leaves_no_debt_at_all(self):
         repo = Repo(self)
         fork = repo.commit({"a.py": "# a\n", "b.py": "x = 1\n", DEBT: comments.debt_text(["a.py"])})
         repo.commit({DEBT: None})
         repo.main_here()
         git(repo.root, "checkout", "-q", "-b", "head", fork)
         repo.commit({"b.py": "# b\n", DEBT: comments.debt_text(["a.py", "b.py"])})
-        found = repo.check("NC-2")
-        self.assertEqual(len(found), 1)
-        self.assertTrue(found[0].message.startswith("b.py is not in"), found[0].message)
+        self.assertEqual([f.message.split(";")[0] for f in repo.check("NC-2")],
+                         [f"a.py is not in {DEBT} at origin/main, which deleted it",
+                          f"b.py is not in {DEBT} at origin/main, which deleted it"])
 
     def test_a_missing_main_fails(self):
         repo = Repo(self)
@@ -455,16 +484,50 @@ class CommandTests(unittest.TestCase):
         comments.debt_write(repo.root, out=io.StringIO())
         self.assertEqual(comments.load_debt((repo.root / DEBT).read_text()), ["a.py"])
 
+    def test_debt_write_refuses_a_symlink_in_place_of_the_list(self):
+        repo = Repo(self)
+        repo.commit({"a.py": "# a\n"})
+        outside = repo.root / "outside.toml"
+        outside.write_text("files = []\n", encoding="utf-8")
+        link = repo.root / DEBT
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(outside)
+        out = io.StringIO()
+        self.assertEqual(comments.debt_write(repo.root, out=out), 1)
+        self.assertEqual(outside.read_text(encoding="utf-8"), "files = []\n")
+        self.assertIn("symbolic link", out.getvalue())
+
+    def test_debt_write_refuses_while_a_listed_file_cannot_be_read(self):
+        repo = Repo(self)
+        repo.commit({"a.py": "# a\n", "b.py": "# b\n", DEBT: comments.debt_text(["a.py", "b.py"])})
+        repo.main_here()
+        repo.commit({"b.py": "def (:\n"})
+        out = io.StringIO()
+        self.assertEqual(comments.debt_write(repo.root, out=out), 1)
+        self.assertEqual(comments.load_debt((repo.root / DEBT).read_text(encoding="utf-8")), ["a.py", "b.py"])
+        self.assertIn("b.py:1", out.getvalue())
+
     def test_the_debt_file_has_no_comments_of_its_own(self):
         text = comments.debt_text(["b.py", "a.py", "a.py"])
         self.assertEqual(comments.comment_spans(DEBT, text), [])
         self.assertEqual(comments.load_debt(text), ["a.py", "b.py"])
 
+    def test_the_debt_file_round_trips_an_awkward_path(self):
+        paths = ["notes-\U0001f600.py", 'odd"name.py', "back\\slash.py", "hash#.py", "café.py"]
+        text = comments.debt_text(paths)
+        self.assertEqual(comments.load_debt(text), sorted(paths))
+        self.assertEqual(comments.comment_spans(DEBT, text), [])
+
     def test_vac_comments_runs_from_the_command_line(self):
+        fixture = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, fixture)
+        (fixture / "a.sh").write_text("echo hi # c\n", encoding="utf-8")
         child = subprocess.run([sys.executable, str(ROOT / "tools/vac.py"), "comments", "--json",
-                                "tools/vac_comments.py", "tools/test_vac_comments.py"],
+                                "tools/vac_comments.py", "tools/test_vac_comments.py", str(fixture / "a.sh")],
                                cwd=ROOT, capture_output=True, text=True, timeout=300)
-        self.assertEqual((child.returncode, child.stdout, child.stderr), (0, "", ""))
+        self.assertEqual((child.returncode, child.stderr), (0, ""))
+        self.assertEqual([json.loads(line) for line in child.stdout.splitlines()],
+                         [{"path": (fixture / "a.sh").as_posix(), "line": 1, "kind": "comment", "text": "# c"}])
 
     def test_debt_write_takes_no_path(self):
         child = subprocess.run([sys.executable, str(ROOT / "tools/vac.py"), "comments", "--debt-write", "a.py"],
