@@ -59,6 +59,12 @@ whose head is that commit:
   base to its head, then the head's own workflow files decided check and spec.
   Those contexts then also need the owner's latest review to approve exactly
   this head, the rule `policy` uses.
+- An approval counts only if it was submitted after this head arrived on the
+  pull request, by the server times of the head ref's Activity log, the PR's
+  creation and its reopen, base change and force-push events
+  (`policy_check.review_freshness`, #149). GitHub moves an approval's
+  `commit_id` to a new head whose diff it thinks unchanged, so the commit
+  alone is not proof. If the arrival can't be established, no review counts.
 
 Any error, or more than one open pull request into main with this head, makes
 every context fail for that commit. If no open pull request into main has
@@ -453,6 +459,14 @@ def judge(head_sha):
     workflow_ids = {p: gh(f"repos/{repo}/actions/workflows/{p.rsplit('/', 1)[1]}")["id"] for p in RUN_WORKFLOWS}
     by_path = qualifying(pages(f"repos/{repo}/actions/runs?head_sha={head_sha}&per_page=100"), repo, pr, workflow_ids)
     reviews = pages(f"repos/{repo}/pulls/{pr['number']}/reviews?per_page=100")
+    # Only an approval submitted after this head arrived counts (#149). Everything
+    # below, the reviews file for classify included, sees the filtered list.
+    activity = pages(f"repos/{repo}/activity?per_page=100&ref="
+                     + urllib.parse.quote(f"refs/heads/{pr['head']['ref']}", safe=""))
+    timeline = pages(f"repos/{repo}/issues/{pr['number']}/timeline?per_page=100")
+    reviews, void = policy_check.review_freshness(reviews, activity, pr, timeline, head_sha)
+    if void:
+        print(f"gate_check: no review of {head_sha} counts, because {void}.", file=sys.stderr)
     merge_base = fetch_head(pr)
     changed = changed_paths(merge_base, head_sha)
     workflows_approved = any(touches_workflows(p) for p in changed) and policy_check.approved(reviews, owner, head_sha)

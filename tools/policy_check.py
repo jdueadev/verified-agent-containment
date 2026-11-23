@@ -6,6 +6,7 @@ Usage:
                            [--fork] [--enforce]
   policy_check.py codeowners [--write]
   policy_check.py invariants [--ref REF]
+  policy_check.py fresh-reviews --head-sha SHA --reviews FILE --activity FILE --pr FILE --timeline FILE
 
 classify   prints the lane of the diff between two commits. Lanes are defined in
            ci/lanes.toml. A ratchet raises the lane to C when the change removes
@@ -19,12 +20,20 @@ invariants checks rules that hold on every commit: `sabotage` is not a default
            file or environment reads). With --ref it checks that commit, read
            through git, instead of the working tree, so `policy` can run it from
            the base branch against an untrusted head.
+fresh-reviews prints the PR's reviews (the API's JSON) with commit_id cleared on every
+           review not submitted strictly after the head arrived on the PR, so that
+           classify --reviews counts only an approval of the head the owner saw
+           (#149). The arrival comes from the repository Activity log for the head
+           ref (activity), the PR (pr) and its issue timeline (timeline). When it
+           cannot be established, every review is cleared. Input that is not the
+           API's JSON shape is refused: exit 1, last line "fresh-reviews: ...".
 
 This script only reads the other commit's files through git. It never imports or
 runs them, so it is safe to run from the base branch against an untrusted head.
 """
 import argparse
 import ast
+import datetime
 import hashlib
 import json
 import re
@@ -423,6 +432,120 @@ def approved(reviews, owner, head_sha):
     return bool(latest) and latest["state"] == "APPROVED" and latest.get("commit_id") == head_sha
 
 
+# ---------- approval freshness (#149) ----------
+#
+# GitHub rewrites a review's commit_id to the new head when a push leaves the PR's
+# diff unchanged, so commit_id alone cannot say which commit the owner saw. A review
+# counts only if it was submitted strictly after the head arrived on the PR, judged on
+# server time. Anything that cannot be established voids every review.
+
+GITHUB_TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
+COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
+# Timeline events that move the arrival later with the head unchanged. A force-push is
+# also in the push log; its timeline entry is a later server time for the same push.
+ARRIVAL_EVENTS = ("reopened", "base_ref_changed", "head_ref_force_pushed")
+
+
+def github_time(value):
+    """A server time in the one form the REST API writes, or None for anything else."""
+    if not isinstance(value, str) or not GITHUB_TIME.fullmatch(value):
+        return None
+    try:
+        return datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+
+
+def flat_items(pages):
+    """A list endpoint's items, from one page or from `gh --paginate --slurp` pages."""
+    return [item for page in pages for item in (page if isinstance(page, list) else [page])]
+
+
+def head_arrival(activity, pr, timeline, head_sha):
+    """(when the head arrived on the PR, None), or (None, why it cannot be known).
+
+    activity: the repository Activity log for the PR's head ref, newest first, as the API
+    gives it. Its newest entry must be a push of exactly this head; otherwise the log lags,
+    the head has moved, or the branch is gone. The arrival is the latest of that entry's
+    time, the PR's creation, and any reopen, base change or force-push on the timeline."""
+    def obj(value):
+        return value if isinstance(value, dict) else {}
+    head, base = obj(pr.get("head")), obj(pr.get("base"))
+    if head.get("sha") != head_sha:
+        return None, "the pull request's head is not --head-sha"
+    head_repo, base_repo = obj(head.get("repo")).get("full_name"), obj(base.get("repo")).get("full_name")
+    if not isinstance(head_repo, str) or head_repo != base_repo:
+        return None, "the head is not in the base repository, so its push log is not read"
+    if not isinstance(head.get("ref"), str) or not head["ref"]:
+        return None, "the pull request has no head ref"
+    ref = "refs/heads/" + head["ref"]
+    pushes = flat_items(activity)
+    if not pushes:
+        return None, f"the activity log has no push to {ref}"
+    times = []
+    for entry in pushes:
+        if not isinstance(entry, dict) or entry.get("ref") != ref:
+            return None, f"the activity log has an entry that is not for {ref}"
+        times.append(github_time(entry.get("timestamp")))
+    if None in times or any(t > times[0] for t in times):
+        return None, "the activity log has an entry without a server time, or is not newest first"
+    if pushes[0].get("after") != head_sha:
+        return None, f"the newest push to {ref} is not the head: the log lags, the head moved, or the branch is gone"
+    candidates = [times[0], github_time(pr.get("created_at"))]
+    for event in flat_items(timeline):
+        if not isinstance(event, dict):
+            return None, "the timeline has an entry that is not an object"
+        if event.get("event") in ARRIVAL_EVENTS:
+            candidates.append(github_time(event.get("created_at")))
+    if None in candidates:
+        return None, "the pull request, or a reopen, base change or force-push on its timeline, has no server time"
+    return max(candidates), None
+
+
+def fresh_reviews(reviews, arrived_at):
+    """Every review, flattened. A review not submitted strictly after arrived_at, and
+    every review when arrived_at is None, gets commit_id None: it can approve no commit.
+    It stays in the list, so a stale approval is still the owner's latest decision and
+    an earlier fresh one does not count again."""
+    out = []
+    for review in flat_items(reviews):
+        submitted = github_time(review.get("submitted_at"))
+        fresh = arrived_at is not None and submitted is not None and submitted > arrived_at
+        out.append(dict(review) if fresh else dict(review, commit_id=None))
+    return out
+
+
+def review_freshness(reviews, activity, pr, timeline, head_sha):
+    """(the reviews with only fresh ones still naming a commit, why all are void or None).
+    The one entry point for the fresh-reviews command and the gate."""
+    arrived_at, why = head_arrival(activity, pr, timeline, head_sha)
+    return fresh_reviews(reviews, arrived_at), why
+
+
+def fresh_reviews_inputs(args):
+    """The parsed inputs of fresh-reviews, or SystemExit with a 'fresh-reviews: ' reason.
+    Only input that cannot have come from the API is refused; anything the API could
+    give voids the reviews instead, so a lane A change is never stopped by it."""
+    if not COMMIT_SHA.fullmatch(args.head_sha or ""):
+        sys.exit(f"fresh-reviews: --head-sha {args.head_sha!r} is not a commit id")
+    shapes = {"reviews": list, "activity": list, "pr": dict, "timeline": list}
+    data = {}
+    for name, shape in shapes.items():
+        path = getattr(args, name)
+        if not path:
+            sys.exit(f"fresh-reviews: --{name} is required")
+        try:
+            value = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            sys.exit(f"fresh-reviews: --{name} {path} is not readable JSON ({type(error).__name__})")
+        if not isinstance(value, shape) or (shape is list and not all(
+                isinstance(page, dict) or (isinstance(page, list) and all(isinstance(i, dict) for i in page))
+                for page in value)):
+            sys.exit(f"fresh-reviews: --{name} is not a {'JSON object' if shape is dict else 'list of objects'}")
+        data[name] = value
+    return data
+
+
 # ---------- CODEOWNERS ----------
 
 def codeowners_text(owner, lanes):
@@ -583,12 +706,29 @@ def main(argv=None):
     o.add_argument("--write", action="store_true")
     i = sub.add_parser("invariants")
     i.add_argument("--ref", help="check this commit, read through git, instead of the working tree")
+    # Every option is optional here and checked in code, so a missing one is a
+    # 'fresh-reviews: ' refusal (exit 1), never an argparse error (#149).
+    f = sub.add_parser("fresh-reviews")
+    for name in ("head-sha", "reviews", "activity", "pr", "timeline"):
+        f.add_argument(f"--{name}")
     args = parser.parse_args(argv)
+    if args.command == "fresh-reviews":
+        return fresh_reviews_main(args)
     try:
         return run(parser, args)
     except subprocess.CalledProcessError as error:
         # Fail closed, but say why: the workflow shows stderr next to an empty result.
         sys.exit(f"policy: {' '.join(error.cmd[3:])} failed: {(error.stderr or '').strip()}")
+
+
+def fresh_reviews_main(args):
+    data = fresh_reviews_inputs(args)
+    kept, why = review_freshness(data["reviews"], data["activity"], data["pr"], data["timeline"], args.head_sha)
+    if why:
+        # Not a refusal, so not the 'fresh-reviews: ' prefix a refusal ends with.
+        print(f"note: fresh-reviews voided every review, because {why}.", file=sys.stderr)
+    print(json.dumps(kept, indent=2))
+    return 0
 
 
 def run(parser, args):
