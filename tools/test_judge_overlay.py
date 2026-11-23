@@ -159,6 +159,27 @@ class OverlayTests(unittest.TestCase):
         self.assertEqual((self.out / "tools/claims_check.py").read_text(), "print('base claims')\n")
         self.assertFalse((self.out / "tools/claims_check.py/inner.py").exists())
 
+    def test_a_link_at_a_kept_path_is_refused(self):
+        # Security scan: results/differential.json -> ../tools/mutation_check.py would let a
+        # judge's output write overwrite another judge.
+        os.makedirs(self.fx.repo / "results", exist_ok=True)
+        os.symlink("../tools/claims_check.py", self.fx.repo / "results/differential.json")
+        head = self.fx.commit("link at a kept path")
+        with self.assertRaises(jo.Refused) as caught:
+            self.fx.overlay(head, self.out)
+        self.assertIn("results/differential.json", str(caught.exception))
+
+    def test_a_kernel_manifest_may_not_choose_the_tests(self):
+        for text in ("[package]\nname = 'k'\nautotests = false\n", "[package]\nname = 'k'\n[[test]]\nname='x'\npath='src/x.rs'\n",
+                     "[package]\nname = 'k'\n[lib]\npath = 'src/other.rs'\n", "[package]\nname = 'k'\n[[bin]]\nname='b'\n"):
+            self.assertTrue(jo.manifest_errors("crates/containment-kernel/Cargo.toml", text), text)
+        self.assertEqual(jo.manifest_errors("crates/containment-wasm/Cargo.toml",
+                                            "[package]\nname = 'w'\n[lib]\ncrate-type = ['cdylib', 'rlib']\n"), [])
+        self.fx.write({"crates/containment-kernel/Cargo.toml": "[package]\nname = 'k'\nautotests = false\n"})
+        head = self.fx.commit("autotests off")
+        with self.assertRaises(jo.Refused):
+            self.fx.overlay(head, self.out)
+
     def test_blobs_are_read_raw(self):
         # A head .gitattributes asking for a filter or CRLF must not change what is written.
         self.fx.write({".gitattributes": "*.py filter=evil eol=crlf\n"})

@@ -22,7 +22,12 @@ head's tree with every judge path taken from --base:
   package.json, node_modules, .cargo/, rust-toolchain, sitecustomize, usercustomize,
   .pth, .gitattributes and the like) is removed from the head's code; the root copies
   are judge paths.
-- A symbolic link or submodule at a judge path, in the base or the head, is refused.
+- A symbolic link or submodule anywhere, in the base or the head, is refused: a judge
+  writing to a kept path would follow it into another judge.
+- The kernel and wasm manifests stay the head's, but may not set [[test]], [[bin]],
+  [[example]] or [[bench]], package.auto*, or lib.path: those decide which of the
+  base's tests cargo compiles.
+- The synthetic tree is compared with the plan and refused on any difference.
 
 The head's lane map is never read. Nothing from --repo's config or work tree is used:
 the output is a new repository that fetches the two commits, with git's own config
@@ -67,6 +72,12 @@ CONFIG_NAME = re.compile(r"(?i)^(bunfig\.toml|\.env.*|package(-lock)?\.json|bun\
                          r"|rust-toolchain(\.toml)?|\.cargo|(site|user)customize\.py|.*\.pth|pyvenv\.cfg"
                          r"|\.python-version|\.gitattributes|\.gitmodules)$")
 REGULAR = ("100644", "100755")
+# Kernel and wasm manifests are kept as the head's (they build the code under test),
+# but they also decide which test targets cargo compiles. These keys could switch the
+# base's law tests off or point the library elsewhere, so the head may not set them.
+TEST_MANIFESTS = ("crates/containment-kernel/Cargo.toml", "crates/containment-wasm/Cargo.toml")
+TARGET_TABLES = ("test", "bin", "example", "bench")
+AUTO_KEYS = ("autotests", "autobins", "autoexamples", "autobenches", "autolib")
 SAFE_ENV = {
     "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0",
     "GIT_NO_REPLACE_OBJECTS": "1", "GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": "file",
@@ -118,9 +129,32 @@ def is_judge(path, lanes):
     return pc.lane_of(path, lanes)[0] == "C"
 
 
+def manifest_errors(path, text):
+    """Why a kept kernel or wasm manifest could change which tests run, or []."""
+    import tomllib
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        return [f"{path}: does not parse ({error})"]
+    out = [f"{path}: [[{table}]] is not allowed; the base's test targets are the ones that run"
+           for table in TARGET_TABLES if table in data]
+    package = data.get("package", {})
+    out += [f"{path}: package.{key} is not allowed" for key in AUTO_KEYS if key in package]
+    if isinstance(data.get("lib"), dict) and "path" in data["lib"]:
+        out.append(f"{path}: lib.path is not allowed; the library is src/lib.rs")
+    return out
+
+
 def plan(base_tree, head_tree, lanes):
     """(take, remove, keep): the paths the overlay takes from base, removes, and leaves as
     the head's. Pure, so the rules can be tested without git."""
+    # A symbolic link or submodule anywhere, kept paths included, is refused: a judge
+    # writing its output to a kept path (results/differential.json) would follow a link
+    # into another judge (security scan of this PR). main has none.
+    for side, entries in (("head", head_tree), ("base", base_tree)):
+        for path, (mode, _kind, _oid) in sorted(entries.items()):
+            if mode not in REGULAR:
+                raise Refused(f"{path}: the {side} has it as mode {mode}; only regular files are allowed")
     take, remove, keep = [], [], []
     for path in sorted(set(base_tree) | set(head_tree)):
         spec = matches(path, SPEC_DIRS)
@@ -154,6 +188,10 @@ def overlay(repo, base, head, out):
     _owner, lanes = pc.load_lanes(lanes_text)
     base_tree, head_tree = tree(out, base), tree(out, head)
     take, remove, keep = plan(base_tree, head_tree, lanes)
+    problems = [e for path in TEST_MANIFESTS if path in keep
+                for e in manifest_errors(path, git(out, "cat-file", "blob", head_tree[path][2]))]
+    if problems:
+        raise Refused("; ".join(problems))
     # Build the synthetic tree in a private index: the head's entries, judge paths from base.
     index = out / ".git" / "overlay-index"
     env_index = {"GIT_INDEX_FILE": str(index)}
@@ -167,6 +205,13 @@ def overlay(repo, base, head, out):
     git(out, "read-tree", "--empty", extra=env_index)
     git(out, "update-index", "-z", "--index-info", data=("\0".join(entries) + "\0").encode("utf-8"), extra=env_index)
     synthetic_tree = git(out, "write-tree", extra=env_index).strip()
+    # The tree must be exactly the plan: update-index drops an entry silently when a
+    # file and a directory collide, so compare before using it.
+    wanted = {p: head_tree[p][:3:2] for p in keep} | {p: base_tree[p][:3:2] for p in take}
+    built = {p: (mode, oid) for p, (mode, _kind, oid) in tree(out, synthetic_tree).items()}
+    if built != wanted:
+        diff = sorted(set(built.items()) ^ set(wanted.items()))[:5]
+        raise Refused(f"the synthetic tree differs from the plan (file/directory collision?): {diff}")
     commit = git(out, "commit-tree", synthetic_tree, "-p", head, "-m",
                  f"judge overlay: head {head} with the judges of base {base}").strip()
     git(out, "update-ref", "refs/heads/overlay", commit)
