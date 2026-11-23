@@ -1,0 +1,3 @@
+checker = "invariants"
+origin = "#169: twin of the .claude/ allow-list cases"
+expect = "accept"
