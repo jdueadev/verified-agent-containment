@@ -29,6 +29,7 @@
 /tools/vac.py @jdueadev
 /tools/vac_core.py @jdueadev
 /tools/vac_rules.py @jdueadev
+/tools/results_ratchet.py @jdueadev
 /tools/lab_record.py @jdueadev
 /tools/lab_attest.py @jdueadev
 /crates/containment-host/src/harness.rs @jdueadev

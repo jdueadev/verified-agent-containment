@@ -1,5 +1,6 @@
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -10,6 +11,7 @@ vac_core = importlib.import_module("vac_core")
 policy_check = importlib.import_module("policy_check")
 workflow_lint = importlib.import_module("workflow_lint")
 pins_check = importlib.import_module("pins_check")
+results_ratchet = importlib.import_module("results_ratchet")
 
 Finding = vac_core.Finding
 Rule = vac_core.Rule
@@ -133,6 +135,17 @@ def lean_pinned(ctx):
     return []
 
 
+def results_rule(rule_id, watches):
+    def check(ctx):
+        try:
+            found = ctx.once("results-ratchet", lambda: results_ratchet.ratchet(ctx.base))
+        except (subprocess.CalledProcessError, OSError, UnicodeDecodeError, LookupError) as error:
+            return [Finding(rule_id, "results", 0, f"cannot compare results/ with the base: {error}")]
+        return [Finding(rule_id, path, 0, message) for path, message in found
+                if any(vac_core.matches(path, w) for w in watches)]
+    return check
+
+
 def tool_run(rule_id, argv, path, timeout=3600):
     def check(ctx):
         code, out, err = vac_core.run_tool(ctx, rule_id, argv, timeout)
@@ -179,6 +192,19 @@ CLAIM_TITLES = {
 }
 CLAIM_NUMBERS = tuple(CLAIM_TITLES)
 CLAIM_STAGES = {4: RC, 8: RC}
+RESULT_RULES = {
+    "RES-TLA": ("No TLC configuration stops behaving as expected, disappears or explores fewer states",
+                ("results/tla-check.json",), "bash tools/tla_check.sh"),
+    "RES-MUT": ("No mutant stops being rejected or witnessed, and no law loses its last killing mutant",
+                ("results/mutation-check.json",), "bash scripts/check.sh"),
+    "RES-DIFF": ("No differential runs fewer cases, drops below the floor or finds a mismatch",
+                 ("results/differential.json", "results/wasm-differential.json"), "bash scripts/check.sh"),
+    "RES-VERDICT": ("The formal verdict never stops being ALL PROOFS CHECK", ("results/formal-verdict.json",),
+                    "bash scripts/verdict.sh"),
+    "RES-LAB": ("No lab scenario or sabotage control is lost, timed_repeat never drops, no cgroup waiver appears",
+                ("results/attack-suite.json", "results/live-suite.json", "results/ci/**"),
+                "the lab, .github/workflows/lab.yaml on main,"),
+}
 
 RULES = (
     Rule("REG-1", "Every rule has a unique id, a title, stages, watches, a fix and refs", T0, ("tools/vac_rules.py",),
@@ -212,6 +238,10 @@ RULES = (
          "python3 tools/generate_proof.py, then commit formal/PROOF.bend", (209,)),
     Rule("FV-PIN", "The Lean version that rechecks the proofs is pinned in ci/pins.env", T0, ("ci/pins.env",),
          lean_pinned, "add LEAN_VERSION=X.Y.Z to ci/pins.env", (209,)),
+    *(Rule(rule_id, title, T0, watches, results_rule(rule_id, watches),
+           f"rerun {producer} and fix the code until results/ is no weaker; a deliberate weakening needs its own "
+           "issue and the maintainer (#213)", (213,))
+      for rule_id, (title, watches, producer) in RESULT_RULES.items()),
     Rule("TOOL-TESTS", "The tool unit tests pass", T0, ("tools/**", "ci/**", "claims.toml", "results/**", "formal/**"),
          tool_run("TOOL-TESTS", [sys.executable, "-m", "unittest", "discover", "-s", "tools", "-p", "test_*.py"], "tools"),
          "python3 -m unittest discover -s tools -p 'test_*.py'", (65,)),
