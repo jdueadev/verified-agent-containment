@@ -98,7 +98,7 @@ cargo build --release -p containment-host
 cargo build -q --locked -p containment-host
 ```
 
-The release build exits 0. Its last line starts with `Finished` and contains `` `release` profile [optimized] ``. Ignore the duration at the end of that line. The binary is `target/release/containment-lab`.
+The release build exits 0. Its last line contains `Finished` and `` `release` profile [optimized] ``. Ignore the duration at the end of that line. The binary is `target/release/containment-lab`.
 
 The second command is the debug build. It exits 0 and, because of `-q`, prints nothing. That binary is `target/debug/containment-lab`. The simulator click-through does not need either binary. [`driver.mjs servers`](#use-it-day-to-day) needs the debug one. Without it the driver exits 1. The message names `target/debug/containment-lab` and ends with `missing: run` and `cargo build -q --locked -p containment-host`. The directory prefix is your checkout, so it differs.
 
@@ -177,7 +177,7 @@ cargo build --release -p containment-host
 cargo build -q --locked -p containment-host
 ```
 
-On a clone of `main` that is already current, the last line is `Already up to date.` and the command exits 0. When the clone is behind, git prints a fast-forward instead. Do not match the commit ids in that note. Both rebuilds are the commands from [Build](#build), with the same passing lines. `driver.mjs servers` runs `target/debug/containment-lab`, so the upgrade rebuilds that binary too. On a feature branch, `git pull origin main` merges `main` into that branch. Do not use it there. [Change something](#change-something) updates a feature branch with rebase.
+On a clone of `main` that is already current, the last line is `Already up to date.` and the command exits 0. When the clone is behind, git prints a fast-forward instead. Do not match the commit ids in that note. Both rebuilds are the commands from [Build](#build). The release rebuild's last line contains `Finished` and `` `release` profile [optimized] ``. The debug rebuild prints nothing. `driver.mjs servers` runs `target/debug/containment-lab`, so the upgrade rebuilds that binary too. On a feature branch, `git pull origin main` merges `main` into that branch. Do not use it there. [Change something](#change-something) updates a feature branch with rebase.
 
 ## Change something
 
