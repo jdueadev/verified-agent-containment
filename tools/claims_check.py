@@ -30,6 +30,10 @@ CI-8  (--strict) results/attack-suite.json and results/live-suite.json record th
       results/attack-suite.json is a full unwaived run (timed_repeat >= 30, no limits waiver)
 CI-9  every passing platform names a commit that has tracked artifacts under results/ (a path
       containing the commit id). This shows the evidence is linked, not that it is authentic.
+CI-10 every tracked results/ci/lab-<sha>/ that is not a pre-attestation legacy directory carries
+      a GitHub OIDC token from .github/workflows/lab.yaml, pushed to an allowed ref, in the evidence
+      environment, for that commit, whose audience binds the SHA-256 of every committed byte
+      (tools/lab_attest.py, #209). This shows the evidence is authentic: main's lab.yaml produced it.
 """
 import ast
 import hashlib
@@ -651,6 +655,8 @@ def main(argv=None):
         errors.append(f"CI-7 {path} is not covered by the files of any claim")
 
     errors.extend(provenance_errors(claims))
+    import lab_attest  # noqa: E402  (CI-10; imported here so other tools need not load it)
+    errors.extend(lab_attest.tree_errors(ROOT))
 
     stale = {c["id"]: c["_stale"] for c in claims if c["_stale"]}
     warnings = [f"CI-4 {cid}: stale, {', '.join(files)} changed after its platform commit; rerun and update platforms"

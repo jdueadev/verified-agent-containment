@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Turn a passing CI lab run on main into an evidence pull request (#53, AC-051).
 #
-#   scripts/lab/ci-record.sh RESULTS_DIR COMMIT RUN_URL
+#   scripts/lab/ci-record.sh RESULTS_DIR COMMIT RUN_URL PROVENANCE
 #
 # Run by the `record` job of .github/workflows/lab.yaml, on a checkout of COMMIT
 # (a commit on main), with GH_TOKEN allowed to push a branch and open a PR. It
@@ -13,7 +13,9 @@
 #      merge anyway.) If no lab claim is stale at COMMIT, there is nothing to
 #      record: exit 0.
 #   2. tools/lab_record.py checks the run (CI-8, every claim's scenario and control
-#      evidence) and writes results/ci/lab-<sha7>/ and the platform entries.
+#      evidence) and writes results/ci/lab-<sha>/ byte for byte, with PROVENANCE (the
+#      attest job's OIDC token and manifest, #209) as provenance.json, and the
+#      platform entries. claims_check's CI-10 then verifies the token and every byte.
 #   3. docs/claims.md is regenerated; with the evidence staged, claims_check must
 #      report no errors and nothing stale.
 #   4. A PR from branch evidence/lab-<sha7> is opened with auto-merge requested.
@@ -34,9 +36,12 @@ set -euo pipefail
   exit 2
 }
 
-results="${1:?usage: ci-record.sh RESULTS_DIR COMMIT RUN_URL}"
-commit="${2:?usage: ci-record.sh RESULTS_DIR COMMIT RUN_URL}"
-run_url="${3:?usage: ci-record.sh RESULTS_DIR COMMIT RUN_URL}"
+results="${1:?usage: ci-record.sh RESULTS_DIR COMMIT RUN_URL PROVENANCE}"
+commit="${2:?usage: ci-record.sh RESULTS_DIR COMMIT RUN_URL PROVENANCE}"
+run_url="${3:?usage: ci-record.sh RESULTS_DIR COMMIT RUN_URL PROVENANCE}"
+provenance="${4:?usage: ci-record.sh RESULTS_DIR COMMIT RUN_URL PROVENANCE}"
+# Unattested evidence fails CI-10, so a run without its attestation records nothing.
+[ -f "$provenance" ] || { echo "ci-record: no attestation at $provenance; refusing (CI-10)" >&2; exit 1; }
 summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
 short="${commit:0:7}"
 branch="evidence/lab-$short"
@@ -74,6 +79,7 @@ fi
 echo "Needs recording:"; echo "$before"
 
 python3 tools/lab_record.py --results "$results" --commit "$commit" --platform gha-ubuntu-24.04 \
+  --provenance "$provenance" \
   | tee "$RUNNER_TEMP/record.json"
 python3 tools/claims_check.py --write > /dev/null || true
 
@@ -130,7 +136,7 @@ Recorded: $ids
 Skipped (their layer is not one a CI run speaks for; they stay stale until a lab on their own platform runs): $skipped_ids
 
 ## Invariants touched
-- INV-1: the evidence comes from the run above, written by \`tools/lab_record.py\` in the \`record\` job, not by hand and not by an agent. It is accepted only by the maintainer's approval.
+- INV-1: the evidence comes from the run above, written by \`tools/lab_record.py\` in the \`record\` job, not by hand and not by an agent. \`provenance.json\` carries the run's GitHub OIDC attestation, and CI-10 in \`tools/claims_check.py\` verifies it and every committed byte (#209).
 - INV-2: nothing is removed or reworded. Entries are only appended.
 
 ## Checked

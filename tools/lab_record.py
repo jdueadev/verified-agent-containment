@@ -2,7 +2,7 @@
 """Turn a CI lab run into evidence: committed results plus platform entries (#53, AC-051).
 
 Usage:
-  lab_record.py --results DIR --commit SHA --platform NAME [--root DIR]
+  lab_record.py --results DIR --commit SHA --platform NAME [--provenance FILE] [--root DIR]
   lab_record.py --verify [--root DIR]
 
 DIR is what scripts/lab/ci-lab.sh produced on a disposable runner:
@@ -27,7 +27,10 @@ claim such as L-ISO-02 (WSL2's interop handler) is reported as skipped and keeps
 the entries of labs that run that operating system. Then it copies the three files to results/ci/lab-<sha>/ (the full
 SHA) and appends one entry,
 `{ name = NAME, commit = <sha>, result = "pass (lab evidence: results/ci/lab-<sha>; ...)" }`, to
-the `platforms` line of every lab claim. It re-reads claims.toml afterwards and
+the `platforms` line of every lab claim. The files are copied byte for byte, so the
+digests a run attested (tools/lab_attest.py, CI-10) still hold for what is committed;
+with --provenance, the attestation is written beside them as provenance.json, and the
+record refuses unless its manifest matches the run's files. It re-reads claims.toml afterwards and
 refuses if anything but those entries changed. It never writes a failing claim as
 "pass": a claim the run does not support stops the whole record.
 
@@ -179,13 +182,17 @@ def append_platform(text, claim_id, entry):
     return "".join(blocks)
 
 
-def record(root, results_dir, commit, platform):
+def record(root, results_dir, commit, platform, provenance=None):
     root = Path(root)
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise RecordError(f"--commit must be a full 40-character SHA, got {commit!r}")
     if not PLATFORM_NAME.fullmatch(platform):
         raise RecordError(f"--platform {platform!r} is not a plain platform name")
     results = load_results(results_dir)
+    if provenance is not None:
+        import lab_attest  # noqa: E402  (trusted base)
+        if provenance.get("manifest") != lab_attest.run_manifest(results_dir):
+            raise RecordError("the attestation's manifest does not match this run's files; refusing (CI-10)")
     errors = build_errors(results) + environment_errors(
         (Path(results_dir) / ENVIRONMENT).read_text(encoding="utf-8"), commit, results)
     if errors:
@@ -240,9 +247,13 @@ def record(root, results_dir, commit, platform):
     if out.exists():
         raise RecordError(f"{where} already exists")
     out.mkdir(parents=True)
-    for name, data in results.items():
-        (out / name).write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    # Byte for byte, so an attested manifest (CI-10) holds for the committed files.
+    for name in results:
+        shutil.copyfile(Path(results_dir) / SUITES[name], out / name)
     shutil.copyfile(Path(results_dir) / ENVIRONMENT, out / ENVIRONMENT)
+    if provenance is not None:
+        (out / "provenance.json").write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n",
+                                             encoding="utf-8", newline="\n")
     claims_path.write_text(text, encoding="utf-8", newline="\n")
     return [c["id"] for c in targets], where, [c["id"] for c in skipped_claims(claims)]
 
@@ -291,6 +302,7 @@ def main(argv=None):
     parser.add_argument("--results")
     parser.add_argument("--commit")
     parser.add_argument("--platform")
+    parser.add_argument("--provenance", help="the attest job's provenance.json (tools/lab_attest.py)")
     parser.add_argument("--root", default=str(claims_check.ROOT))
     args = parser.parse_args(argv)
     if args.list_skipped:
@@ -304,8 +316,9 @@ def main(argv=None):
     if not (args.results and args.commit and args.platform):
         parser.error("--results, --commit and --platform are required unless --verify")
     try:
-        ids, where, skipped = record(args.root, args.results, args.commit, args.platform)
-    except RecordError as error:
+        provenance = json.loads(Path(args.provenance).read_text(encoding="utf-8")) if args.provenance else None
+        ids, where, skipped = record(args.root, args.results, args.commit, args.platform, provenance)
+    except (RecordError, OSError, ValueError) as error:
         print(f"lab_record: {error}", file=sys.stderr)
         return 1
     print(json.dumps({"recorded": where, "claims": ids, "skipped": skipped}, indent=2))
