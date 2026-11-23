@@ -36,6 +36,10 @@ C = [
   # Runs the known-bad corpus in ci/corpus/ against a head checkout (#125).
   "tools/corpus_run.py",
   "tools/pins_check.py",
+  # Keeps secrets in main-only environments and event text out of scripts (#137).
+  "tools/workflow_lint.py",
+  # Turns the required workflows' results into gate App check runs (#137, stage 2).
+  "tools/gate_check.py",
   "tools/rust_tokens.py",
   "tools/mutation_check.py",
   "tools/differential.mjs",

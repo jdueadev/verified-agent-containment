@@ -6,7 +6,7 @@ Usage:
 
 Each entry is a directory ci/corpus/<checker>/<id>/ with a case.toml:
 
-  checker = "classify" | "invariants"
+  checker = "classify" | "invariants" | "approval"
   origin  = "#86"                      # where the case came from
   twin    = "<id>"                     # reject cases only: the accept case beside it
   # classify: the lane policy_check must give, and what its escalations must say
@@ -15,10 +15,30 @@ Each entry is a directory ci/corpus/<checker>/<id>/ with a case.toml:
   # invariants: whether the commit must pass
   expect = "reject" | "accept"
   expect_error = "uses `include`"           # reject only
-  delete = ["path", ...]                    # classify: paths the head removes
+  # approval: also "refuse", which needs expect_error
+  delete = ["path", ...]                    # classify and approval: paths the head removes
 
 and its inputs: for classify, base/ and head/ trees (the head is the base with head/
-laid over it, minus `delete`); for invariants, tree/, the kernel's whole src/ directory.
+laid over it, minus `delete`); for invariants, tree/, the kernel's whole src/ directory;
+for approval, base/ and head/ trees for a lane C change, and inputs/<name>.json files.
+
+An approval case runs the two commands the workflows run (#149): the head's
+
+  policy_check.py fresh-reviews --head-sha SHA --<name> inputs/<name>.json ...
+
+which gets every input (reviews.json is required) and prints the reviews that still
+count as a JSON list, then the head's `classify --reviews <that list> --head-sha SHA`.
+inputs/ may hold only regular files named <name>.json, <name> being lower-case letters,
+digits and dashes and not head-sha. In the inputs, @HEAD@ and @BASE@ stand for the
+commits the case builds. The change must be lane C. "accept" needs `"approved": true`;
+"reject" needs `"approved": false`; "refuse" needs fresh-reviews to exit 1 with no
+traceback and a last stderr line that starts with "fresh-reviews: " and contains
+expect_error, which is how a workflow step stops. Anything else, such as unreadable
+output, a null verdict, another lane, an argparse error or a crash, fails the case.
+
+`approval` moved from STAGED into CHECKERS with its first cases and the checker's
+fresh-reviews (#149, PR 2). STAGED holds a kind the runner knows before the corpus has
+cases of it; CHECKERS requires every checker to have cases.
 
 The checker runs as a black box: the head's policy_check.py and rust_tokens.py are
 copied into a new git repository built from the case, and run there with `python3 -I
@@ -30,6 +50,7 @@ unknown checker, when a reject case has no accept twin, or when no case ran at a
 """
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -37,7 +58,12 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-CHECKERS = ("classify", "invariants")
+CHECKERS = ("classify", "invariants", "approval")
+# Known to the runner, but not yet required to have cases. Each moves into CHECKERS
+# in the change that adds its first cases.
+STAGED = ()
+KINDS = CHECKERS + STAGED
+INPUT_NAME = re.compile(r"[a-z][a-z0-9-]*\.json")
 GATE_FILES = ("tools/policy_check.py", "tools/rust_tokens.py")
 REPO_FILES = ("ci/lanes.toml", ".github/CODEOWNERS", "crates/containment-host/Cargo.toml")
 KERNEL_SRC = "crates/containment-kernel/src"
@@ -85,7 +111,7 @@ def run_case(case_dir, case, head):
         for name in REPO_FILES:
             (repo / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(head / name, repo / name)
-        if case["checker"] == "classify":
+        if case["checker"] in ("classify", "approval"):
             lay(case_dir / "base", repo)
             base = commit_all(repo, "base")
             lay(case_dir / "head", repo)
@@ -101,8 +127,70 @@ def run_case(case_dir, case, head):
         if case["checker"] == "classify":
             _, result = checker_output(repo, "classify", "--base", base, "--head", head_sha)
             return verdict_classify(case, result)
+        if case["checker"] == "approval":
+            return run_approval(case_dir, case, repo, base, head_sha)
         code, result = checker_output(repo, "invariants", "--ref", head_sha)
         return verdict_invariants(case, code, result)
+
+
+def run_approval(case_dir, case, repo, base, head_sha):
+    """The head's fresh-reviews, then its classify on what fresh-reviews kept. The
+    inputs live outside the case's repository, so they are not part of its diff."""
+    folder = case_dir / "inputs"
+    sources = sorted(folder.iterdir()) if folder.is_dir() and not folder.is_symlink() else []
+    for source in sources:
+        if source.is_symlink() or not source.is_file() or not INPUT_NAME.fullmatch(source.name) \
+                or source.stem == "head-sha":
+            return f"inputs/{source.name} is not an input: inputs/ holds only regular files named <name>.json"
+    if "reviews" not in {p.stem for p in sources}:
+        return "an approval case needs inputs/reviews.json"
+    # A refusal stops the workflow before classify runs, so check the lane on its own.
+    _, plain = checker_output(repo, "classify", "--base", base, "--head", head_sha)
+    if plain.get("lane") != "C":
+        return f"an approval case must be lane C, got {plain}"
+    with tempfile.TemporaryDirectory() as box:
+        inputs = Path(box)
+        argv = ["fresh-reviews", "--head-sha", head_sha]
+        for source in sources:
+            text = source.read_text(encoding="utf-8").replace("@HEAD@", head_sha).replace("@BASE@", base)
+            (inputs / source.name).write_text(text, encoding="utf-8")
+            argv += [f"--{source.stem}", str(inputs / source.name)]
+        try:
+            child = subprocess.run([sys.executable, "-I", "-B", str(repo / "tools/policy_check.py"), *argv],
+                                   cwd=repo, capture_output=True, text=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            return "fresh-reviews did not finish in 300 s"
+        if case["expect"] == "refuse":
+            lines = child.stderr.strip().splitlines()
+            last = lines[-1] if lines else ""
+            if child.returncode == 0:
+                return f"expected fresh-reviews to refuse, but it kept {child.stdout.strip()[:200]}"
+            if child.returncode != 1 or "Traceback (most recent call last)" in child.stderr \
+                    or not last.startswith("fresh-reviews: ") or case["expect_error"] not in last:
+                return (f"fresh-reviews did not refuse with 'fresh-reviews: ...{case['expect_error']}...': "
+                        f"exit {child.returncode}, {child.stderr.strip()[-400:]}")
+            return None
+        if child.returncode != 0:
+            return f"fresh-reviews failed: {(child.stdout + child.stderr).strip()[-400:]}"
+        try:
+            kept = json.loads(child.stdout)
+        except ValueError:
+            kept = None
+        if not isinstance(kept, list):
+            return f"fresh-reviews printed no JSON list: {child.stdout.strip()[-400:]}"
+        (inputs / "kept.json").write_text(child.stdout, encoding="utf-8")
+        _, result = checker_output(repo, "classify", "--base", base, "--head", head_sha,
+                                   "--reviews", str(inputs / "kept.json"), "--head-sha", head_sha)
+    return verdict_approval(case, result)
+
+
+def verdict_approval(case, result):
+    if result.get("lane") != "C":
+        return f"an approval case must be lane C, got {result}"
+    wanted = case["expect"] == "accept"
+    if result.get("approved") is not wanted:
+        return f"approved is {result.get('approved')!r}, expected {wanted}"
+    return None
 
 
 def verdict_classify(case, result):
@@ -136,7 +224,7 @@ def verdict_invariants(case, code, result):
 def is_reject(case):
     if case["checker"] == "classify":
         return bool(case.get("expect_escalation"))
-    return case.get("expect") == "reject"
+    return case.get("expect") in ("reject", "refuse")
 
 
 def run(head, corpus):
@@ -154,8 +242,12 @@ def run(head, corpus):
         except tomllib.TOMLDecodeError as error:
             report["failed"][name] = f"case.toml does not parse: {error}"
             continue
-        if case.get("checker") != entry.parent.name or case.get("checker") not in CHECKERS:
-            report["failed"][name] = f"unknown checker {case.get('checker')!r} (must be its directory, one of {CHECKERS})"
+        if case.get("checker") != entry.parent.name or case.get("checker") not in KINDS:
+            report["failed"][name] = f"unknown checker {case.get('checker')!r} (must be its directory, one of {KINDS})"
+            continue
+        if case["checker"] == "approval" and (case.get("expect") not in ("accept", "reject", "refuse")
+                                              or (case["expect"] == "refuse" and not case.get("expect_error"))):
+            report["failed"][name] = "an approval case needs expect = accept, reject or refuse (refuse with expect_error)"
             continue
         cases[name] = case
     for name, case in cases.items():
