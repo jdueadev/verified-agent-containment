@@ -1,0 +1,5 @@
+checker = "invariants"
+origin = "#173 review: a repeated rule, on its own"
+twin = "claude-permissions-allowed"
+expect = "reject"
+expect_error = "deny[2] repeats 'Edit(/results/**)'"

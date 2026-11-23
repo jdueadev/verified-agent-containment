@@ -650,6 +650,9 @@ def permission_errors(value):
         if type(rules) is not list:
             out.append(f"{where}: {name!r} is not a list")
             continue
+        if not rules:
+            out.append(f"{where}: {name!r} is empty; leave it out instead")
+            continue
         if len(rules) > PERMISSION_RULES_MAX:
             out.append(f"{where}: {name!r} has {len(rules)} rules, more than {PERMISSION_RULES_MAX}")
         seen = set()

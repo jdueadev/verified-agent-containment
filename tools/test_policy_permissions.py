@@ -96,6 +96,30 @@ class RuleListTests(unittest.TestCase):
             self.assert_phrase(self.found([rule]), "is not printable ASCII")
 
 
+class EdgeTests(unittest.TestCase):
+    def test_empty_rule_list_fails(self):
+        for name in ("deny", "ask"):
+            found = errors({name: []})
+            self.assertEqual(len(found), 1, name)
+            self.assertIn(f"{name!r} is empty", found[0])
+
+    def test_bom_is_refused(self):
+        found = errors(text='\ufeff{"permissions": {"deny": ["Bash(x)"]}}')
+        self.assertEqual(len(found), 1)
+        self.assertIn("is not a JSON object", found[0])
+
+    def test_lone_surrogate_rule_is_refused(self):
+        found = errors(text='{"permissions": {"deny": ["Bash(\\ud800)"]}}')
+        self.assertEqual(len(found), 1)
+        self.assertIn("is not printable ASCII", found[0])
+
+    def test_deep_nesting_inside_permissions_is_reported(self):
+        deep = "[" * 5000 + "]" * 5000
+        found = errors(text='{"permissions": {"deny": ' + deep + "}}")
+        self.assertTrue(found)
+        self.assertTrue(all("is not" in e for e in found), found)
+
+
 class JsonTests(unittest.TestCase):
     def test_non_json_constants_fail(self):
         for constant in ("NaN", "Infinity", "-Infinity"):
