@@ -1,11 +1,25 @@
 #!/usr/bin/env python3
-"""Unit tests for tools/merge_digest.py report. They classify real merge commits from
-this repository's history (check.yml checks out the full history), with review data
-supplied by the test, so each approval state has a case that produces it."""
+"""Unit tests for tools/merge_digest.py. They classify merge commits of a small git
+history that setUpModule builds in a temporary directory, with review data supplied by
+the test, so each approval state has a case that produces it. The history is built, not
+borrowed from this repository: the `spec` job checks the head out shallow, and a test
+that needs old commits of the real history would error there (#87).
+
+The history, oldest first:
+  ROOT        README only: no lane map, no claims (a parentless commit)
+  BEFORE_MAP  adds ci/lanes.toml and claims.toml, so its parent has no lane map and
+              never had one
+  LANE_B      edits crates/containment-kernel/src/lib.rs, which claim R-DIFF-01 lists
+              and which has lab evidence (lane B)
+  LANE_C      moves crates/containment-host/** to lane C in the lane map and adds a
+              tool (lane C)
+"""
 import contextlib
 import html
 import io
 import json
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -16,9 +30,71 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import merge_digest as md
 import policy_check as pc
 
-LANE_C = "c3facd1"   # #84: ci/lanes.toml, AGENTS.md, tools/ (lane C)
-LANE_B = "33b909e"   # #81: crates/containment-kernel/src/lib.rs (lane B, claim R-DIFF-01)
-BEFORE_MAP = "8923e6d"  # #58: introduced ci/lanes.toml, so its parent has none
+LANES_BEFORE = """owner = "@jdueadev"
+
+[lanes]
+C = ["ci/**", "tools/**"]
+B = ["crates/**", "claims.toml"]
+A = ["README.md", "docs/**"]
+"""
+LANES_AFTER = LANES_BEFORE.replace('C = ["ci/**", "tools/**"]',
+                                   'C = ["ci/**", "tools/**", "crates/containment-host/**"]')
+CLAIMS = """[[claim]]
+id = "R-DIFF-01"
+layer = "rust-kernel"
+status = "tested"
+statement = "The Rust kernel agrees with the Bend kernel."
+falsifier = "A differential case where they disagree."
+files = ["crates/containment-kernel/src"]
+evidence = ["doc:README.md"]
+platforms = [{ name = "fixture", commit = "0000000", result = "pass" }]
+"""
+
+ROOT_COMMIT = BEFORE_MAP = LANE_B = LANE_C = None
+_tmp = None
+_patches = []
+
+
+def _git(repo, *args):
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True).stdout
+
+
+def _commit(repo, files, message):
+    for path, text in files.items():
+        target = repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", message)
+    return _git(repo, "rev-parse", "HEAD").strip()
+
+
+def setUpModule():
+    global ROOT_COMMIT, BEFORE_MAP, LANE_B, LANE_C, _tmp
+    _tmp = Path(tempfile.mkdtemp(prefix="merge-digest-"))
+    repo = _tmp / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    for key, value in (("user.name", "fixture"), ("user.email", "fixture@localhost"),
+                       ("commit.gpgsign", "false"), ("core.autocrlf", "false")):
+        _git(repo, "config", key, value)
+    ROOT_COMMIT = _commit(repo, {"README.md": "fixture\n"}, "root")
+    BEFORE_MAP = _commit(repo, {"ci/lanes.toml": LANES_BEFORE, "claims.toml": CLAIMS,
+                                "crates/containment-kernel/src/lib.rs": "pub fn f() {}\n",
+                                "crates/containment-host/src/sandbox.rs": "fn main() {}\n"}, "add the lane map")
+    LANE_B = _commit(repo, {"crates/containment-kernel/src/lib.rs": "pub fn f() -> u8 { 1 }\n"}, "lane B")
+    LANE_C = _commit(repo, {"ci/lanes.toml": LANES_AFTER, "tools/extra.py": "X = 1\n"}, "lane C")
+    # Every git call merge_digest and policy_check make goes to the fixture.
+    for target in (pc, md):
+        patch = mock.patch.object(target, "ROOT", repo)
+        patch.start()
+        _patches.append(patch)
+
+
+def tearDownModule():
+    while _patches:
+        _patches.pop().stop()
+    shutil.rmtree(_tmp, ignore_errors=True)
 
 
 def full(sha):
