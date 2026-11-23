@@ -46,16 +46,20 @@ files are output that `check` regenerates on every run, not lab artifacts.
 `scripts/check.sh`, turns those files into the claim's row in
 [`docs/claims.md`](../claims.md). For each item in the claim's `evidence`:
 
-- `diff:rust-bend` and `diff:rust-wasm` count as caught only if
-  `results/differential.json` and `results/wasm-differential.json` record zero
-  mismatches;
+- `diff:rust-bend` and `diff:rust-wasm` count as caught only if the mismatch
+  count in each file is the integer 0, `results/differential.json` records at
+  least 5000 sequences and at least as many transitions (both integers), and
+  `results/wasm-differential.json` records that same integer transition count;
 - each `rust-mutant:NAME` counts only if `results/mutation-check.json` records
   that mutant as rejected.
 
 A `tested` claim needs at least one such falsifier, and every one it cites must
-hold (rule CI-3 in the checker's header). Otherwise `check` fails. The checker
-also requires every Rust mutant in the repository to be cited by some claim
-(CI-2), so a mutant cannot sit unused.
+hold (rule CI-3 in the checker's header). Otherwise `check` fails. A present
+differential file that misses those counts is an error from `claims_check.py`
+even when `--strict` is left off. Meeting those counts is enough for the files
+to count as caught, including when no run wrote them. The checker also requires
+every Rust mutant in the repository to be cited by some claim (CI-2), so a
+mutant cannot sit unused.
 
 ## Watch the control
 
