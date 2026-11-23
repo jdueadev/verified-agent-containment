@@ -105,31 +105,36 @@ them only in a disposable Linux or WSL2 environment.
 ## Lanes: who has to approve what
 
 `ci/lanes.toml` is the authority. The `policy` check reads it from the base
-branch, so a change cannot reclassify itself.
+branch, so a change cannot reclassify itself or add its own author to
+`trusted`.
 
-- **Lane A, free:** documentation, the web demo, examples. Merges on a green
-  `check`.
+- **Lane A, free:** documentation, the web demo, examples.
 - **Lane B, evidence-carrying:** kernel and wasm source, formal model,
   claims, lint configuration, and new test files (`tools/test_*.py`,
-  `crates/containment-kernel/tests/`). Merges when `check`, `policy` (which
-  runs the ratchets) and `spec` (the base branch's tests, run against the
-  head) are green. Its lab evidence is refreshed on `main` after the merge.
+  `crates/containment-kernel/tests/`). `policy` runs the ratchets on it.
 - **Lane C, trusted base:** everything INV-3 names, the host crate and the
   inputs that build it (`Cargo.toml`, `Cargo.lock`, `.cargo/`, the toolchain
   pin, the kernel's manifest and build script), lab results, any path the
-  lane map does not list, and any change a ratchet flags. Needs the
-  maintainer's approval. Host code is here because the code under test can
-  fool the lab (`docs/decisions/0004-host-code-in-lane-c.md`).
+  lane map does not list, and any change a ratchet flags. Host code is here
+  because the code under test can fool the lab
+  (`docs/decisions/0004-host-code-in-lane-c.md`).
 
-A pull request from a fork needs the maintainer whatever its lane.
+**Who needs the maintainer (#206).** A lane C change needs the maintainer's
+approval of its head commit only when its author is not on the `trusted` list
+in `ci/lanes.toml`. The trusted list is the maintainer and the agents the
+project runs. Outside collaborators are not on it. A pull request from a fork
+needs the maintainer whatever its lane and whoever opened it. `policy` decides
+this from the author GitHub records for the pull request, so nothing written
+in the pull request can change it. A push after an approval needs a new one,
+and only an approval submitted after the head arrived counts.
+
+For a trusted author, lane C and the ratchets report and do not block. The
+invariants still bind you. A change that weakens evidence (INV-2) or the
+trusted base (INV-3) is caught at the release candidate, not at merge, so
+write it as a deliberate change in its own pull request.
 
 Agents push under their own identity (`docs/decisions/0003-lane-c-friction.md`).
-For lane C, the maintainer's approval of a pull request's head commit is the
-gate: `policy` passes only on an approved head, and auto-merge does the rest.
-A push after the approval needs a new one. The agent identity has no
-administration rights and no Workflows permission, is not a code owner and is
-on no bypass list. A change under `.github/workflows/` is therefore pushed by
-the maintainer.
+They have no administration rights. They may change `.github/workflows/`.
 
 Approval gates the merge, not the checkout. Shared settings and hooks run when
 a Claude Code session starts, so review a branch that touches `.claude/` or any
@@ -169,6 +174,10 @@ No merge rests on a local result. The `check` workflow is the gate.
 
 ## Workflow
 
+Steps 1 and 2 apply to authors who are not on the `trusted` list. A trusted
+author goes straight to a pull request whose description states the
+behaviour, the claims affected and the falsifier.
+
 1. **Issue first for heavy changes.** A change is heavy when it does any of:
    - touches the rules or the gate: `AGENTS.md`, `CLAUDE.md`, `ci/`,
      `.github/`, `docs/decisions/`, `tools/policy_check.py`;
@@ -205,8 +214,28 @@ No merge rests on a local result. The `check` workflow is the gate.
    let the required checks decide. Never request it for a fork's pull
    request: the maintainer merges those. Never
    merge with `--admin` or a ruleset bypass, and never change a ruleset or the
-   `POLICY_ENFORCE` variable to get a change in. A lane C change merges only
-   after the maintainer approves its head commit.
+   `POLICY_ENFORCE` variable to get a change in. An untrusted author's lane C
+   change merges only after the maintainer approves its head commit.
+
+## Rules and what enforces them
+
+The mistakes agents have made here more than once, and what now stops each
+one. "Review-only" means nothing mechanical does. While Actions runs only
+`policy` on pull requests (the stop gap in #206), `check` and `spec` do not
+run there. Run `scripts/check.sh` (T1) before you ask to merge anything
+outside lane A, and say so in the pull request.
+
+| Mistake | Seen in | Enforced by |
+|---|---|---|
+| Merging on an approval of an earlier head (GitHub moves an old approval's `commit_id` onto a new head) | #79, #93, #101 | `policy_check.py fresh-reviews` in `policy.yml` for non-fork pull requests, and in `gate_check.py`. A fork keeps the plain `commit_id` rule and is merged by the maintainer. Corpus: `ci/corpus/approval/carried-over-93` |
+| A check that fails open: a skip, a crash, a missing input or a downgrade to a warning counts as a pass | #80, #139, #161, #179, #182 | Per incident: `pins_check.py require`, `claims_check.py` CI-3 and the drift check, and "probe the file, not a run of it" in the workflows. No general check. Review-only for new checks |
+| A checker beaten by another spelling or encoding of the same thing | #67, #86, decisions 0005 and 0006 | `policy_check.py` `kernel_purity_errors`, `spec_form`, `agent_config_escalations`, and the `ci/corpus/` cases run by `tools/corpus_run.py`. New spellings: review-only |
+| A test or control that cannot tell the cases apart, or never runs the path it claims | #85, #134 | Review-only. Break the code under test and watch the new test fail before you push |
+| Evidence or docs that claim more than the runs show | #95, #179, #182, #183 | `claims_check.py` CI-3, CI-9 and the `docs/claims.md` drift check. Numbers in prose docs: review-only |
+| Agent tooling that writes to shared state (git identity, stray folders, a branch recreated by a late push) | #101 | `scripts/lab/ci-record.sh` refuses to run outside Actions. The rest is review-only |
+| A change judged by a checker from another branch | #139, decision 0003 | The `base.ref == main` guards in `policy.yml`, `check.yml` and `spec.yml` |
+| Lane C approvals that found nothing (14 approvals, median about 5 minutes, no change requests) | decision 0005 | The `trusted` list in `ci/lanes.toml`, read by `policy_check.py`. Approval is now asked only of untrusted authors |
+| Skipping the tool tests on a "config-only" change | #65 | `check` when it runs, and `scripts/check.sh` locally. Review-only during the stop gap |
 
 ## Rust
 
