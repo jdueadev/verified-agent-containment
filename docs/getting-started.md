@@ -127,7 +127,18 @@ python3 -m unittest discover -s tools -p 'test_*.py'
 cargo test -q --locked -p containment-kernel
 ```
 
-On commit `0babf9ea` the tool tests ended with `Ran 543 tests in 115.025s` and `OK`. A line on the error stream about `gate_check` and a string of `a`s is one test speaking. The run passed because the last line was `OK`. The kernel tests ended with `test result: ok. 6 passed`.
+The tool tests exited 0. The tail of this run was:
+
+```text
+Ran 543 tests in 113.013s
+
+OK
+{
+  "errors": []
+}
+```
+
+`OK` is the summary. The `{"errors": []}` object is printed after it, so `OK` is not the last line. A line on the error stream about `gate_check` and a string of `a`s is one test speaking. The kernel tests ended with `test result: ok. 6 passed`.
 
 `scripts/check.sh` is the full no-root gate, T1 only when it does not print `SKIPPED`. This guide does not run that script. The script rewrites files under `results/`, and [`docs/verification.md`](verification.md) installs the TLA+ jar with sudo. This guide also does not define a new tier. The quote above is the definition.
 
