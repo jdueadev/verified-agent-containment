@@ -239,6 +239,53 @@ def latest_ci_lab():
     return best
 
 
+# The differential case file check.sh generates (`differential-cases 5000 24301`).
+# The floor lives here, never in the file it judges: a result that ran fewer cases
+# than check.sh generates was not produced by check.sh, whatever it says (#178).
+# tools/test_differential_floor.py keeps it equal to the count in scripts/check.sh.
+MIN_DIFF_SEQUENCES = 5000
+DIFF_FILES = (("rust-bend", "differential.json"), ("rust-wasm", "wasm-differential.json"))
+
+
+def differential_problems(records):
+    """Why each differential result does not count, from the parsed files by name
+    (a missing file is absent). Both runs replay the same case file, so they must
+    report the same number of transitions, and the Rust/Bend run must report at
+    least MIN_DIFF_SEQUENCES sequences: zero cases with zero mismatches is no run."""
+    out = {}
+    bend = records.get("rust-bend")
+    for name, data in records.items():
+        why = []
+        # type() is int, not ==: False == 0 in Python.
+        if not isinstance(data, dict) or type(data.get("mismatches")) is not int or data["mismatches"] != 0:
+            why.append("does not record zero mismatches")
+        else:
+            transitions = data.get("transitions")
+            if type(transitions) is not int or transitions < MIN_DIFF_SEQUENCES:
+                why.append(f"records {transitions!r} transitions, fewer than the {MIN_DIFF_SEQUENCES} cases check.sh generates")
+            if name == "rust-bend":
+                sequences = data.get("sequences")
+                if type(sequences) is not int or sequences < MIN_DIFF_SEQUENCES:
+                    why.append(f"records {sequences!r} sequences, fewer than the {MIN_DIFF_SEQUENCES} check.sh generates")
+                elif type(transitions) is int and transitions < sequences:
+                    why.append("records fewer transitions than sequences")
+            elif not isinstance(bend, dict) or bend.get("transitions") != transitions:
+                why.append("does not record the same transitions as results/differential.json, "
+                           "though both replay the same case file")
+        if why:
+            out[name] = why
+    return out
+
+
+def read_differentials():
+    records = {}
+    for name, file in DIFF_FILES:
+        path = ROOT / "results" / file
+        if path.exists():
+            records[name] = json.loads(path.read_text(encoding="utf-8"))
+    return records
+
+
 def load_results():
     mutation = json.loads((ROOT / "results/mutation-check.json").read_text(encoding="utf-8"))
     # The root lab's committed runs, and the newest CI lab run (#53). A name passes only if
@@ -260,12 +307,9 @@ def load_results():
             sabotage_ok[item["weakness"]] = sabotage_ok.get(item["weakness"], True) and bool(item["detected"])
     bend_ok = {m["mutant"]: m["rejected"] and m.get("witness", False) for m in mutation["bend"]}
     rust_ok = {m["mutant"]: m["rejected"] for m in mutation["rust"]}
-    diffs = {}
-    for name, file in [("rust-bend", "differential.json"), ("rust-wasm", "wasm-differential.json")]:
-        path = ROOT / "results" / file
-        if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
-            diffs[name] = data.get("mismatches", 1) == 0
+    records = read_differentials()
+    problems = differential_problems(records)
+    diffs = {name: name not in problems for name in records}
     live_ok, live_sab_ok = {}, {}
     for live_path in live_files:
         if not live_path.exists():
@@ -462,6 +506,10 @@ def main(argv=None):
         return 1
     bend_ok, rust_ok, scenario_ok, sabotage_ok, diffs, live_ok, live_sab_ok = load_results()
     errors = []
+    # Say why a differential does not count, in both modes: it is a run that did not
+    # happen as recorded, not an old one.
+    for name, why in sorted(differential_problems(read_differentials()).items()):
+        errors.append(f"CI-3 results/{dict(DIFF_FILES)[name]} {'; '.join(why)}")
     by_id = {}
     cited = {k: set() for k in KINDS}
 
