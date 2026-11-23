@@ -34,7 +34,7 @@ These figures are from the Linux VM run at commit d81a32e, kept as `results/linu
 
 Maxima vary between runs on this shared VM because the enforcer thread can be descheduled; one run of an earlier build of this change had a `gateway_flood` stop at 93 ms. Every measured stop, including that one, recorded 0 bytes admitted after commit and 0 written after the cut.
 
-Monitor loss to containment is bounded by lease expiry: p50 188.26 ms, p95 199.29 ms, max 200.52 ms for a 200 ms lease. The commit lands on the first tick at or after the deadline, so the maximum can pass the lease by a fraction of a millisecond. The suite's limit is 300 ms. Under CPU load (earlier build), the frozen p95 rose to 9.6 ms and the maximum to 59.8 ms.
+From monitor loss to the stop commit, for a 200 ms lease: p50 188.26 ms, p95 199.29 ms, max 200.52 ms. The commit lands on the first tick at or after the deadline, so these times include that tick and any scheduling delay, and the maximum can pass the lease by a fraction of a millisecond. The suite's limit is 300 ms. Under CPU load (earlier build), the frozen p95 rose to 9.6 ms and the maximum to 59.8 ms.
 
 **Limits waiver.** This run used `--allow-missing-limits`. The VM has a hybrid cgroup v1/v2 layout, so the pids, memory and CPU controllers are not available in the v2 tree. The result records the waiver. Without it, `benign` fails when those limits are not in force. The WSL2 runs below enforced the limits with no waiver.
 
