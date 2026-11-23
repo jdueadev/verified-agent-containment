@@ -2,7 +2,7 @@
 
 Status: draft. Source: the design review of 2026-11-19. Every claim this design makes is a row in [`claims.toml`](../claims.toml); the generated table is [`claims.md`](claims.md). A plain-English companion with reading links is [`design-explainer.html`](design-explainer.html). Throughout this spec, "must" marks a requirement that a claim row tracks.
 
-Compared with what the prototype does today (commit `d0c0764`), this spec adds or changes four things:
+Compared with the prototype at commit `d0c0764`, when this draft was written, this spec adds or changes four things:
 - System One's liveness and its channel;
 - the reset protocol (v3);
 - several sandboxes, each with its own controller;
@@ -141,8 +141,8 @@ Status (#3): `formal/host/HostModel.tla` models one sandbox (N = 1 so far). `too
 | A reset-v2 signature binds `run_id` but not the instance or boot, so a restart with the same run id would accept a replay. Hidden in the lab by a fresh key and run id each run. | `common.rs` `reset_message` | 6 | C-RST-04 |
 | The reset counter must only be fresh, not exactly next, and has no bounded window. | `formal/LAWS.bend` | 6 | C-KER-R1 |
 | ~~System One runs inside the controller.~~ Fixed in #4: separate process on fd 3 (trace pipe) and fd 4 (verdict seqpacket), own uid, empty netns, no sockets; crash restarts and a long outage holds a busy agent. | `system_one.rs`, `supervise_system_one` | 5 | C-ISO-04, C-S1-02 |
-| No supervisor, fan-out, model server, CONNECT proxy, budgets or copy-on-write workspace yet. | — | 3, 7 | planned rows |
-| A deterministic classifier stands in for System One. No LLM agent has run. | `controller.rs` | 5 | C-S1-03 |
+| No supervisor, fan-out, sandboxed model server, CONNECT proxy or copy-on-write workspace yet. Per-lease request, byte and token budgets exist, and a rebuild copies a fresh workspace from the seed (C-ATT-02, L-OPS-04). | — | 3, 7 | planned rows |
+| The live classifier is the rule-based one in `system_one.rs` (`rules-v1`). The false-Hold gate has not been measured. A local model has been run in the owned harness (`results/wsl2/lab-9ffd69a/redteam`, `results/wsl2/lab-f88aeef/redteam`). | `system_one.rs` | 5 | C-S1-03 |
 
 ## 10. Order of work
 
