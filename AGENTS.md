@@ -28,8 +28,12 @@ anything under `results/`, never add or edit a `platforms` entry in
 `claims.toml`, and never edit `docs/claims.md` by hand (regenerate it with
 `python3 tools/claims_check.py --write`).
 *Enforced by:* lane C on lab results; the `platforms` ratchet; CI-9 (a passing
-platform must have committed artifacts); the `docs/claims.md` drift check.
-Whether committed lab output is authentic is review-only.
+platform must have committed artifacts); the `docs/claims.md` drift check; and
+CI-10, which accepts CI lab evidence only with a GitHub OIDC token from main's
+`lab.yaml` in the `evidence` environment that binds every committed byte
+(`tools/lab_attest.py`, #209). The token proves main's code produced the
+evidence, not that the host code under test is honest (decision 0004). Root
+lab output from outside CI is not attested and stays review-only.
 
 **INV-2. Never weaken evidence to get a green check.** Do not remove or reword
 a law, a mutant, a scenario or a sabotage control. Do not reword a claim's
@@ -168,7 +172,9 @@ Say which tier you reached. Never report a higher one.
   this is usually the tool unit tests and the kernel crate.
 - **T1:** all of `scripts/check.sh`, on Linux or WSL2 with every tool present.
   A run that printed `SKIPPED` is T0.
-- **T2:** the root lab run. Only the maintainer does this.
+- **T2:** the lab run by `.github/workflows/lab.yaml` on main, attested and
+  checked by CI-10. Anyone whose push reaches main starts it; nobody hand-carries
+  its results. A root lab on your own machine is still maintainer-only (INV-11).
 
 No merge rests on a local result. The `check` workflow is the gate.
 

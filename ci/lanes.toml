@@ -61,6 +61,8 @@ C = [
   "tools/merge_digest.py",
   # Writes lab evidence from a CI run (#53).
   "tools/lab_record.py",
+  # Attests and verifies CI lab evidence (CI-10, #209): what makes lab output authentic.
+  "tools/lab_attest.py",
   # The attack harness, live suite and red-team runner decide what "passed"
   # means. Weakening an assertion keeps its name, so no ratchet can see it;
   # these files need the maintainer until stage 3 of #125 judges them from
