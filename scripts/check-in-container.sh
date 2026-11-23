@@ -116,8 +116,16 @@ if [ "$src" != "$root" ] && [ "$common" = "$(resolve "$root" --git-common-dir)" 
 fi
 # Read through the repository's own config resolution, so an include.path cannot
 # hide a promisor remote (git config --file does not follow includes).
-if [ "$src" != "$root" ] && untrusted_git -C "$src" config --get-regexp '^(extensions\.partialclone|remote\..*\.promisor)$' >/dev/null 2>&1; then
-  die "$src is a partial clone, whose missing objects git would fetch from its own config; judge a full clone you made"
+if [ "$src" != "$root" ]; then
+  # The judged clone's gitdir is its own .git directory: a gitfile could point the
+  # read-only /git mount at any other repository on this machine.
+  [ "$gitdir" = "$src/.git" ] && [ "$common" = "$src/.git" ] && [ -d "$src/.git" ] && [ ! -L "$src/.git" ] \
+    || die "$src must be a plain clone whose gitdir is $src/.git (found $gitdir, common $common)"
+  # Fail closed: exit 1 means no such key; anything else (a config git cannot
+  # read) refuses too.
+  pc=0
+  untrusted_git -C "$src" config --get-regexp '^(extensions\.partialclone|remote\..*\.promisor)$' >/dev/null 2>&1 || pc=$?
+  [ "$pc" = 1 ] || die "$src is a partial clone, or its config cannot be read (git config exit $pc); judge a full clone you made"
 fi
 # A worktree's .git file names an absolute host path, which means nothing in
 # the container. Mount the common gitdir instead and point GIT_DIR at this
