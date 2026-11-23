@@ -111,6 +111,28 @@ def laws_without_killer(ctx):
             for law in laws if law not in killed]
 
 
+def proof_matches_generator(ctx):
+    import shutil
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "tools").mkdir()
+        (Path(tmp) / "formal").mkdir()
+        shutil.copy(ctx.root / "tools/generate_proof.py", Path(tmp) / "tools/generate_proof.py")
+        child = __import__("subprocess").run([sys.executable, "tools/generate_proof.py"], cwd=tmp, capture_output=True, text=True)
+        if child.returncode != 0:
+            return [Finding("FV-PROOF-GEN", "tools/generate_proof.py", 0, f"generator failed: {child.stderr.strip()[-300:]}")]
+        if (Path(tmp) / "formal/PROOF.bend").read_bytes() != (ctx.root / "formal/PROOF.bend").read_bytes():
+            return [Finding("FV-PROOF-GEN", "formal/PROOF.bend", 0, "differs from what tools/generate_proof.py writes")]
+    return []
+
+
+def lean_pinned(ctx):
+    pinned = pins_check.parse_pins((ctx.root / "ci/pins.env").read_text(encoding="utf-8"))
+    if not re.fullmatch(r"\d+\.\d+\.\d+", pinned.get("LEAN_VERSION", "")):
+        return [Finding("FV-PIN", "ci/pins.env", 0, "LEAN_VERSION is missing or not X.Y.Z")]
+    return []
+
+
 def tool_run(rule_id, argv, path, timeout=3600):
     def check(ctx):
         code, out, err = vac_core.run_tool(ctx, rule_id, argv, timeout)
@@ -185,6 +207,11 @@ RULES = (
     Rule("LAW-KILL", "Every law is broken by at least one mutant", T0,
          ("formal/**", "tools/kernel_mutants.py", "results/mutation-check.json"), laws_without_killer,
          "add a mutant to tools/kernel_mutants.py that breaks the law, then python3 tools/mutation_check.py", (209,)),
+    Rule("FV-PROOF-GEN", "formal/PROOF.bend is exactly what tools/generate_proof.py writes", T0,
+         ("formal/PROOF.bend", "tools/generate_proof.py"), proof_matches_generator,
+         "python3 tools/generate_proof.py, then commit formal/PROOF.bend", (209,)),
+    Rule("FV-PIN", "The Lean version that rechecks the proofs is pinned in ci/pins.env", T0, ("ci/pins.env",),
+         lean_pinned, "add LEAN_VERSION=X.Y.Z to ci/pins.env", (209,)),
     Rule("TOOL-TESTS", "The tool unit tests pass", T0, ("tools/**", "ci/**", "claims.toml", "results/**", "formal/**"),
          tool_run("TOOL-TESTS", [sys.executable, "-m", "unittest", "discover", "-s", "tools", "-p", "test_*.py"], "tools"),
          "python3 -m unittest discover -s tools -p 'test_*.py'", (65,)),
