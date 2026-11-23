@@ -239,6 +239,10 @@ is allowed, and only in a form that restricts.
   2026-11-23):
   - deny is evaluated first in every scope, and an `allow` elsewhere cannot carve
     an exception out of it;
+  - list settings merge across scopes ("Claude Code combines the lists instead of
+    picking one", settings docs, "Lists merge instead of overriding"), so a
+    project `deny` adds to a user's own and never replaces it, while a scalar
+    takes the higher-precedence value, which is why every scalar is refused;
   - deny holds in every mode, including `bypassPermissions`;
   - deny and ask apply before the folder is trusted;
   - a path rule `/x` is relative to the settings source, the project root;
