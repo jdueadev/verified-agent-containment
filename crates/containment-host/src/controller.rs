@@ -829,7 +829,10 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         thread::sleep(Duration::from_millis(1));
     }
     let first_workspace = shared.workspace_for(1, uid_base + 1)?;
-    let mut children: Vec<Child> = vec![sandbox::spawn(&shared.spec, &lock(&shared.generation).path, uid_base + 1, first_workspace.as_deref())?];
+    let (first, first_copier) = sandbox::spawn(&shared.spec, &lock(&shared.generation).path, uid_base + 1, first_workspace.as_deref())?;
+    let mut children: Vec<Child> = vec![first];
+    // One output copier per generation, replaced ones included; joined at the end.
+    let mut copiers = vec![first_copier];
     let max_run = live.as_ref().map(|l| Duration::from_secs(l.policy.run.max_seconds));
     let began = Instant::now();
     let mut status = BTreeMap::new();
@@ -862,7 +865,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
                 let spawned = shared.workspace_for(number, uid)
                     .and_then(|workspace| sandbox::spawn(&shared.spec, &generation.path, uid, workspace.as_deref()));
                 match spawned {
-                    Ok(child) => Ok((generation, child)),
+                    Ok((child, copier)) => Ok((generation, child, copier)),
                     Err(e) => {
                         // Roll back so a retry can create this generation number again,
                         // and the installed generation stays the identity in force.
@@ -879,9 +882,10 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
                 }
             });
             let ok = created.is_ok();
-            if let Ok((generation, child)) = created {
+            if let Ok((generation, child, copier)) = created {
                 let old = std::mem::replace(&mut *lock(&shared.generation), generation);
                 children.push(child);
+                copiers.push(copier);
                 let _ = fs::remove_dir(old.path);
             }
             let (done, ready) = &shared.recreate_done;
@@ -968,6 +972,18 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let _ = sink.wait();
     for mut child in children {
         let _ = child.wait();
+    }
+    // A copier ends once every writer of its pipe has gone, which the cgroup kill and the
+    // waits above ensure. Joining it lets the agent's last records reach agent.jsonl
+    // before this process exits. The wait is bounded, so a stray writer cannot hang it.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    for copier in copiers {
+        while !copier.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        if copier.is_finished() {
+            let _ = copier.join();
+        }
     }
     let _ = fs::remove_dir(&lock(&shared.generation).path);
     let _ = fs::write(s1_cgroup.join("cgroup.kill"), "1");

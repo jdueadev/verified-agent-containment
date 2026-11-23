@@ -1,0 +1,22 @@
+commit id: 9263878b598c472f65aa58b3116ed959323b98fa
+runner: GitHub-hosted ubuntu24 20261116.376.1
+kernel: 7.0.0-1017-azure
+cgroup v2 controllers: cpuset cpu io memory hugetlb pids rdma misc dmem
+cpus: 4
+kernel.apparmor_restrict_unprivileged_userns: 1 (unchanged)
+run directory: /run is rw,nosuid,nodev,size=3273508k,nr_inodes=819200,mode=755,inode64; nothing changed
+runner image: not trimmed: 765269 files under /usr and /lib*
+rust-toolchain channel: 1.100.0
+rustc: rustc 1.100.0 (0ef1bc386 2026-11-09)
+rustc: binary: rustc
+rustc: commit-hash: 0ef1bc386059596dada8fb65b50425aab2ea637a
+rustc: commit-date: 2026-11-09
+rustc: host: x86_64-unknown-linux-gnu
+rustc: release: 1.100.0
+rustc: LLVM version: 23.1.5
+cargo: cargo 1.100.0 (3acc79c0c 2026-11-05)
+rustc path: /home/runner/.rustup/toolchains/1.100.0-x86_64-unknown-linux-gnu/bin/rustc
+Cargo.lock sha256: 4694eba4471d3d4f9de8342a0754a6e147816742b979f4c5c9eb39cab7090476
+default binary sha256: 0fb18d351fb86745d4b951ae6a440726241d42b32763e76bf62ca00f198e1f7f
+sabotage binary sha256: 9ad9ac3da818c515a71fb6c8cc246566474040804e07bfd3d476bf16e60e467c
+build overrides: none set (checked before the build)

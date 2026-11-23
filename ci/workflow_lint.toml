@@ -1,0 +1,7 @@
+# Environments whose secrets a workflow job may read (tools/workflow_lint.py, #137).
+# Add a name here only after the environment's deployment policy in the
+# repository settings is limited to the `main` branch (branch type, not tag).
+# The settings detective (#137, stage 5) is meant to keep checking that.
+# evidence: EVIDENCE_APP_KEY, read by lab.yaml's record job (#137, stage 1).
+# gate: GATE_APP_KEY, read by the gate workflow's post job (#137, stage 2).
+secret_environments = ["evidence", "gate"]

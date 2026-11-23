@@ -25,30 +25,43 @@ C = [
   ".gitattributes",
   # Steers what the automated reviewer looks at, and how closely.
   ".coderabbit.yaml",
+  # Claude Code reads these as settings, hooks, skills, agent prompts and session
+  # handovers. Settings and hooks run on the machine of whoever opens a session in
+  # the checkout, and the rest steers the next agent session (#169).
+  ".claude/**",
   "AGENTS.md",
   "CLAUDE.md",
   "docs/decisions/**",
   # Verifiers: a change to a checker is a change to the proof.
   "tools/claims_check.py",
   "tools/policy_check.py",
+  # Runs the base branch's spec against a head checkout (#125).
+  "tools/spec_run.py",
+  # Runs the known-bad corpus in ci/corpus/ against a head checkout (#125).
+  "tools/corpus_run.py",
   "tools/pins_check.py",
+  # Keeps secrets in main-only environments and event text out of scripts (#137).
+  "tools/workflow_lint.py",
+  # Turns the required workflows' results into gate App check runs (#137, stage 2).
+  "tools/gate_check.py",
   "tools/rust_tokens.py",
-  "tools/test_*.py",
   "tools/mutation_check.py",
   "tools/differential.mjs",
   "tools/wasm_check.mjs",
   "tools/law_audit.mjs",
   "tools/tla_check.sh",
   "tools/generate_proof.py",
+  # After-the-fact audit of merges to main (#54, #71).
+  "tools/merge_digest.py",
   # Writes lab evidence from a CI run (#53).
   "tools/lab_record.py",
-  # The attack harness, live suite, red-team runner and the kernel law tests
-  # decide what "passed" means. Weakening an assertion keeps its name, so no
-  # ratchet can see it; these files need the maintainer.
+  # The attack harness, live suite and red-team runner decide what "passed"
+  # means. Weakening an assertion keeps its name, so no ratchet can see it;
+  # these files need the maintainer until stage 3 of #125 judges them from
+  # outside the host.
   "crates/containment-host/src/harness.rs",
   "crates/containment-host/src/live_suite.rs",
   "crates/containment-host/src/redteam.rs",
-  "crates/containment-kernel/tests/**",
   # Host containment code, and the inputs that can change the shipped binary
   # without touching it. The lab gates honest mistakes, but the code under test
   # can fool the lab, so these need the maintainer (#83). Every host source
@@ -87,6 +100,12 @@ B = [
   "docs/verification.md",
   "README.md",
   "tools/kernel_mutants.py",
+  # Spec: the tool tests and the kernel law tests (#125, stage 2). A new file
+  # merges without the maintainer once `spec` judges it from the base branch
+  # and finds the base spec still passing. An existing file is immutable: the
+  # spec ratchet in policy_check.py sends any edit, removal or rename to lane C.
+  # crates/containment-kernel/tests/** is covered by crates/** above.
+  "tools/test_*.py",
   "redteam/**",
   # Results that `scripts/check.sh` regenerates on every CI run.
   "results/**",
