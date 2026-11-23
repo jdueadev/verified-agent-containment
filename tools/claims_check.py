@@ -694,6 +694,10 @@ def staleness_only_drift(committed, expected, claims, effective):
             return False
         suffix = PENDING_SUFFIX.search(ca[3])
         if suffix:
+            # render() puts the suffix right after "stale" and before any "(needs ...)":
+            # anywhere else, such as inside the word, it is not a render.
+            if ca[3][:suffix.start()] != "stale":
+                return False
             refs = suffix.group(0)[len(" (pending lab: "):-1].split(", ")
             if any(r.partition(":")[0] not in PENDING_KINDS or r not in evidence[cid] for r in refs):
                 return False
