@@ -66,9 +66,12 @@ class StalenessOnlyTests(unittest.TestCase):
     def test_a_pending_suffix_out_of_place_is_not(self):
         # CodeRabbit on #179: a suffix stripped from inside the word left "stale" behind.
         fresh = table(row("K-1", "tested"), row("K-2", "proved"))
-        for forged in ("st (pending lab: scenario:exfil_race)ale", "stale (needs K-2) (pending lab: scenario:x)",
-                       "tested (pending lab: scenario:x)", " (pending lab: scenario:x)stale"):
-            self.assertFalse(self.drift(table(row("K-1", forged), row("K-2", "proved")), fresh, self.FRESH), forged)
+        # Each forgery is a stale render once the suffix is cut out of the middle, so only the
+        # anchor rejects it; every ref is in K-1's own evidence.
+        for forged in ("st (pending lab: scenario:exfil_race)ale", "sta (pending lab: scenario:a)le",
+                       "s (pending lab: sabotage:b)tale", "stal (pending lab: scenario:x, sabotage:y)e"):
+            with self.subTest(forged=forged):
+                self.assertFalse(self.drift(table(row("K-1", forged), row("K-2", "proved")), fresh, self.FRESH))
 
     def test_a_hand_edited_status_is_not(self):
         expected = table(row("K-1", "tested"), row("K-2", "proved"))
