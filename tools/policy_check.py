@@ -3,7 +3,7 @@
 
 Usage:
   policy_check.py classify --base REF [--head REF] [--map-ref REF] [--reviews FILE --head-sha SHA]
-                           [--fork] [--enforce]
+                           [--fork] [--author LOGIN] [--enforce]
   policy_check.py codeowners [--write]
   policy_check.py invariants [--ref REF]
   policy_check.py fresh-reviews --head-sha SHA --reviews FILE --activity FILE --pr FILE --timeline FILE
@@ -14,7 +14,11 @@ classify   prints the lane of the diff between two commits. Lanes are defined in
            row of claims.toml, adds agent configuration below the root, or
            departs from written-once handovers (a rewrite, rename, re-used
            path, removal, or handover mixed with other work). With --enforce, a lane C change (or any change from a
-           fork) fails unless the maintainer approved the head commit.
+           fork) fails unless the maintainer approved the head commit. A lane C
+           change by an author on the lane map's `trusted` list needs no
+           approval; a fork always does, whoever its author is. The list comes
+           from --map-ref, so a change cannot add its own author. Without
+           --author nobody is trusted.
 codeowners checks that .github/CODEOWNERS is exactly lane C (--write regenerates it).
 invariants checks rules that hold on every commit: `sabotage` is not a default
            feature, the lane map parses, CODEOWNERS matches it, and the kernel
@@ -82,6 +86,21 @@ def load_lanes(text):
                     or "?" in pattern or "[" in pattern:
                 raise ValueError(f"{LANES_FILE}: {pattern!r} is not an exact file, dir/** or a single-* name")
     return data["owner"], {lane: list(lanes.get(lane, [])) for lane in ORDER}
+
+
+def load_trusted(text):
+    """The logins whose lane C changes need no approval (`trusted` in the lane map),
+    lowercased and without the leading @. A missing list trusts nobody."""
+    trusted = tomllib.loads(text).get("trusted", [])
+    if not isinstance(trusted, list) or not all(isinstance(n, str) and n.startswith("@") and len(n) > 1
+                                                  for n in trusted):
+        raise ValueError(f"{LANES_FILE}: trusted must be a list of \"@login\" strings")
+    return {n[1:].lower() for n in trusted}
+
+
+def is_trusted(author, trusted):
+    """True when `author` is on the trusted list. No author is never trusted."""
+    return bool(author) and author.lstrip("@").lower() in trusted
 
 
 def lane_match(path, pattern):
@@ -960,6 +979,7 @@ def invariant_errors(get, kernel_files):
     if lanes_text is None:
         return [f"{LANES_FILE}: missing"]
     owner, lanes = load_lanes(lanes_text)
+    load_trusted(lanes_text)
     manifest = get(HOST_MANIFEST)
     manifest_errors = sabotage_default_errors(manifest) if manifest is not None else [f"{HOST_MANIFEST}: missing"]
     return codeowners_errors(owner, lanes, get(CODEOWNERS_FILE)) + manifest_errors + kernel_purity_errors(kernel_files)
@@ -975,6 +995,7 @@ def main(argv=None):
     c.add_argument("--reviews")
     c.add_argument("--head-sha")
     c.add_argument("--fork", action="store_true")
+    c.add_argument("--author", help="login of the pull request's author, from the event")
     c.add_argument("--enforce", action="store_true")
     o = sub.add_parser("codeowners")
     o.add_argument("--write", action="store_true")
@@ -1020,6 +1041,7 @@ def run(parser, args):
         if lanes_text is None:
             sys.exit(f"policy: {map_ref} has no {LANES_FILE}; refusing to classify against another lane map")
         owner, lanes = load_lanes(lanes_text)
+        trusted = load_trusted(lanes_text)
         if args.head_sha and git("rev-parse", "--verify", f"{args.head}^{{commit}}").strip() != args.head_sha:
             sys.exit(f"policy: --head {args.head} is not --head-sha {args.head_sha}; an approval is of one commit")
         paths = [p for p in git("diff", "--name-only", "--no-renames", args.base, args.head).splitlines() if p]
@@ -1031,9 +1053,12 @@ def run(parser, args):
         handovers = (tree_entries(args.base, HANDOVER_DIR), tree_entries(args.head, HANDOVER_DIR),
                      earlier_handovers(args.base))
         result = classify(paths, base_get, head_get, lanes, spec_links(args.head, paths), handovers)
-        needs_owner = result["lane"] == "C" or args.fork
+        author_trusted = is_trusted(args.author, trusted)
+        needs_owner = (result["lane"] == "C" and not author_trusted) or args.fork
         reviews = json.loads(Path(args.reviews).read_text(encoding="utf-8")) if args.reviews else []
         result["fork"] = args.fork
+        result["author"] = args.author
+        result["trusted"] = author_trusted
         result["needs_maintainer"] = needs_owner
         result["approved"] = approved(reviews, owner, args.head_sha) if needs_owner else None
         result["enforced"] = args.enforce
