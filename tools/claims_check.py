@@ -616,10 +616,10 @@ def main(argv=None):
         target.write_text(markdown, encoding="utf-8", newline="\n")
     elif not target.exists() or target.read_text(encoding="utf-8") != markdown:
         committed = target.read_text(encoding="utf-8") if target.exists() else ""
-        # Without --strict, only drift that staleness explains is a warning: a status
-        # token that is the row's declared or effective status or "stale", a pending-lab
-        # suffix, or a platform's "predates later changes" note. Anything else, such as
-        # a hand-edited status, is an error in both modes (INV-1; #175 review).
+        # Without --strict, drift is a warning only when the committed table is staler
+        # than the evidence (rows shown stale that are fresh again). A table that shows
+        # more than the evidence supports, such as a hand-edited status or an old fresh
+        # row for a claim that is stale now, is an error in both modes (INV-1; #175).
         if strict or not (stale or pending) or not staleness_only_drift(committed, markdown, claims, effective):
             errors.append("docs/claims.md is out of date; run tools/claims_check.py --write")
         else:
@@ -641,7 +641,7 @@ def main(argv=None):
     return 1 if errors else 0
 
 
-PENDING_SUFFIX = re.compile(r" \(pending lab: [^)]*\)")
+PENDING_SUFFIX = re.compile(r" \(pending lab: [a-z]+(?:-[a-z]+)*:[A-Za-z0-9_./#:-]+(?:, [a-z]+(?:-[a-z]+)*:[A-Za-z0-9_./#:-]+)*\)")
 PREDATES_NOTE = " (predates later changes)"
 TABLE_COLUMNS = 7  # id, statement, layer, status, evidence, falsifier, platforms
 
@@ -655,8 +655,20 @@ def _row_cells(line):
 
 def staleness_only_drift(committed, expected, claims, effective):
     """True when the committed docs/claims.md differs from the expected render only in
-    what staleness changes. Every other line and cell must match exactly, and a status
-    token may only be the row's declared status, its effective status, or "stale"."""
+    what staleness changes, so that without --strict it is a warning (decision 0002:
+    the table is regenerated when the lab evidence is refreshed). Each differing line
+    must be a table row whose id, statement, layer, evidence and falsifier match
+    exactly, and whose committed status cell is one of two whole renders of that row:
+
+    - an older fresh render: the declared status, with no pending-lab suffix; or
+    - a stale render: "stale", optionally with a pending-lab suffix that lists only
+      evidence refs.
+
+    In both, the platforms match apart from "predates later changes" notes, which a
+    fresh row can carry too (one platform predates a change, another still passes).
+
+    A stronger status than declared, free text in a suffix, or a mixed render is never
+    explained, in either mode (INV-1; #175 review and its security scan)."""
     old, new = committed.split("\n"), expected.split("\n")
     if len(old) != len(new):
         return False
@@ -674,10 +686,16 @@ def staleness_only_drift(committed, expected, claims, effective):
             return False
         if ca[6].replace(PREDATES_NOTE, "") != cb[6].replace(PREDATES_NOTE, ""):
             return False
-        token_a, _, rest_a = PENDING_SUFFIX.sub("", ca[3]).partition(" ")
-        token_b, _, rest_b = PENDING_SUFFIX.sub("", cb[3]).partition(" ")
-        allowed = {declared[cid], effective.get(cid), "stale"}
-        if rest_a != rest_b or token_a not in allowed or token_b not in allowed:
+        stripped = PENDING_SUFFIX.sub("", ca[3], count=1)
+        if "(pending lab:" in stripped:
+            return False
+        token_a, _, rest_a = stripped.partition(" ")
+        token_b, _, rest_b = PENDING_SUFFIX.sub("", cb[3], count=1).partition(" ")
+        if rest_a != rest_b:
+            return False
+        if token_a == "stale":
+            continue
+        if token_a != declared[cid] or stripped != ca[3]:
             return False
     return True
 
