@@ -38,7 +38,10 @@ fn c(path: &str) -> Result<CString, Box<dyn Error>> {
 
 /// Starts one sandbox inside `cgroup`. This must run on the controller's main
 /// thread because the parent-death signal follows the spawning thread.
-pub fn spawn(spec: &SandboxSpec, cgroup: &Path, uid: u32, workspace: Option<&Path>) -> io::Result<Child> {
+/// Returns the sandbox's process and the thread copying its output into `spec.output`.
+/// The caller joins the copier once the sandbox's processes are gone, so the last
+/// records the agent wrote reach the file.
+pub fn spawn(spec: &SandboxSpec, cgroup: &Path, uid: u32, workspace: Option<&Path>) -> io::Result<(Child, std::thread::JoinHandle<()>)> {
     let procs = fs::OpenOptions::new().write(true).open(cgroup.join("cgroup.procs"))?;
     let output = fs::OpenOptions::new().create(true).append(true).open(&spec.output)?;
     // The agent writes to a pipe, not to the file: with a file descriptor on the file it
@@ -88,19 +91,18 @@ pub fn spawn(spec: &SandboxSpec, cgroup: &Path, uid: u32, workspace: Option<&Pat
     let child = command.spawn()?;
     // Closes the parent's copies of the write end, so the copy ends when the agent's do.
     drop(command);
-    copy_agent_output(reader, output);
-    Ok(child)
+    Ok((child, copy_agent_output(reader, output)))
 }
 
 /// The most one generation may add to its output file. The rest is read and dropped,
 /// so a flooding agent can neither fill the disk nor stall on a full pipe.
 const AGENT_OUTPUT_LIMIT: u64 = 16 * 1024 * 1024;
 
-fn copy_agent_output(mut reader: io::PipeReader, mut output: fs::File) {
+fn copy_agent_output(mut reader: io::PipeReader, mut output: fs::File) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let _ = io::copy(&mut io::Read::take(&mut reader, AGENT_OUTPUT_LIMIT), &mut output);
         let _ = io::copy(&mut reader, &mut io::sink());
-    });
+    })
 }
 
 fn mount(source: &str, target: &str, kind: Option<&str>, flags: libc::c_ulong, data: Option<&str>) -> Result<(), Box<dyn Error>> {

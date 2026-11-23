@@ -2,7 +2,9 @@ name: policy-refresh
 
 # When a review is submitted or dismissed, re-run the pull request's latest
 # `policy` run so the required check reflects the reviews. Approving a lane C
-# pull request is then enough to let auto-merge finish.
+# pull request is then enough to let auto-merge finish. A failed `spec` run is
+# re-run too, because a red base spec passes once the owner approved this head
+# (#125); without the re-run an approval would never turn it green.
 #
 # This job never reports a `policy` result itself. A re-run executes the
 # original run's workflow, which `pull_request_target` takes from the base
@@ -52,3 +54,26 @@ jobs:
           gh run watch "$id" > /dev/null 2>&1 || true
           gh run rerun "$id"
           echo "Re-ran policy run $id for $HEAD_SHA."
+
+      - name: Re-run a failed spec run for the head commit
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          run="$(gh run list --workflow spec.yml --event pull_request --commit "$HEAD_SHA" \
+                  --limit 1 --json databaseId,status,conclusion --jq '.[0] // empty')"
+          if [ -z "$run" ]; then
+            echo "No spec run for $HEAD_SHA yet; the one that starts will read the reviews itself."
+            exit 0
+          fi
+          id="$(jq -r .databaseId <<<"$run")"
+          gh run watch "$id" > /dev/null 2>&1 || true
+          conclusion="$(gh run view "$id" --json conclusion --jq .conclusion)"
+          if [ "$conclusion" = "failure" ]; then
+            gh run rerun "$id" --failed
+            echo "Re-ran the failed jobs of spec run $id for $HEAD_SHA."
+          else
+            echo "spec run $id for $HEAD_SHA concluded '$conclusion'; nothing to re-run."
+          fi

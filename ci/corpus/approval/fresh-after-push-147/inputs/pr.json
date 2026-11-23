@@ -1,0 +1,19 @@
+{
+  "number": 147,
+  "state": "open",
+  "created_at": "2026-11-22T22:16:44Z",
+  "head": {
+    "ref": "us-045/s2b-gate-workflow",
+    "sha": "@HEAD@",
+    "repo": {
+      "full_name": "jdueadev/verified-agent-containment"
+    }
+  },
+  "base": {
+    "ref": "main",
+    "sha": "@BASE@",
+    "repo": {
+      "full_name": "jdueadev/verified-agent-containment"
+    }
+  }
+}

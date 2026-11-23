@@ -1,0 +1,5 @@
+checker = "classify"
+origin = "#169: a nested CLAUDE.md in a lane A directory"
+twin = "handover-added"
+expect_lane = "C"
+expect_escalation = "agent config docs/CLAUDE.md"
