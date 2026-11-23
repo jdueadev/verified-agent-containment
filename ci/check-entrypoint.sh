@@ -27,11 +27,15 @@
 # plain scripts/check.sh (#176): no arguments or --no-strict, which check.sh
 # accepts as the default (#175). --strict is T1 too, labelled "strict claims
 # check passed at <sha>"; it is not a release, because release.yml judges the
-# committed files and reruns nothing (#178). Any other argument is T0. When a
-# path that judges "passed" (TRUSTED_PATHS) differs from the merge base with
-# origin/main, the line says "T1 (modified checker: ...)", because those
-# checks came from the head itself; without origin/main it says it could not
-# tell. On a tree with uncommitted changes it says so and prints no tier line.
+# committed files and reruns nothing (#178). Any other argument is T0.
+# Everything check.sh runs comes from the head, and head code (build scripts,
+# host tests, the kernel) runs before the judges do. So a plain T1 is printed
+# only when every path the head changed since its merge base with the
+# wrapper's base (CHECK_BASE_SHA, the wrapper's own origin/main) is
+# documentation (doc_only). Otherwise the line says "T1 (judged by its own
+# changes: ...)" and names them; with no usable base it says it cannot tell.
+# The base is printed. After check.sh, the copy must be unchanged outside
+# results/. On a tree with uncommitted changes it says so and prints no tier line.
 #
 # These checks catch accidents and honest mistakes. They are not a defence
 # against a hostile image, which could print anything.
@@ -45,10 +49,6 @@ SRC=/src          # the checkout, mounted read-only
 WORK=/work        # a fresh scratch volume
 CONTEXT=/opt/check-context  # the build context the image was built from
 REPO="$WORK/repo"
-# What decides "passed": a tier line from a head that changed one of these is
-# that head's own verdict on itself, so it names them (#176).
-TRUSTED_PATHS=(scripts ci tools .github .cargo AGENTS.md CLAUDE.md Cargo.toml Cargo.lock rust-toolchain.toml
-  crates/containment-kernel/tests crates/containment-kernel/Cargo.toml crates/containment-kernel/build.rs)
 REQUIRED_PINS=(BUN_VERSION NODE_VERSION JAVA_VERSION CHECK_JRE_VERSION CHECK_PYTHON_VERSION BEND_COMMIT TLA_SHA256)
 
 say() { echo "check-container: $*" >&2; }
@@ -62,6 +62,7 @@ git_env() {
   export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
   # core.fileMode and core.sparseCheckout are forced so that repository
   # config cannot hide a change from the `git status` comparison below.
+  # check_inputs_committed overrides entry 3 by index; keep core.fileMode there.
   export GIT_CONFIG_COUNT=5 \
     GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' \
     GIT_CONFIG_KEY_1=core.fsmonitor GIT_CONFIG_VALUE_1=false \
@@ -162,6 +163,7 @@ check_inputs_committed() {
   # that does not keep modes (Docker Desktop shows 0755 or 0777) would otherwise
   # stop the run here; it still shows in `git status`, so such a tree gets no
   # T1 line (CodeRabbit on #115). GIT_CONFIG_VALUE_3 is core.fileMode.
+  [ "$GIT_CONFIG_KEY_3" = core.fileMode ] || die "GIT_CONFIG_KEY_3 is not core.fileMode"
   GIT_CONFIG_VALUE_3=false git diff --quiet HEAD -- "${inputs[@]}" \
     || die "the image's inputs have uncommitted changes ($(GIT_CONFIG_VALUE_3=false git diff --name-only HEAD -- "${inputs[@]}" | paste -sd " " -)); commit them first"
   [ -z "$(git ls-files --others --exclude-standard -- "${inputs[@]}")" ] \
@@ -308,7 +310,8 @@ main() {
     python3 tools/claims_check.py
     return
   fi
-  local status
+  local status before_run
+  before_run="$(git status --porcelain=v1 --untracked-files=all -- . ':!results')"
   set +e
   bash scripts/check.sh "$@" 2>&1 | tee /tmp/check.log
   status=("${PIPESTATUS[@]}")
@@ -324,6 +327,9 @@ main() {
   fi
   [ "$(git rev-parse --verify --quiet 'HEAD^{commit}')" = "$HEAD_SHA" ] \
     || die "HEAD moved during the run; this is no result for HEAD $HEAD_SHA"
+  # Head code runs before the judges and could rewrite them in the copy.
+  [ "$(git status --porcelain=v1 --untracked-files=all -- . ':!results')" = "$before_run" ] \
+    || die "the run changed files outside results/; this is no result for HEAD $HEAD_SHA"
   if [ "$TREE_STATE" != clean ]; then
     say "scripts/check.sh passed on a tree with uncommitted changes, so this is no T1 result for HEAD $HEAD_SHA"
     return
@@ -331,19 +337,34 @@ main() {
   tier_line "$@"
 }
 
-# The paths of TRUSTED_PATHS that differ between the merge base with
-# origin/main and HEAD, space-separated; fails when there is no merge base.
-modified_checkers() {
-  local base
-  base="$(git merge-base refs/remotes/origin/main HEAD 2>/dev/null)" || return 1
-  git diff --name-only "$base" HEAD -- "${TRUSTED_PATHS[@]}" | paste -sd " " -
+# Documentation nothing executes: Markdown and anything under docs/, but not the
+# rules (AGENTS.md, CLAUDE.md, .claude/, docs/decisions/) or the generated
+# docs/claims.md, which the claims check judges.
+doc_only() {
+  case "$1" in
+    AGENTS.md|CLAUDE.md|.claude/*|*/.claude/*|*/AGENTS.md|*/CLAUDE.md|docs/decisions/*|docs/claims.md) return 1 ;;
+    docs/*|*.md) return 0 ;;
+  esac
+  return 1
+}
+
+# The paths HEAD changed since its merge base with CHECK_BASE_SHA that are not
+# doc_only, one per line; fails when the base is missing or not in this history.
+self_judged() {
+  local base path
+  [[ "${CHECK_BASE_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || return 1
+  git rev-parse --verify --quiet "$CHECK_BASE_SHA^{commit}" >/dev/null || return 1
+  base="$(git merge-base "$CHECK_BASE_SHA" HEAD 2>/dev/null)" || return 1
+  git diff --name-only --no-renames "$base" HEAD | while IFS= read -r path; do
+    doc_only "$path" || printf '%s\n' "$path"
+  done
 }
 
 # The tier of a passing run of scripts/check.sh "$@" on a clean tree at
 # $HEAD_SHA (#176, AGENTS.md "What checked means"). Sourced by
 # tools/test_check_entrypoint.py.
 tier_line() {
-  local tier=T1 label="" modified
+  local tier=T1 label="" changed n shown
   if [ $# = 1 ] && [ "$1" = --strict ]; then
     label=", strict claims check passed at $HEAD_SHA"
   elif [ $# -gt 1 ] || { [ $# = 1 ] && [ "$1" != --no-strict ]; }; then
@@ -351,13 +372,16 @@ tier_line() {
     label=": $* is not a plain scripts/check.sh"
   fi
   if [ "$tier" = T1 ]; then
-    if ! modified="$(modified_checkers)"; then
-      tier="T1 (modified checker: unknown, no merge base with origin/main)"
-    elif [ -n "$modified" ]; then
-      tier="T1 (modified checker: $modified)"
+    if ! changed="$(self_judged)"; then
+      tier="T1 (judged by its own changes: unknown, no usable base)"
+    elif [ -n "$changed" ]; then
+      n="$(wc -l <<<"$changed" | tr -d ' ')"
+      shown="$(head -12 <<<"$changed" | paste -sd " " -)"
+      [ "$n" -le 12 ] || shown="$shown and $((n - 12)) more"
+      tier="T1 (judged by its own changes: $shown)"
     fi
   fi
-  echo "Tier: $tier (container, image $CHECK_IMAGE_ID, context $CONTEXT_HASH) at HEAD $HEAD_SHA (clean), scripts/check.sh${*:+ $*}$label"
+  echo "Tier: $tier (container, image $CHECK_IMAGE_ID, context $CONTEXT_HASH) at HEAD $HEAD_SHA (clean), base ${CHECK_BASE_SHA:-none}, scripts/check.sh${*:+ $*}$label"
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

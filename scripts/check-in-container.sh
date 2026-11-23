@@ -31,9 +31,10 @@
 # A full run that passes on a clean, committed tree ends with
 # "Tier: T1 (container, image sha256:..., context <hash>)": every step of a plain
 # scripts/check.sh ran and passed (#176). --strict adds "strict claims check
-# passed at <sha>"; any other argument gives T0. A head that changed a path
-# that judges "passed" gets "T1 (modified checker: ...)". Report the tier as
-# that line gives it. The image is linux/amd64 only.
+# passed at <sha>"; any other argument gives T0. A head that changed anything
+# but documentation since its merge base with this checkout's origin/main gets
+# "T1 (judged by its own changes: ...)", and the line names that base. Report
+# the tier as that line gives it. The image is linux/amd64 only.
 set -euo pipefail
 
 die() { echo "check-in-container: error: $*" >&2; exit 1; }
@@ -210,13 +211,21 @@ if [ "$build_only" = 1 ]; then
   exit 0
 fi
 
+# The base the tier line compares HEAD with (#176): this checkout's own view of
+# main, never the judged clone's, whose refs its author controls. With
+# --checkout this is the trusted clone of main; without it, the checkout is
+# judging itself and the line says which base it used.
+base="$(git -C "$root" rev-parse --verify --quiet 'refs/remotes/origin/main^{commit}' \
+  || git -C "$root" rev-parse --verify --quiet 'HEAD^{commit}')" || die "cannot read the base commit in $root"
+
 run=(run --rm --platform linux/amd64
   --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --user 1000:1000
   --mount "type=bind,src=$(native "$src"),dst=/src,readonly"
   --mount "type=bind,src=$(native "$common"),dst=/git,readonly"
   --volume /work
   --tmpfs /tmp:rw,exec,nosuid,nodev
-  --env "GIT_DIR=$git_dir" --env "CHECK_IMAGE_ID=$id" --env "CHECK_CONTEXT_HASH=$context_hash")
+  --env "GIT_DIR=$git_dir" --env "CHECK_IMAGE_ID=$id" --env "CHECK_CONTEXT_HASH=$context_hash"
+  --env "CHECK_BASE_SHA=$base")
 if [ "$ENGINE" = podman ]; then
   # /tmp is the tmpfs above. Rootless, map the host user to uid 1000 so the
   # bind mounts stay readable.

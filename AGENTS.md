@@ -167,9 +167,9 @@ Say which tier you reached. Never report a higher one.
   reported with the tier line it prints (image id, context hash, HEAD). A run
   that printed `SKIPPED`, skipped or ignored a test, or ran with other
   arguments is T0. On the host, tool versions are the host's own word; only
-  the container checks them against the pins. A tier line that says
-  `modified checker` came from a head that changed what judges it: report it
-  as printed. `scripts/check.sh --strict` is the release gate, not a tier.
+  the container checks them against the pins. A container tier line that
+  says `judged by its own changes` came from a head that changed more than
+  documentation, so its own code judged it: report it as printed. `scripts/check.sh --strict` is the release gate, not a tier.
 - **T2:** the root lab run. Only the maintainer does this.
 
 No merge rests on a local result. The `check` workflow is the gate.

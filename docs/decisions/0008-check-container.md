@@ -235,14 +235,28 @@ claims. The earlier rule above, that a `--no-strict` run is T0, is replaced:
 
 The design review's blocking point was that the tier line comes from the head's
 own checkers. A clean branch that weakens `check.sh` or `claims_check.py` would
-still print a plain T1. So when a path that judges "passed" (`scripts/`, `ci/`,
-`tools/`, `.github/`, `.cargo/`, `AGENTS.md`, `CLAUDE.md`, the Cargo manifests
-and lock, the toolchain file, the kernel's manifest, build script and tests)
-differs between `HEAD` and its merge base with `origin/main`, the line says
-`T1 (modified checker: <paths>)`. With no `origin/main` in the judged clone it
-says it cannot tell, and never prints a plain T1. The line still reports what
-the head's checks said; the base-judged `spec` and `policy` jobs are what judge
-the head from outside.
+still print a plain T1. A first fix named the head's changes to a fixed list of
+checker paths, compared with the judged clone's `origin/main`. The security
+review of that fix showed three gaps:
+
+- the list missed most of what judges a run: lab results, the host crate and
+  its build script, the wasm build inputs, the formal model, `claims.toml`,
+  `.gitattributes` and the rules;
+- head code (build scripts, host tests, the kernel) runs before the judges, in
+  a writable copy, so any changed code can rewrite a judge first;
+- the base came from the judged clone, whose author can move its
+  `origin/main`, and the line did not say which base it used.
+
+So a plain T1 now means the head changed only documentation (`doc_only`:
+Markdown and `docs/`, but not the rules, `docs/decisions/` or the generated
+`docs/claims.md`) since its merge base with `CHECK_BASE_SHA`. Anything else
+gives `T1 (judged by its own changes: <paths>)`, with up to 12 paths and a
+count. The wrapper sets `CHECK_BASE_SHA` from its own checkout's `origin/main`
+(or its `HEAD`), never the judged clone's, and the line prints it; with no
+usable base the line says it cannot tell and never prints a plain T1. After
+`check.sh`, the copy must be unchanged outside `results/`. The line still
+reports what the head's checks said; the base-judged `spec` and `policy` jobs
+are what judge the head from outside.
 
 
 Two review points on the entrypoint (CodeRabbit on #115). The image-input check
