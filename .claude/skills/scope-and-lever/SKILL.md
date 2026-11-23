@@ -24,10 +24,11 @@ instructions were left out.
    only what that sentence needs. A deletion is in the diff only when the
    goal requires it and INV-2, INV-7 and INV-9 still hold. AGENTS.md,
    "Smallest change".
-2. **Lane and weight before the first push.** Run
-   `python3 tools/policy_check.py classify --base origin/main`. Read the lane
-   and any ratchet. Read workflow step 1 and say whether the change is heavy.
-   AGENTS.md, "Lane and weight before the first push".
+2. **Lane and weight before the first push.** Commit the change, then run
+   `python3 tools/policy_check.py classify --base origin/main`. The command
+   reads the commits, so an uncommitted edit is not in the lane it reports.
+   Read the lane and any ratchet. Read workflow step 1 and say whether the
+   change is heavy. AGENTS.md, "Lane and weight before the first push".
 3. **One topic, one pull request.** Workflow step 3. The units below stay in
    that pull request. `main` squash-merges it. AGENTS.md, "One topic, one
    pull request".
@@ -43,6 +44,7 @@ instructions were left out.
    the result".
 
 Workflow step 5 and INV-1 already forbid an override merge, an `--admin`
-merge, a ruleset bypass, a change to `POLICY_ENFORCE`, and any edit to
-`results/`, a `platforms` entry, or `docs/claims.md`. This skill grants none
-of those.
+merge, a ruleset bypass, a change to `POLICY_ENFORCE`, any edit under
+`results/`, and any edit to a `platforms` entry. INV-1 forbids a hand edit
+of `docs/claims.md`. Regenerate that file with
+`python3 tools/claims_check.py --write`. This skill grants none of those.

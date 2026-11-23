@@ -216,7 +216,7 @@ workflow above. INV-1 through INV-11 are unchanged by it.
 - **Smallest change.** Make the smallest change that meets the goal. A
   deletion belongs in the diff only when the goal requires that deletion and
   INV-2, INV-7 and INV-9 still hold.
-- **Lane and weight before the first push.** Run
+- **Lane and weight before the first push.** Commit the change, then run
   `python3 tools/policy_check.py classify --base origin/main` and read the
   lane and any ratchet that raised it. Read workflow step 1 and say whether
   the change is heavy.
