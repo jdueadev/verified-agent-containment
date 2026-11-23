@@ -161,3 +161,26 @@ instead would pin only the packages the Dockerfile names.
   differ by a patch release. Either `check-container` becomes a required
   check, or `check` asserts `CHECK_JRE_VERSION` and `CHECK_PYTHON_VERSION`.
   The maintainer decides (#55).
+
+## Amendment: judging a branch you do not trust (security scan, #115)
+
+The security scan of this PR found that the wrapper copied the image's inputs
+with `[ -f ]` and `cp`, which follow symbolic links. A branch that commits
+`crates/x/Cargo.toml -> ~/.ssh/id_ed25519` would have put a host file into a
+build whose `RUN` steps have the network. The build context now comes from
+`git show HEAD:<path>`, every input must be a regular file in `HEAD`, and
+`ci/pins.env` is read from that copy. A committed symbolic link is refused before
+anything is built, and that was tested.
+
+The scan's second point stands for any branch: the wrapper runs as the person who
+starts it, on their machine, and it builds the branch's own Dockerfile with the
+network on. So on a branch you do not trust, neither of those may come from the
+branch. `scripts/check-in-container.sh --checkout DIR`, run from a trusted
+checkout of `main`, builds the image only from that checkout's committed inputs,
+mounts `DIR` read-only as data, and refuses a `DIR` that changes any image input.
+The entrypoint already refused that inside the container; the wrapper now says why
+before it builds anything. A branch that changes the Dockerfile was refused that
+way, and its own wrapper never ran. A full `--checkout` run passed. What runs inside
+the container is still the branch's code (its `scripts/check.sh` and checkers), so
+the tier line remains a report about that branch, not a verdict from `main` (#176).
+
