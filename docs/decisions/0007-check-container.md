@@ -202,3 +202,17 @@ marker file. Every git call in the judged clone now overrides fetching,
 transports, hooks and fsmonitor on the command line, which beats the repository's
 config, and a partial clone is refused outright. The clone to judge is one the
 maintainer made fresh, never the agent's own workspace.
+
+A further rescan found two gaps behind that. The partial-clone check read the
+config file without following `include.path`, so a promisor remote set in an
+included file went unnoticed. And a repository-level `protocol.ext.allow=always`
+overrides `-c protocol.allow=never`, which lets an `ext::sh -c …` URL run.
+`GIT_NO_LAZY_FETCH` still stopped it on git 2.53, but older git ignores that
+variable silently. Now:
+- `GIT_ALLOW_PROTOCOL=none` overrides every protocol setting;
+- the partial-clone check reads config through git's own resolution, includes and
+  all;
+- `--checkout` refuses git older than 2.45.
+
+Each layer was tested on its own, including the transport block with the
+lazy-fetch guard removed. A control run with both guards off ran the payload.

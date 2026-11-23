@@ -45,6 +45,12 @@ command -v "$ENGINE" >/dev/null || die "$ENGINE is not installed"
 target=""
 if [ "${1:-}" = --checkout ]; then
   [ $# -ge 2 ] && [ -n "$2" ] || die "--checkout needs a directory"
+  # GIT_NO_LAZY_FETCH (git 2.45) is what keeps git in the judged clone from
+  # fetching; older git ignores it silently.
+  gv="$(git version | sed -n 's/^git version \([0-9]*\)\.\([0-9]*\).*/\1 \2/p')"
+  read -r gmaj gmin <<<"$gv"
+  { [ -n "${gmaj:-}" ] && { [ "$gmaj" -gt 2 ] || { [ "$gmaj" -eq 2 ] && [ "$gmin" -ge 45 ]; }; }; } \
+    || die "--checkout needs git 2.45 or newer (found: $(git version)); older git ignores GIT_NO_LAZY_FETCH"
   target="$2"
   shift 2
 fi
@@ -80,8 +86,10 @@ fi
 # lazily, through whatever core.sshCommand it names, as you, with the network.
 # Command-line settings override the repository's, so every git call there runs
 # with fetching, transports, hooks and fsmonitor off.
+# GIT_ALLOW_PROTOCOL=none overrides every protocol.*.allow in the repository's
+# config (a repository-level protocol.ext.allow=always beats -c protocol.allow).
 untrusted_git() {
-  GIT_NO_LAZY_FETCH=1 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 \
+  GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 \
     GIT_OPTIONAL_LOCKS=0 git -c protocol.allow=never -c core.fsmonitor=false -c core.hooksPath=/dev/null \
     -c core.sshCommand=false -c uploadpack.packObjectsHook= "$@"
 }
@@ -106,7 +114,9 @@ common="$(resolve "$src" --git-common-dir)"
 if [ "$src" != "$root" ] && [ "$common" = "$(resolve "$root" --git-common-dir)" ]; then
   die "$src shares its gitdir ($common) with $root, so whoever commits there can move this checkout's HEAD; judge a separate clone"
 fi
-if [ "$src" != "$root" ] && git config --file "$common/config" --get-regexp '^(extensions\.partialclone|remote\..*\.promisor)$' >/dev/null 2>&1; then
+# Read through the repository's own config resolution, so an include.path cannot
+# hide a promisor remote (git config --file does not follow includes).
+if [ "$src" != "$root" ] && untrusted_git -C "$src" config --get-regexp '^(extensions\.partialclone|remote\..*\.promisor)$' >/dev/null 2>&1; then
   die "$src is a partial clone, whose missing objects git would fetch from its own config; judge a full clone you made"
 fi
 # A worktree's .git file names an absolute host path, which means nothing in
