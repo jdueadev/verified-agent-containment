@@ -1,5 +1,5 @@
 # The container that runs scripts/check.sh (#55,
-# docs/decisions/0006-check-container.md). Build and run it with
+# docs/decisions/0007-check-container.md). Build and run it with
 # scripts/check-in-container.sh, which passes every key of ci/pins.env as a
 # --build-arg and builds from a context that holds only the files copied below.
 #
