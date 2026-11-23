@@ -57,7 +57,7 @@ test file is protected by the spec ratchet (INV-2) instead. A new one is lane B:
 branch's spec against the same head, and `check` runs it only after everything
 else has been judged (`docs/decisions/0005-root-judges-and-immutable-spec.md`).
 Agent configuration below the root escalates to lane C, the tracked `.claude/`
-holds only an allow-list, and a handover once merged is never rewritten
+holds only an allow-list, and rewriting a merged handover is flagged
 (`docs/decisions/0006-shared-claude-config.md`).
 
 **INV-4. The classifier stops at Hold.** Nothing that originates from System

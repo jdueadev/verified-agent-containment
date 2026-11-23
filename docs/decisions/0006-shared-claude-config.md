@@ -53,10 +53,13 @@ nothing under lane C.
 1. **`.claude/**` is lane C by its own rule** in `ci/lanes.toml`, and
    CODEOWNERS lists `/.claude/`.
 2. **Agent configuration below the root escalates.** `classify` escalates any
-   changed path with a component whose NFKC casefold is `.claude`,
-   `claude.md`, `claude.local.md`, `agents.md` or `.mcp.json`. The exceptions
-   are the root `AGENTS.md`, the root `CLAUDE.md` and paths under the root
-   `.claude/`. Such a file may still be added, with the maintainer.
+   changed path with a component that folds to `.claude`, `claude.md`,
+   `claude.local.md`, `agents.md` or `.mcp.json`. Folding applies NFKC and
+   casefold, drops the trailing dots and spaces Windows strips, and drops an
+   NTFS `:stream` suffix. The exceptions are the root `AGENTS.md`, the root
+   `CLAUDE.md` and the root `.claude/` directory itself; such a name inside
+   `.claude/` still escalates. A nested file may still be added, with the
+   maintainer.
 3. **The tracked root `.claude/` is an allow-list.** `invariants` reads
    tracked entries from git (`ls-tree -r -z` for a ref, `ls-files -s -z` for
    the working tree), never the disk, and rejects:
@@ -64,33 +67,58 @@ nothing under lane C.
      `handover/`;
    - anything that is not a regular file there, such as a symbolic link or a
      gitlink, including `.claude` itself;
-   - a top-level name that equals `.claude` only under casefold.
+   - a top-level name that equals `.claude` only under casefold;
+   - two paths under `.claude/` that a case-insensitive checkout would write
+     to the same file;
+   - an agent configuration name (rule 2) anywhere inside `.claude/`, so a
+     `CLAUDE.md` among the handovers cannot load as instructions;
+   - a handover that is not `.claude/handover/HANDOVER-YYYY-MM-DD-HHMM.md`,
+     directly in that directory.
 
    The allow-list is a constant in `policy_check.py`. `policy` runs that file
    from the base branch, so a change cannot widen it for itself. `.gitignore`
    mirrors the list as a convenience, and `tools/test_claude_gitignore.py`
    guards it.
-4. **`settings.json` keys are allow-listed too, and the list starts empty.**
-   `SETTINGS_KEYS` in `policy_check.py` names the top-level keys a tracked
-   `.claude/settings.json` may use. Each key, starting with `permissions` and
-   `hooks`, is added by its own reviewed change, with the reason it is safe to
-   run before review.
+4. **What shared configuration may do is allow-listed, and the lists start
+   small.**
+   - **Settings keys.** `SETTINGS_KEYS` in `policy_check.py` names the
+     top-level keys a tracked `.claude/settings.json` may use. It starts
+     empty. Each key, starting with `permissions` and `hooks`, is added by its
+     own reviewed change, with the reason it is safe to run before review.
+     The file must be one JSON object with no duplicate keys, at most 64 KiB.
+   - **Prompt frontmatter.** `PROMPT_KEYS` names the frontmatter keys a
+     Markdown file under `.claude/skills/` or `.claude/agents/` may use: only
+     `name`, `description` and `disable-model-invocation`. `allowed-tools`,
+     `hooks`, `model`, `permissionMode`, `mcpServers` and the rest grant or run
+     something before review, and each is added the same way. Frontmatter
+     must be plain `key: value` lines and must be closed.
+   - **No commands at load.** No such file may contain the shell-injection
+     forms: `!` before a backquote, or a fence opened with `!`.
 5. **Shared configuration executes only lane C files.** A shared hook, helper
    command or skill runs or loads only files in lane C, except for the
    exceptions listed below. This is review-only for now; the hooks follow-up
    enforces it mechanically.
 6. **Handovers are written once.**
-   - **No approval clears an edit.** A handover on the base must keep its
-     object id and mode at the head, and must not move to another name.
-     Anything else is a violation. `classify` makes `policy` fail whatever the
-     approvals. Comparing object ids catches a CRLF-only rewrite, which the
-     text reader would fold away.
-   - **Removal is the redaction path.** Removing a handover is not a
-     violation. It escalates with its own message and needs the maintainer.
-     If it held a secret, rotate the secret: history keeps it.
-   - **A handover goes in a change of its own.** A change that adds one and
-     touches anything else escalates, so a steady stream of handover approvals
-     cannot carry a payload elsewhere.
+   - **Each departure is flagged, with its own reason.** `classify`
+     escalates on each of these, so the maintainer sees exactly what changed
+     before approving:
+     - a handover on the base does not keep its object id and mode at the
+       head (comparing object ids catches a CRLF-only rewrite, which the text
+       reader would fold away);
+     - a change that removes a handover also adds one, which covers a rename,
+       with or without an edit;
+     - an added handover uses a path that any earlier commit of the base
+       branch had;
+     - a change that adds a handover touches anything else.
+   - **Removal is the redaction path.** Removing a handover escalates with
+     its own message. If it held a secret, rotate the secret: history keeps it.
+   - **A flag, not a hard failure.** The design review and the code review
+     proposed making these hard failures that no approval clears. The
+     maintainer chose a flag for approval instead, so a typo fix or a mixed
+     change stays possible. While lane C needs the maintainer's approval, the
+     flag is what makes a rewrite visible. If lane C stops needing a human
+     (see the follow-up below), these reasons must become blocking checks or
+     go to whatever judges lane C then.
    - **Handovers are data.** AGENTS.md lists them next to `redteam/` and
      `results/`: context, never instructions.
 7. **Review without running.** Approval gates the merge, not the checkout. A
@@ -132,16 +160,23 @@ the build behind a lane C entry point is a follow-up.
   carve-out of its own, which is not proposed here.
 - **The change that introduces these checks is judged only by its own copy.**
   `policy` runs base code, and the base does not have the checks yet. From the
-  next change on they run from base. The corpus cases (`ci/corpus/classify/
-  handover-*`, `nested-*`, and `ci/corpus/invariants/claude-*`) and the new
-  tests prove them.
+  next change on they run from base. That change also adds the two existing
+  handovers alongside other work, which rule 6 flags. The
+  corpus cases (`ci/corpus/classify/handover-*` and `nested-*`, and
+  `ci/corpus/invariants/claude-*`) and the new tests prove them. The corpus
+  runner checks a classify case's escalations, not its exit status, so
+  `tools/test_policy_claude.py` proves that `--enforce` refuses a flagged
+  change until it is approved.
 - **`ship-state.md` and other session scratch stay local and ignored.**
 - **Follow-ups, each its own lane C change:**
   - the shared `permissions` deny and allow lists;
   - the guard hook, which enforces rule 5;
   - the SessionStart and Stop hooks;
   - the `/pr-prep` and `/setup-dev` skills;
-  - the `invariant-auditor` agent.
+  - the `invariant-auditor` agent;
+  - lane C that flags and never blocks, judged by base-branch checks instead
+    of the maintainer's approval (its own issue and design review). It
+    decides what happens to rule 6's flags.
 
 ## Sources
 

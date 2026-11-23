@@ -1,0 +1,5 @@
+checker = "invariants"
+origin = "#169 review: a CLAUDE.md inside .claude/handover/, which loads as instructions"
+twin = "claude-allowed"
+expect = "reject"
+expect_error = "not allowed inside .claude/"

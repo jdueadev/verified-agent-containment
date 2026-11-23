@@ -59,7 +59,6 @@ class AgentConfigEscalationTests(unittest.TestCase):
         result = pc.classify(["docs/CLAUDE.md"], empty, empty, LANES)
         self.assertEqual(result["lane"], "C")
         self.assertTrue(any("agent config docs/CLAUDE.md" in e for e in result["escalations"]))
-        self.assertEqual(result["violations"], [])
 
 
 class ClaudePathTests(unittest.TestCase):
@@ -68,7 +67,7 @@ class ClaudePathTests(unittest.TestCase):
 
     def test_allowed_regular_files_pass(self):
         tree = entries(".claude/hooks/guard.py", ".claude/skills/s/SKILL.md", ".claude/agents/a.md",
-                       ".claude/handover/H.md", "README.md", "docs/x.md")
+                       ".claude/handover/HANDOVER-2026-01-01-0000.md", "README.md", "docs/x.md")
         tree[".claude/hooks/run.sh"] = ("100755", BLOB)
         self.assertEqual(self.errors(tree), [])
 
@@ -110,39 +109,114 @@ class ClaudePathTests(unittest.TestCase):
 
 
 class HandoverRuleTests(unittest.TestCase):
+    """Every departure from written-once handovers escalates with its own reason. The
+    maintainer chose a flag for approval over a hard failure (#169)."""
     H = ".claude/handover/HANDOVER-1.md"
+    A, B, C = "a" * 40, "b" * 40, "c" * 40
 
-    def test_unchanged_and_added_are_not_violations(self):
-        base = {self.H: ("100644", "a" * 40)}
-        head = dict(base, **{".claude/handover/HANDOVER-2.md": ("100644", "b" * 40)})
-        self.assertEqual(pc.handover_violations(base, head), [])
-        self.assertEqual(pc.handover_escalations([".claude/handover/HANDOVER-2.md"], base, head), [])
+    def rules(self, paths, base, head, earlier=frozenset()):
+        return pc.handover_escalations(paths, base, head, earlier)
 
-    def test_bytes_or_mode_changed_is_a_violation(self):
-        base = {self.H: ("100644", "a" * 40)}
-        for head in ({self.H: ("100644", "c" * 40)}, {self.H: ("100755", "a" * 40)}):
-            self.assertEqual(pc.handover_violations(base, head), [f"handover {self.H} was changed: handovers are written once"])
+    def test_unchanged_and_added_alone_raise_nothing(self):
+        base = {self.H: ("100644", self.A)}
+        head = dict(base, **{".claude/handover/HANDOVER-2.md": ("100644", self.B)})
+        self.assertEqual(self.rules([".claude/handover/HANDOVER-2.md"], base, head), [])
 
-    def test_rename_is_a_violation_and_removal_an_escalation(self):
-        base = {self.H: ("100644", "a" * 40)}
-        moved = {".claude/handover/OTHER.md": ("100644", "a" * 40)}
-        self.assertIn("renamed", pc.handover_violations(base, moved)[0])
-        self.assertEqual(pc.handover_escalations([self.H, ".claude/handover/OTHER.md"], base, moved), [])
-        self.assertEqual(pc.handover_violations(base, {}), [])
-        self.assertEqual(pc.handover_escalations([self.H], base, {}), [f"handover {self.H} was removed"])
+    def test_bytes_or_mode_changed(self):
+        base = {self.H: ("100644", self.A)}
+        for head in ({self.H: ("100644", self.C)}, {self.H: ("100755", self.A)}):
+            self.assertEqual(self.rules([self.H], base, head),
+                             [f"handover {self.H} was changed: handovers are written once"])
 
-    def test_handover_with_other_paths_escalates(self):
-        head = {".claude/handover/H2.md": ("100644", "b" * 40)}
-        found = pc.handover_escalations([".claude/handover/H2.md", "docs/x.md"], {}, head)
+    def test_rename_and_replace(self):
+        base = {self.H: ("100644", self.A)}
+        other = ".claude/handover/HANDOVER-1b.md"
+        renamed = self.rules([self.H, other], base, {other: ("100644", self.A)})
+        self.assertTrue(any("was renamed to " + other in v for v in renamed), renamed)
+        # A rename with a one-byte edit is a removal plus an add: still flagged as a replacement.
+        replaced = self.rules([self.H, other], base, {other: ("100644", self.B)})
+        self.assertTrue(any("is not replaced" in v for v in replaced), replaced)
+
+    def test_removal_alone(self):
+        base = {self.H: ("100644", self.A)}
+        self.assertEqual(self.rules([self.H], base, {}), [f"handover {self.H} was removed"])
+
+    def test_identical_twin_removed_is_not_a_rename(self):
+        twin = ".claude/handover/HANDOVER-2.md"
+        base = {self.H: ("100644", self.A), twin: ("100644", self.A)}
+        self.assertEqual(self.rules([self.H], base, {twin: ("100644", self.A)}), [f"handover {self.H} was removed"])
+
+    def test_a_path_used_before(self):
+        found = self.rules([self.H], {}, {self.H: ("100644", self.B)}, frozenset({pc._folded(self.H)}))
+        self.assertEqual(found, [f"handover {self.H} existed before: a removed handover is not written again"])
+
+    def test_handover_with_other_paths(self):
+        head = {".claude/handover/H2.md": ("100644", self.B)}
+        found = self.rules([".claude/handover/H2.md", "docs/x.md"], {}, head)
         self.assertEqual(found, ["a change that adds a handover also touches other paths: docs/x.md"])
 
-    def test_violation_is_also_an_escalation(self):
+    def test_classify_reports_them_as_escalations(self):
         empty = lambda path: None
-        base = {self.H: ("100644", "a" * 40)}
-        result = pc.classify([self.H], empty, empty, LANES, handovers=(base, {self.H: ("100644", "c" * 40)}))
+        base = {self.H: ("100644", self.A)}
+        result = pc.classify([self.H], empty, empty, LANES, handovers=(base, {self.H: ("100644", self.C)}))
         self.assertEqual(result["lane"], "C")
-        self.assertEqual(len(result["violations"]), 1)
-        self.assertIn(result["violations"][0], result["escalations"])
+        self.assertEqual(result["escalations"], [f"handover {self.H} was changed: handovers are written once"])
+        self.assertNotIn("violations", result)
+
+
+class InsideClaudeTests(unittest.TestCase):
+    """What the allowed files under .claude/ may contain (#169 review)."""
+
+    def errors(self, files):
+        tree = {path: ("100644", BLOB) for path in files}
+        return pc.claude_path_errors(tree, files.get)
+
+    def test_case_colliding_names_fail(self):
+        found = self.errors({".claude/handover/HANDOVER-2026-01-01-0000.md": "a\n",
+                             ".claude/handover/handover-2026-01-01-0000.md": "b\n"})
+        self.assertTrue(any("same file" in e for e in found), found)
+
+    def test_agent_names_inside_claude_fail_and_escalate(self):
+        for path in (".claude/handover/CLAUDE.md", ".claude/skills/x/AGENTS.md", ".claude/skills/x/.claude/y",
+                     ".claude/agents/.mcp.json"):
+            self.assertTrue(any("not allowed inside" in e for e in self.errors({path: ""})), path)
+            self.assertEqual(len(pc.agent_config_escalations([path])), 1, path)
+
+    def test_windows_stripped_names_escalate(self):
+        for path in ("docs/CLAUDE.md.", "docs/CLAUDE.md ", "docs/CLAUDE.md::$DATA", ".claude./x", "web/.mcp.json."):
+            self.assertEqual(len(pc.agent_config_escalations([path])), 1, path)
+
+    def test_handover_names_are_dated_and_flat(self):
+        for path in (".claude/handover/notes.md", ".claude/handover/2026/HANDOVER-2026-01-01-0000.md",
+                     ".claude/handover/HANDOVER-2026-01-01-0000.md.bak"):
+            self.assertTrue(any("HANDOVER-YYYY-MM-DD-HHMM.md" in e for e in self.errors({path: ""})), path)
+        self.assertEqual(self.errors({".claude/handover/HANDOVER-2026-11-21-1422.md": "x\n"}), [])
+
+    def test_prompt_frontmatter_keys_are_allow_listed(self):
+        ok = "---\nname: s\ndescription: d\n  more\ndisable-model-invocation: true\n---\nbody\n"
+        self.assertEqual(self.errors({".claude/skills/s/SKILL.md": ok, ".claude/agents/a.md": ok}), [])
+        for key in ("allowed-tools", "hooks", "model", "permissionMode", "mcpServers", "tools"):
+            text = f"---\nname: s\n{key}: x\n---\n"
+            found = self.errors({".claude/skills/s/SKILL.md": text})
+            self.assertEqual(len(found), 1, key)
+            self.assertIn(repr(key), found[0])
+
+    def test_unplain_or_unclosed_frontmatter_fails(self):
+        for text in ("---\n? allowed-tools\n: Bash\n---\n", '---\n"allowed-tools": x\n---\n',
+                     "---\n{allowed-tools: x}\n---\n", "---\nname: s\n"):
+            self.assertTrue(self.errors({".claude/agents/a.md": text}), text)
+
+    def test_shell_injection_fails(self):
+        for body in ("Run !`id` first.", "```!\nid\n```", "  ~~~ !\nid\n~~~"):
+            found = self.errors({".claude/skills/s/x.md": "---\nname: s\n---\n" + body + "\n"})
+            self.assertTrue(any("shell command" in e for e in found), body)
+        self.assertEqual(self.errors({".claude/skills/s/x.md": "Use ! to negate, and `x != y`; ```sh\nls\n```\n"}), [])
+
+    def test_settings_edge_cases_report_not_crash(self):
+        deep = "[" * 100000 + "]" * 100000
+        for text in (deep, '{"a": "' + "x" * (70 * 1024) + '"}'):
+            found = self.errors({".claude/settings.json": text})
+            self.assertEqual(len(found), 1)
 
 
 class RepositoryTests(unittest.TestCase):
@@ -159,7 +233,7 @@ class RepositoryTests(unittest.TestCase):
                      "crates/containment-kernel/src/lib.rs", "tools/policy_check.py", "tools/rust_tokens.py"):
             (self.repo / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / name, self.repo / name)
-        self.write(".claude/handover/H.md", "notes\n")
+        self.write(".claude/handover/HANDOVER-2026-01-01-0000.md", "notes\n")
         self.base = self.commit("base")
 
     def tearDown(self):
@@ -229,8 +303,10 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertTrue(any(".claude/ship-state.md" in e for e in result["errors"]), result)
 
-    def classify(self, head, approve=False):
+    def classify(self, head, approve=False, enforce=False):
         argv = ["classify", "--base", self.base, "--head", head]
+        if enforce and not approve:
+            argv += ["--head-sha", head, "--enforce"]
         if approve:
             reviews = self.repo.parent / f"{self.repo.name}-reviews.json"
             reviews.write_text(json.dumps([{"user": {"login": OWNER.lstrip("@")}, "state": "APPROVED",
@@ -239,37 +315,37 @@ class RepositoryTests(unittest.TestCase):
             argv += ["--reviews", str(reviews), "--head-sha", head, "--enforce"]
         return self.checker(*argv)
 
-    def test_crlf_only_rewrite_fails_even_when_approved(self):
-        self.write(".claude/handover/H.md", "notes\n", newline="\r\n")
-        head = self.commit("crlf")
-        code, result, stderr = self.classify(head, approve=True)
-        self.assertTrue(result["approved"])
-        self.assertEqual(code, 1)
-        self.assertEqual(result["violations"], ["handover .claude/handover/H.md was changed: handovers are written once"])
-        self.assertIn("no approval clears", stderr)
+    def flagged(self, head, reason):
+        """Escalated with `reason`: refused under --enforce until approved, then passes."""
+        code, result, stderr = self.classify(head, enforce=True)
+        self.assertEqual((code, result["lane"], result["approved"]), (1, "C", False), stderr)
+        self.assertIn(reason, result["escalations"])
+        code, result, _ = self.classify(head, approve=True)
+        self.assertEqual((code, result["approved"]), (0, True))
 
-    def test_mode_only_change_fails(self):
-        self.git("update-index", "--chmod=+x", ".claude/handover/H.md")
+    def test_crlf_only_rewrite_is_flagged(self):
+        self.write(".claude/handover/HANDOVER-2026-01-01-0000.md", "notes\n", newline="\r\n")
+        self.flagged(self.commit("crlf"), "handover .claude/handover/HANDOVER-2026-01-01-0000.md was changed: handovers are written once")
+
+    def test_mode_only_change_is_flagged(self):
+        self.git("update-index", "--chmod=+x", ".claude/handover/HANDOVER-2026-01-01-0000.md")
         self.git("commit", "-q", "-m", "mode")
-        code, result, _ = self.classify(self.git("rev-parse", "HEAD").strip(), approve=True)
-        self.assertEqual(code, 1)
-        self.assertEqual(len(result["violations"]), 1)
+        self.flagged(self.git("rev-parse", "HEAD").strip(), "handover .claude/handover/HANDOVER-2026-01-01-0000.md was changed: handovers are written once")
 
-    def test_new_handover_alone_passes_once_approved(self):
-        self.write(".claude/handover/H2.md", "more\n")
-        head = self.commit("add")
-        code, result, _ = self.classify(head, approve=True)
-        self.assertEqual((code, result["lane"], result["violations"], result["escalations"]), (0, "C", [], []))
+    def test_recreating_a_removed_handover_is_flagged(self):
+        self.git("rm", "-q", ".claude/handover/HANDOVER-2026-01-01-0000.md")
+        self.base = self.commit("remove")
+        self.write(".claude/handover/HANDOVER-2026-01-01-0000.md", "new words\n")
+        self.flagged(self.commit("re-add"), "handover .claude/handover/HANDOVER-2026-01-01-0000.md existed before: a removed handover is not written again")
 
-    def test_removed_handover_needs_approval_only(self):
-        self.git("rm", "-q", ".claude/handover/H.md")
-        head = self.commit("remove")
-        code, result, _ = self.classify(head, approve=True)
-        self.assertEqual((code, result["violations"]), (0, []))
-        self.assertIn("handover .claude/handover/H.md was removed", result["escalations"])
-        code, result, _ = self.classify(head)
-        self.assertEqual(code, 0)  # without --enforce an unapproved lane C change is reported, not failed
-        self.assertFalse(result["approved"])
+    def test_removed_handover_is_flagged(self):
+        self.git("rm", "-q", ".claude/handover/HANDOVER-2026-01-01-0000.md")
+        self.flagged(self.commit("remove"), "handover .claude/handover/HANDOVER-2026-01-01-0000.md was removed")
+
+    def test_new_handover_alone_raises_nothing(self):
+        self.write(".claude/handover/HANDOVER-2026-01-02-0000.md", "more\n")
+        code, result, _ = self.classify(self.commit("add"), approve=True)
+        self.assertEqual((code, result["lane"], result["escalations"]), (0, "C", []))
 
 
 if __name__ == "__main__":

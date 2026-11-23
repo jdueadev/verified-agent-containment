@@ -13,9 +13,7 @@ classify   prints the lane of the diff between two commits. Lanes are defined in
            or rewords a law, mutant, scenario or sabotage control, or weakens a
            row of claims.toml, or adds agent configuration outside the root
            allow-list. With --enforce, a lane C change (or any change from a
-           fork) fails unless the maintainer approved the head commit. A
-           violation (an existing handover changed) fails whatever the
-           approvals, with or without --enforce.
+           fork) fails unless the maintainer approved the head commit.
 codeowners checks that .github/CODEOWNERS is exactly lane C (--write regenerates it).
 invariants checks rules that hold on every commit: `sabotage` is not a default
            feature, the lane map parses, CODEOWNERS matches it, and the kernel
@@ -411,7 +409,7 @@ def data_module_ratchets(paths, head_get):
 
 # Names that Claude Code or another agent tool reads as configuration or as
 # instructions, at any depth: a nested CLAUDE.md or .claude/ steers a session that
-# works in that directory. Compared after NFKC and casefold, because a
+# works in that directory. Compared folded (see _folded), because a
 # case-insensitive checkout (Windows, macOS) opens `.Claude/` as `.claude/`.
 AGENT_CONFIG_NAMES = (".claude", "claude.md", "claude.local.md", "agents.md", ".mcp.json")
 # The sanctioned copies: the root rule files, and the root .claude/ directory,
@@ -425,24 +423,44 @@ CLAUDE_ALLOWED = ("settings.json", "hooks/", "skills/", "agents/", "handover/")
 # reviewed change. Empty: no shared settings yet.
 SETTINGS_KEYS = ()
 CLAUDE_SETTINGS = ".claude/settings.json"
-# Handovers are written once: a later change may remove one (with the maintainer),
-# never rewrite it.
+SETTINGS_MAX_BYTES = 64 * 1024
+# Frontmatter keys a shared skill or agent prompt may use. The others
+# (allowed-tools, hooks, model, permissionMode, mcpServers, ...) grant or run
+# something before review, so each is added here by its own reviewed change.
+PROMPT_KEYS = ("name", "description", "disable-model-invocation")
+PROMPT_DIRS = (".claude/skills/", ".claude/agents/")
+FRONTMATTER_KEY = re.compile(r"[A-Za-z0-9_-]+:(?: |$)")
+# A skill's `!` + backquoted command, or a fenced block opened with ```!, runs when
+# the skill loads, without a prompt.
+SHELL_INJECTION = re.compile(r"!`|^[ \t]*(?:`{3,}|~{3,})[ \t]*!", re.M)
+# Handovers are written once and kept as written. Every change to that rule (a
+# rewrite, a replacement, a re-used path, a handover mixed with other work, a
+# removal) escalates with its own reason, so the maintainer sees it; the maintainer
+# chose a flag over a hard failure (#169). One flat directory of dated names.
 HANDOVER_DIR = ".claude/handover/"
+HANDOVER_NAME = re.compile(r"HANDOVER-\d{4}-\d\d-\d\d-\d{4}\.md")
 REGULAR_MODES = ("100644", "100755")
 MODE_NAMES = {"120000": "symbolic link", "160000": "gitlink (submodule)", "040000": "directory"}
 
 
 def _folded(name):
-    return unicodedata.normalize("NFKC", name).casefold()
+    """One path component as a Windows or macOS checkout would see it: NFKC, case
+    folded, without the trailing dots and spaces Windows drops, and without an NTFS
+    `:stream` suffix."""
+    return unicodedata.normalize("NFKC", name).split(":", 1)[0].rstrip(" .").casefold()
 
 
 def agent_config_escalations(paths):
-    """Paths that add or change agent configuration outside the sanctioned root copies."""
+    """Paths that add or change agent configuration outside the sanctioned root copies.
+    The root .claude/ is sanctioned, but an agent name inside it is not."""
     out = []
     for path in sorted(paths):
-        if path in ROOT_AGENT_FILES or path.startswith(CLAUDE_DIR + "/"):
+        if path in ROOT_AGENT_FILES:
             continue
-        hits = [part for part in path.split("/") if _folded(part) in AGENT_CONFIG_NAMES]
+        parts = path.split("/")
+        if parts[0] == CLAUDE_DIR:
+            parts = parts[1:]
+        hits = [part for part in parts if _folded(part) in AGENT_CONFIG_NAMES]
         if hits:
             out.append(f"agent config {path}: agent tools read {hits[0]!r} as configuration or instructions, "
                        "and only the root AGENTS.md, CLAUDE.md and .claude/ are sanctioned")
@@ -473,31 +491,38 @@ def index_entries():
     return entries
 
 
-def handover_violations(base_entries, head_entries):
-    """Rules no approval clears. A handover on the base must keep its bytes and mode
-    (compared by object id, so a CRLF-only rewrite counts) and its path."""
+def earlier_handovers(ref):
+    """Every handover path that ever existed in the history of `ref`, folded."""
+    names = git("log", "--format=", "--name-only", "-z", f"{ref}^{{commit}}", "--", HANDOVER_DIR)
+    return frozenset(_folded(name) for name in names.split("\0") if name.strip())
+
+
+def handover_escalations(paths, base_entries, head_entries, earlier=frozenset()):
+    """Reasons a change departs from written-once handovers. Each one escalates; none
+    fails on its own. A handover on the base keeps its bytes and mode (compared by
+    object id, so a CRLF-only rewrite counts). A change that removes one adds none,
+    so nothing replaces it under a new name. A removed handover's path is not used
+    again. A change that adds a handover touches nothing else. Removing a handover is
+    the redaction path."""
     out = []
-    head_oids = {oid: path for path, (_, oid) in head_entries.items()}
-    for path, entry in sorted(base_entries.items()):
-        if not path.startswith(HANDOVER_DIR):
-            continue
-        new = head_entries.get(path)
-        if new is None:
-            moved = head_oids.get(entry[1])
-            if moved is not None:
-                out.append(f"handover {path} was renamed to {moved}: handovers are written once")
-        elif new != entry:
+    base = {p: e for p, e in base_entries.items() if p.startswith(HANDOVER_DIR)}
+    head = {p: e for p, e in head_entries.items() if p.startswith(HANDOVER_DIR)}
+    for path, entry in sorted(base.items()):
+        if path in head and head[path] != entry:
             out.append(f"handover {path} was changed: handovers are written once")
-    return out
-
-
-def handover_escalations(paths, base_entries, head_entries):
-    out = []
-    head_oids = {oid for _, oid in head_entries.values()}
-    for path, (_, oid) in sorted(base_entries.items()):
-        if path.startswith(HANDOVER_DIR) and path not in head_entries and oid not in head_oids:
-            out.append(f"handover {path} was removed")
-    added = [p for p in paths if p.startswith(HANDOVER_DIR) and p not in base_entries]
+    removed = sorted(p for p in base if p not in head)
+    added = sorted(p for p in head if p not in base)
+    added_by_oid = {head[p][1]: p for p in added}
+    for path in removed:
+        out.append(f"handover {path} was removed")
+        if base[path][1] in added_by_oid:
+            out.append(f"handover {path} was renamed to {added_by_oid[base[path][1]]}: handovers are written once")
+    if removed and added:
+        out.append(f"this change removes {', '.join(removed)} and adds {', '.join(added)}: "
+                   "a handover is not replaced")
+    for path in added:
+        if _folded(path) in earlier or path.casefold() in earlier:
+            out.append(f"handover {path} existed before: a removed handover is not written again")
     others = sorted(p for p in paths if not p.startswith(HANDOVER_DIR))
     if added and others:
         shown = ", ".join(others[:5]) + (", ..." if len(others) > 5 else "")
@@ -512,14 +537,62 @@ def _unique_object(pairs):
     return dict(pairs)
 
 
-def claude_path_errors(entries, get):
-    """The tracked root .claude/ holds only allow-listed regular files, under its exact
-    name, and its settings.json uses only SETTINGS_KEYS."""
+def frontmatter_errors(path, text):
+    """A shared skill or agent prompt: frontmatter keys from PROMPT_KEYS only, written
+    plainly, and no command that runs when the prompt loads."""
     out = []
+    lines = text.lstrip("﻿").split("\n")
+    if lines and lines[0].rstrip() == "---":
+        for number, line in enumerate(lines[1:], 2):
+            if line.rstrip() == "---":
+                break
+            if not line.strip() or line[0] in " \t#":
+                continue
+            if not FRONTMATTER_KEY.match(line):
+                out.append(f"{path}:{number}: frontmatter line is not a plain `key: value`")
+                continue
+            key = line.split(":", 1)[0]
+            if key not in PROMPT_KEYS:
+                out.append(f"{path}:{number}: frontmatter key {key!r} is not allowed yet; each key is added "
+                           "to PROMPT_KEYS by its own reviewed change")
+        else:
+            out.append(f"{path}: frontmatter is not closed with ---")
+    if SHELL_INJECTION.search(text):
+        out.append(f"{path}: runs a shell command when it loads (`!` before a backquote or a fence), "
+                   "which no shared prompt may do yet")
+    return out
+
+
+def settings_errors(text):
+    if text is None:
+        return [f"{CLAUDE_SETTINGS}: cannot be read"]
+    if len(text.encode("utf-8")) > SETTINGS_MAX_BYTES:
+        return [f"{CLAUDE_SETTINGS}: is larger than {SETTINGS_MAX_BYTES} bytes"]
+    try:
+        settings = json.loads(text, object_pairs_hook=_unique_object)
+    except (ValueError, RecursionError) as error:
+        return [f"{CLAUDE_SETTINGS}: is not a JSON object ({type(error).__name__}: {error})"]
+    if not isinstance(settings, dict):
+        return [f"{CLAUDE_SETTINGS}: is not a JSON object"]
+    return [f"{CLAUDE_SETTINGS}: key {key!r} is not allowed yet; each settings key is added "
+            "to SETTINGS_KEYS by its own reviewed change" for key in sorted(set(settings) - set(SETTINGS_KEYS))]
+
+
+def claude_path_errors(entries, get):
+    """The tracked root .claude/ holds only allow-listed regular files, under exact
+    names that no case-insensitive checkout folds together. Inside it: no agent
+    configuration names, flat dated handovers, plain skill and agent frontmatter, and
+    a settings.json that uses only SETTINGS_KEYS."""
+    out, seen = [], {}
     for path, (mode, _) in sorted(entries.items()):
         top = path.split("/", 1)[0]
         if _folded(top) != CLAUDE_DIR:
             continue
+        folded = "/".join(_folded(part) for part in path.split("/"))
+        if folded in seen:
+            out.append(f"{path}: is the same file as {seen[folded]} on a case-insensitive checkout")
+            continue
+        seen[folded] = path
         if top != CLAUDE_DIR:
             out.append(f"{path}: {top!r} opens as {CLAUDE_DIR!r} on a case-insensitive checkout; "
                        f"only the exact name {CLAUDE_DIR!r} is allowed")
@@ -530,37 +603,48 @@ def claude_path_errors(entries, get):
         rest = path[len(CLAUDE_DIR) + 1:]
         if not any(rest == a or (a.endswith("/") and rest.startswith(a)) for a in CLAUDE_ALLOWED):
             out.append(f"{path}: is not on the shared {CLAUDE_DIR}/ allow-list ({', '.join(CLAUDE_ALLOWED)})")
-        elif mode not in REGULAR_MODES:
+            continue
+        if mode not in REGULAR_MODES:
             out.append(f"{path}: is a {MODE_NAMES.get(mode, 'mode ' + mode)}; only regular files are allowed "
                        f"under {CLAUDE_DIR}/")
+            continue
+        named = [part for part in rest.split("/") if _folded(part) in AGENT_CONFIG_NAMES]
+        if named:
+            out.append(f"{path}: agent tools read {named[0]!r} as configuration or instructions; "
+                       f"not allowed inside {CLAUDE_DIR}/")
+            continue
+        if path.startswith(HANDOVER_DIR) and not HANDOVER_NAME.fullmatch(path[len(HANDOVER_DIR):]):
+            out.append(f"{path}: a handover is {HANDOVER_DIR}HANDOVER-YYYY-MM-DD-HHMM.md, directly in the directory")
+            continue
+        if path.startswith(PROMPT_DIRS) and path.casefold().endswith(".md"):
+            try:
+                text = get(path)
+            except ValueError as error:
+                out.append(f"{path}: cannot be read ({error})")
+                continue
+            out.extend(frontmatter_errors(path, text or ""))
     if CLAUDE_SETTINGS in entries and entries[CLAUDE_SETTINGS][0] in REGULAR_MODES:
         try:
-            settings = json.loads(get(CLAUDE_SETTINGS) or "", object_pairs_hook=_unique_object)
+            out.extend(settings_errors(get(CLAUDE_SETTINGS)))
         except ValueError as error:
-            return out + [f"{CLAUDE_SETTINGS}: is not a JSON object ({error})"]
-        if not isinstance(settings, dict):
-            return out + [f"{CLAUDE_SETTINGS}: is not a JSON object"]
-        for key in sorted(set(settings) - set(SETTINGS_KEYS)):
-            out.append(f"{CLAUDE_SETTINGS}: key {key!r} is not allowed yet; each settings key is added "
-                       "to SETTINGS_KEYS by its own reviewed change")
+            out.append(f"{CLAUDE_SETTINGS}: cannot be read ({error})")
     return out
 
 
 # ---------- classify ----------
 
-def classify(paths, base_get, head_get, lanes, head_links=(), handovers=({}, {})):
+def classify(paths, base_get, head_get, lanes, head_links=(), handovers=({}, {}, frozenset())):
     head_claims = head_get("claims.toml") or ""
     doc_cited = set(re.findall(r'"doc:([^#"]+)', head_claims)) | set(re.findall(r'"doc:([^#"]+)', base_get("claims.toml") or ""))
     by_path = {path: lane_of(path, lanes, doc_cited) for path in paths}
-    violations = handover_violations(*handovers)
     escalations = ratchets(base_get, head_get) + spec_ratchets(paths, base_get, head_get)
     escalations += data_module_ratchets(paths, head_get)
     escalations += [f"spec {path} is a symbolic link" for path in head_links]
-    escalations += agent_config_escalations(paths) + handover_escalations(paths, *handovers) + violations
+    escalations += agent_config_escalations(paths) + handover_escalations(paths, *handovers)
     lane = max([entry[0] for entry in by_path.values()] + ["A"], key=ORDER.get)
     if escalations:
         lane = "C"
-    return {"lane": lane, "escalations": escalations, "violations": violations,
+    return {"lane": lane, "escalations": escalations,
             "paths": {path: {"lane": entry[0], "rule": entry[1]} for path, entry in sorted(by_path.items())}}
 
 
@@ -901,7 +985,8 @@ def run(parser, args):
         quoted = [p for p in paths if p.startswith('"')]
         if quoted:
             sys.exit(f"policy: paths with unusual characters cannot be classified: {quoted}")
-        handovers = (tree_entries(args.base, HANDOVER_DIR), tree_entries(args.head, HANDOVER_DIR))
+        handovers = (tree_entries(args.base, HANDOVER_DIR), tree_entries(args.head, HANDOVER_DIR),
+                     earlier_handovers(args.base))
         result = classify(paths, base_get, head_get, lanes, spec_links(args.head, paths), handovers)
         needs_owner = result["lane"] == "C" or args.fork
         reviews = json.loads(Path(args.reviews).read_text(encoding="utf-8")) if args.reviews else []
@@ -910,10 +995,6 @@ def run(parser, args):
         result["approved"] = approved(reviews, owner, args.head_sha) if needs_owner else None
         result["enforced"] = args.enforce
         print(json.dumps(result, indent=2))
-        if result["violations"]:
-            print("policy: this change breaks a rule that no approval clears: "
-                  + "; ".join(result["violations"]), file=sys.stderr)
-            return 1
         if needs_owner and not result["approved"]:
             why = "it comes from a fork" if args.fork and result["lane"] != "C" else "it is lane C"
             print(f"policy: this change needs {owner}'s approval of the head commit because {why}.", file=sys.stderr)
