@@ -8,7 +8,9 @@ Usage:
 Without --write, fails if docs/claims.md is out of date (in non-strict mode,
 staleness-only doc drift is reported as a warning so Draft PRs can iterate
 without committing throwaway stale tables). --strict also fails on stale rows
-and on suite results whose build stamps or run settings are missing or wrong.
+and on lab references that have not run yet (CI-4); it is the release gate.
+Suite results whose build stamps or run settings are missing or wrong (CI-8)
+fail in both modes.
 
 --affected [GIT_REF] prints a local summary of which claims are invalidated by
 uncommitted edits (default: vs HEAD) or branch edits (e.g. --affected origin/main).
@@ -25,7 +27,7 @@ CI-5  no row is stronger than its weakest depends_on
 CI-6  every claim id cited in docs/design-spec.md exists
 CI-7  every tracked file under crates/containment-host/src is matched by the files (path, directory
       prefix, or glob pathspec) of some row
-CI-8  (--strict) results/attack-suite.json and results/live-suite.json record that the honest runs
+CI-8  (both modes) results/attack-suite.json and results/live-suite.json record that the honest runs
       came from a default build and the sabotage controls from a different, sabotage build, and
       results/attack-suite.json is a full unwaived run (timed_repeat >= 30, no limits waiver)
 CI-9  every passing platform names a commit that has tracked artifacts under results/ (a path
@@ -625,13 +627,15 @@ def main(argv=None):
         counts[status] = counts.get(status, 0) + 1
     if strict:
         errors.extend(warnings)
-        errors.extend(build_errors())
-        # The newest CI lab run counts as evidence (load_results), so it is held to CI-8 as
-        # well: a CI run with too few timed repeats, waived limits or wrong stamps must not
-        # pass a release.
-        ci = latest_ci_lab()
-        if ci is not None:
-            errors.extend(e.replace("results/", f"{ci.relative_to(ROOT)}/", 1) for e in build_errors(ci))
+    # CI-8 is an error in both modes (#175): a short or waived suite run, or one whose honest
+    # runs and controls share a binary, is wrong evidence, not old evidence, and it feeds
+    # scenario_ok. The newest CI lab run counts as evidence (load_results), so it is held to
+    # CI-8 as well: a CI run with too few timed repeats, waived limits or wrong stamps must not
+    # pass.
+    errors.extend(build_errors())
+    ci = latest_ci_lab()
+    if ci is not None:
+        errors.extend(e.replace("results/", f"{ci.relative_to(ROOT)}/", 1) for e in build_errors(ci))
     print(json.dumps({"claims": len(claims), "status": counts, "errors": errors, "stale": warnings}, indent=2))
     return 1 if errors else 0
 

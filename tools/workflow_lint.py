@@ -45,6 +45,12 @@ their key, explicit `?` keys, a value that does not start on its key's line
 items, block-scalar indentation indicators, a lone CR or other Unicode line
 breaks, and lines it cannot classify.
 
+The release gate stays strict (#175): `.github/workflows/release.yml` must
+exist and have a step whose whole `run:` is `python3 tools/claims_check.py
+--strict`, and no `continue-on-error` or `if:` anywhere under its jobs, so the
+step can neither be skipped nor fail softly. A plain `scripts/check.sh` warns on
+stale claims; a tag is where they must be fresh.
+
 Not covered, and left to the maintainer's review of every workflow change
 (lane C): a job that fetches and runs other code from inside a script, for
 example `git fetch` of a pull request ref followed by a build. Only the
@@ -285,6 +291,31 @@ def lint(name, text, allowed):
     return errors
 
 
+RELEASE = WORKFLOWS + "/release.yml"
+RELEASE_GATE = "python3 tools/claims_check.py --strict"
+
+
+def release_gate(files):
+    """release.yml runs the strict claims check as a step of its own, which no condition
+    skips and no continue-on-error softens (#175)."""
+    text = files.get(RELEASE)
+    if text is None:
+        return [f"{RELEASE}: missing; the release gate runs '{RELEASE_GATE}' on the tag"]
+    scalars, problems = parse(text.removeprefix("\ufeff"))
+    if problems:
+        return []  # lint() already reports what this reader cannot follow
+    errors = []
+    in_jobs = [s for s in scalars if len(s.path) >= 2 and s.path[0] == "jobs"]
+    for s in in_jobs:
+        if s.path[-1] in ("continue-on-error", "if"):
+            errors.append(f"{RELEASE}:{s.line}: '{s.path[-1]}' in the release workflow; the strict claims check "
+                          "must run on every tag and fail the release when it fails")
+    if not any(s.path[2:3] == ["steps"] and s.path[-1] == "run" and s.text.strip() == RELEASE_GATE
+               for s in in_jobs):
+        errors.append(f"{RELEASE}: no step whose whole run is '{RELEASE_GATE}'")
+    return errors
+
+
 def load_allowed(text):
     try:
         data = tomllib.loads(text)
@@ -332,6 +363,7 @@ def main(argv=None):
     except (OSError, ValueError, UnicodeDecodeError, subprocess.CalledProcessError) as error:
         sys.exit(f"workflow_lint: {error}")
     errors = [e for name, text in files.items() for e in lint(name, text, allowed)]
+    errors += release_gate(files)
     if not any(n.startswith(WORKFLOWS + "/") for n in files):
         errors.append(f"no workflow files under {WORKFLOWS}")
     print(json.dumps({"files": sorted(files), "errors": errors}, indent=2))

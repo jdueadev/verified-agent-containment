@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # Runs every check that does not require root. Requires cargo, bun, node, python3 and bend.
-# Pass --no-strict to warn on stale host lab claims instead of failing (used on Draft PRs;
-# the evidence-freshness CI job runs claims_check.py --strict as the merge gate).
+# A plain run warns on old evidence and fails on wrong evidence (#175, decision 0002): stale
+# lab claims (CI-4), and a docs/claims.md that lags only because of them, are warnings;
+# every other claims check, CI-8 included, is an error. Pass --strict for the release gate,
+# which also fails on stale claims (release.yml runs claims_check.py --strict on the tag).
+# --no-strict is accepted for existing callers and changes nothing: it is the default.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-STRICT="--strict"
+STRICT=""
 for arg in "$@"; do
   case "$arg" in
-    --no-strict) STRICT="" ;;
-    *) echo "unknown option: $arg (expected --no-strict)" >&2; exit 2 ;;
+    --strict) STRICT="--strict" ;;
+    --no-strict) echo "check.sh: --no-strict is the default now and changes nothing (#175)" >&2 ;;
+    *) echo "unknown option: $arg (expected --strict or --no-strict)" >&2; exit 2 ;;
   esac
 done
 # In CI a missing tool fails here, so a green run means every step ran. Locally
