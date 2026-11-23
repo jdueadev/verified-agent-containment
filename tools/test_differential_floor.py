@@ -80,18 +80,21 @@ class RepositoryTests(unittest.TestCase):
     def run_copy(self, bend, *args):
         with tempfile.TemporaryDirectory() as tmp:
             copy = Path(tmp) / "repo"
-            subprocess.run(["git", "-C", str(ROOT), "worktree", "add", "-q", "--detach", str(copy), "HEAD"],
+            # A clone of its own, sharing objects read-only: the judges (spec, the check
+            # container) mount this checkout's gitdir read-only, so `git worktree add`,
+            # which writes into it, cannot run there.
+            head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], check=True, capture_output=True,
+                                  text=True).stdout.strip()
+            subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", str(ROOT), str(copy)],
                            check=True, capture_output=True)
-            try:
-                for name in ("tools/claims_check.py", "tools/rust_tokens.py"):
-                    (copy / name).write_bytes((ROOT / name).read_bytes())
-                (copy / "results/differential.json").write_text(json.dumps(bend), encoding="utf-8")
-                child = subprocess.run([sys.executable, "-I", "-B", str(copy / "tools/claims_check.py"), *args],
-                                       cwd=copy, capture_output=True, text=True, timeout=300)
-                return child.returncode, json.loads(child.stdout[child.stdout.index("{"):])
-            finally:
-                subprocess.run(["git", "-C", str(ROOT), "worktree", "remove", "--force", str(copy)],
-                               capture_output=True)
+            subprocess.run(["git", "-C", str(copy), "checkout", "-q", "--detach", head], check=True,
+                           capture_output=True)
+            for name in ("tools/claims_check.py", "tools/rust_tokens.py"):
+                (copy / name).write_bytes((ROOT / name).read_bytes())
+            (copy / "results/differential.json").write_text(json.dumps(bend), encoding="utf-8")
+            child = subprocess.run([sys.executable, "-I", "-B", str(copy / "tools/claims_check.py"), *args],
+                                   cwd=copy, capture_output=True, text=True, timeout=300)
+            return child.returncode, json.loads(child.stdout[child.stdout.index("{"):])
 
     def test_zero_cases_fail_in_both_modes(self):
         for args in ((), ("--strict",)):
