@@ -46,9 +46,12 @@ items, block-scalar indentation indicators, a lone CR or other Unicode line
 breaks, and lines it cannot classify.
 
 The release gate stays strict (#175): `.github/workflows/release.yml` must
-exist and have a step whose whole `run:` is `python3 tools/claims_check.py
---strict`, and no `continue-on-error` or `if:` anywhere under its jobs, so the
-step can neither be skipped nor fail softly. A plain `scripts/check.sh` warns on
+exist, run on `push` of tags `v*` and nothing else, and have a step whose whole
+`run:` is `python3 tools/claims_check.py --strict`. Nothing under it may skip
+or soften a step or swap what runs it: no `if`, `continue-on-error`, `shell`,
+`env`, `container`, `services`, `defaults` or `working-directory`. This is a
+tripwire, not a proof: an earlier step can still change the checkout, so every
+release.yml change stays a lane C review. A plain `scripts/check.sh` warns on
 stale claims; a tag is where they must be fresh.
 
 Not covered, and left to the maintainer's review of every workflow change
@@ -293,6 +296,8 @@ def lint(name, text, allowed):
 
 RELEASE = WORKFLOWS + "/release.yml"
 RELEASE_GATE = "python3 tools/claims_check.py --strict"
+RELEASE_REFUSED = ("if", "continue-on-error", "shell", "env", "container", "services", "defaults",
+                   "working-directory")
 
 
 def release_gate(files):
@@ -305,12 +310,17 @@ def release_gate(files):
     if problems:
         return []  # lint() already reports what this reader cannot follow
     errors = []
+    for s in scalars:
+        if any(key in RELEASE_REFUSED for key in s.path):
+            key = next(k for k in s.path if k in RELEASE_REFUSED)
+            errors.append(f"{RELEASE}:{s.line}: '{key}' in the release workflow; the strict claims check "
+                          "must run on every tag, as written, and fail the release when it fails")
+    triggers = [(s.path, s.text.strip()) for s in scalars if s.path[:1] == ["on"]]
+    if triggers != [(["on", "push", "tags"], '["v*"]')]:
+        errors.append(f"{RELEASE}: must run on push of tags [\"v*\"] and nothing else, not {triggers}")
     in_jobs = [s for s in scalars if len(s.path) >= 2 and s.path[0] == "jobs"]
-    for s in in_jobs:
-        if s.path[-1] in ("continue-on-error", "if"):
-            errors.append(f"{RELEASE}:{s.line}: '{s.path[-1]}' in the release workflow; the strict claims check "
-                          "must run on every tag and fail the release when it fails")
-    if not any(s.path[2:3] == ["steps"] and s.path[-1] == "run" and s.text.strip() == RELEASE_GATE
+    # jobs.<id>.steps.run, exactly: a `run` key nested under a step's env: or with: is not the step's script.
+    if not any(len(s.path) == 4 and s.path[2:] == ["steps", "run"] and s.text.strip() == RELEASE_GATE
                for s in in_jobs):
         errors.append(f"{RELEASE}: no step whose whole run is '{RELEASE_GATE}'")
     return errors

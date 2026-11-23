@@ -68,6 +68,33 @@ class ReleaseGate(unittest.TestCase):
             + "    env:\n      run: python3 tools/claims_check.py --strict\n"
         self.assertTrue(self.errors(text), text)
 
+    def test_a_run_nested_in_env_or_with_does_not_count(self):
+        # Security review: env: {run: ...} matched the old rule while the real run was not strict.
+        for nest in ("env", "with"):
+            text = GOOD.replace("        run: python3 tools/claims_check.py --strict\n",
+                                f"        run: python3 tools/claims_check.py\n        {nest}:\n"
+                                "          run: python3 tools/claims_check.py --strict\n")
+            with self.subTest(nest=nest):
+                self.assertTrue(any("no step whose whole run" in e for e in self.errors(text)), text)
+
+    def test_what_swaps_the_runner_is_refused(self):
+        for key, where in (("shell", "        shell: true {0}\n"), ("env", "        env:\n          PYTHONPATH: x\n"),
+                           ("container", "    container: python:3\n"), ("working-directory",
+                                                                          "        working-directory: x\n")):
+            anchor = "    steps:\n" if where.startswith("    container") else "        run: python3"
+            text = GOOD.replace(anchor, where + anchor, 1)
+            with self.subTest(key=key):
+                self.assertTrue(any(f"'{key}'" in e for e in self.errors(text)), text)
+        text = GOOD.replace("jobs:\n", "defaults:\n  run:\n    shell: true {0}\njobs:\n")
+        self.assertTrue(any("'defaults'" in e for e in self.errors(text)), text)
+
+    def test_the_trigger_is_pinned(self):
+        for on in ('on:\n  push:\n    tags: ["never-*"]\n', 'on:\n  workflow_dispatch:\n    inputs:\n      x:\n        type: string\n',
+                   'on:\n  push:\n    tags: ["v*"]\n    tags-ignore: ["v*"]\n'):
+            text = GOOD.replace('on:\n  push:\n    tags: ["v*"]\n', on)
+            with self.subTest(on=on):
+                self.assertTrue(any("must run on push of tags" in e for e in self.errors(text)), text)
+
 
 if __name__ == "__main__":
     unittest.main()
