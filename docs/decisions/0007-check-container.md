@@ -193,3 +193,12 @@ checkout, disables replace objects for every git call, and requires each image
 input in the trusted checkout to be byte-identical on disk to its committed copy.
 The branch is judged from a separate clone.
 
+
+The final rescan found that the wrapper's host-side git calls in the judged clone
+loaded that clone's own `.git/config`. In a partial clone a missing object is
+fetched lazily through whatever `core.sshCommand` the config names, which ran as
+the maintainer, on the host, with the network on. That was reproduced with a
+marker file. Every git call in the judged clone now overrides fetching,
+transports, hooks and fsmonitor on the command line, which beats the repository's
+config, and a partial clone is refused outright. The clone to judge is one the
+maintainer made fresh, never the agent's own workspace.

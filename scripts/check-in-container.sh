@@ -13,9 +13,12 @@
 #       its own .git) with this checkout's wrapper and image: run it from a
 #       trusted clone of main. The image is built only from this checkout's
 #       committed inputs, which must also match its files on disk; DIR is
-#       mounted read-only as data. DIR may not share a gitdir with this
+#       mounted read-only as data. DIR must be a clone you made fresh, never
+#       the agent's own workspace, and it may not share a gitdir with this
 #       checkout: a linked worktree shares refs and objects, so whoever can
-#       commit there can move this checkout's HEAD. If DIR changes any image
+#       commit there can move this checkout's HEAD. git runs in DIR with its
+#       own config neutralised (no lazy fetch, no transports, no hooks, no
+#       fsmonitor), and a partial clone is refused. If DIR changes any image
 #       input (the Dockerfile, the entrypoint, ci/pins.env, the toolchain or a
 #       Cargo manifest or lock) the run is refused, so review those first.
 #
@@ -72,9 +75,23 @@ if [ -n "$target" ]; then
 fi
 # Each git answer is checked before it is used: `cd ""` succeeds, so a failed
 # rev-parse inside the path resolution would quietly become the current directory.
+# git in a checkout that is not this one reads that checkout's .git/config, which
+# whoever wrote the checkout controls: a partial clone fetches a missing object
+# lazily, through whatever core.sshCommand it names, as you, with the network.
+# Command-line settings override the repository's, so every git call there runs
+# with fetching, transports, hooks and fsmonitor off.
+untrusted_git() {
+  GIT_NO_LAZY_FETCH=1 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 \
+    GIT_OPTIONAL_LOCKS=0 git -c protocol.allow=never -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+    -c core.sshCommand=false -c uploadpack.packObjectsHook= "$@"
+}
+gitin() {  # checkout, git arguments...
+  local where="$1"; shift
+  if [ "$where" = "$root" ]; then git -C "$where" "$@"; else untrusted_git -C "$where" "$@"; fi
+}
 resolve() {  # checkout, rev-parse option -> physical directory
   local raw
-  raw="$(git -C "$1" rev-parse --path-format=absolute "$2")" && [ -n "$raw" ] || die "git rev-parse $2 failed in $1"
+  raw="$(gitin "$1" rev-parse --path-format=absolute "$2")" && [ -n "$raw" ] || die "git rev-parse $2 failed in $1"
   raw="$(posix "$raw")"
   (cd "$raw" && pwd -P) || die "cannot enter $raw"
 }
@@ -88,6 +105,9 @@ gitdir="$(resolve "$src" --git-dir)"
 common="$(resolve "$src" --git-common-dir)"
 if [ "$src" != "$root" ] && [ "$common" = "$(resolve "$root" --git-common-dir)" ]; then
   die "$src shares its gitdir ($common) with $root, so whoever commits there can move this checkout's HEAD; judge a separate clone"
+fi
+if [ "$src" != "$root" ] && git config --file "$common/config" --get-regexp '^(extensions\.partialclone|remote\..*\.promisor)$' >/dev/null 2>&1; then
+  die "$src is a partial clone, whose missing objects git would fetch from its own config; judge a full clone you made"
 fi
 # A worktree's .git file names an absolute host path, which means nothing in
 # the container. Mount the common gitdir instead and point GIT_DIR at this
@@ -133,11 +153,11 @@ done
 # --checkout: the judged checkout must carry exactly these inputs, committed and
 # on disk. The entrypoint checks the same inside, but this says why, up front.
 if [ "$src" != "$root" ]; then
-  mapfile -t theirs < <(git -C "$src" ls-tree -r --name-only HEAD -- crates | grep -E '^crates/[^/]+/Cargo\.toml$' || true)
+  mapfile -t theirs < <(untrusted_git -C "$src" ls-tree -r --name-only HEAD -- crates | grep -E '^crates/[^/]+/Cargo\.toml$' || true)
   [ "${theirs[*]}" = "${manifests[*]}" ] || die "$src has other crate manifests than $root; review the change, then judge it with a wrapper you trust"
   changed=()
   for f in ci/check.Dockerfile ci/check-entrypoint.sh ci/pins.env rust-toolchain.toml Cargo.toml Cargo.lock "${manifests[@]}"; do
-    [ "$(git -C "$src" rev-parse "HEAD:$f" 2>/dev/null)" = "$(git rev-parse "HEAD:$f")" ] || changed+=("$f")
+    [ "$(untrusted_git -C "$src" rev-parse "HEAD:$f" 2>/dev/null)" = "$(git rev-parse "HEAD:$f")" ] || changed+=("$f")
   done
   [ ${#changed[@]} = 0 ] || die "$src changes the image's inputs (${changed[*]}); review them, then judge it with a wrapper you trust"
 fi
