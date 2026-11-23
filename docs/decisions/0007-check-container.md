@@ -184,3 +184,12 @@ way, and its own wrapper never ran. A full `--checkout` run passed. What runs in
 the container is still the branch's code (its `scripts/check.sh` and checkers), so
 the tier line remains a report about that branch, not a verdict from `main` (#176).
 
+The rescan of that fix found that in `--checkout` mode the trusted checkout's
+`HEAD` is the anchor, and a linked `git worktree` shares refs, objects and replace
+refs with the checkout it came from. So whoever can commit in the branch's
+worktree could move `main`'s `HEAD`, or replace a blob, and choose the image. The
+wrapper now refuses a `--checkout` that shares a gitdir with the trusted
+checkout, disables replace objects for every git call, and requires each image
+input in the trusted checkout to be byte-identical on disk to its committed copy.
+The branch is judged from a separate clone.
+

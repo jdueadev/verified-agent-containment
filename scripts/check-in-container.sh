@@ -9,12 +9,15 @@
 #   scripts/check-in-container.sh --affected REF  run claims_check.py --affected REF in it
 #   scripts/check-in-container.sh --build-only    build, print the image id and context hash
 #   scripts/check-in-container.sh --checkout DIR [args]
-#       judge another checkout DIR (for example an agent's branch in its own
-#       git worktree) with this checkout's wrapper and image: run it from a
-#       trusted checkout of main. The image is built only from this checkout's
-#       committed inputs; DIR is mounted read-only as data. If DIR changes any
-#       image input (the Dockerfile, the entrypoint, ci/pins.env, the toolchain
-#       or a Cargo manifest or lock) the run is refused, so review those first.
+#       judge another checkout DIR (an agent's branch, in a separate clone with
+#       its own .git) with this checkout's wrapper and image: run it from a
+#       trusted clone of main. The image is built only from this checkout's
+#       committed inputs, which must also match its files on disk; DIR is
+#       mounted read-only as data. DIR may not share a gitdir with this
+#       checkout: a linked worktree shares refs and objects, so whoever can
+#       commit there can move this checkout's HEAD. If DIR changes any image
+#       input (the Dockerfile, the entrypoint, ci/pins.env, the toolchain or a
+#       Cargo manifest or lock) the run is refused, so review those first.
 #
 # Running this script runs it as you, on your machine, and its build has the
 # network. On a branch you do not trust, never run that branch's own copy: run
@@ -29,6 +32,9 @@
 set -euo pipefail
 
 die() { echo "check-in-container: error: $*" >&2; exit 1; }
+# A replace ref would let anyone who can write the object database change what
+# `git show HEAD:<path>` returns, without changing HEAD.
+export GIT_NO_REPLACE_OBJECTS=1
 
 ENGINE="${ENGINE:-docker}"
 case "$ENGINE" in docker|podman) ;; *) die "ENGINE must be docker or podman, not '$ENGINE'" ;; esac
@@ -80,6 +86,9 @@ if [ "$src" != "$root" ]; then
 fi
 gitdir="$(resolve "$src" --git-dir)"
 common="$(resolve "$src" --git-common-dir)"
+if [ "$src" != "$root" ] && [ "$common" = "$(resolve "$root" --git-common-dir)" ]; then
+  die "$src shares its gitdir ($common) with $root, so whoever commits there can move this checkout's HEAD; judge a separate clone"
+fi
 # A worktree's .git file names an absolute host path, which means nothing in
 # the container. Mount the common gitdir instead and point GIT_DIR at this
 # worktree's entry in it.
@@ -117,6 +126,9 @@ for f in ci/check.Dockerfile ci/check-entrypoint.sh ci/pins.env rust-toolchain.t
   esac
   mkdir -p "$ctx/$(dirname "$f")"
   git show "HEAD:$f" > "$ctx/$f" || die "cannot read $f from HEAD"
+  # The committed copy must be the file you can read on disk here, so the image
+  # is built from what this checkout shows, not from a HEAD moved behind it.
+  [ ! -L "$f" ] && cmp -s "$ctx/$f" "$f" || die "$f in $root differs from its committed copy, or is a link; commit or restore it"
 done
 # --checkout: the judged checkout must carry exactly these inputs, committed and
 # on disk. The entrypoint checks the same inside, but this says why, up front.
