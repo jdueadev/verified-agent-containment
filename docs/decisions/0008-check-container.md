@@ -244,3 +244,11 @@ says it cannot tell, and never prints a plain T1. The line still reports what
 the head's checks said; the base-judged `spec` and `policy` jobs are what judge
 the head from outside.
 
+
+Two review points on the entrypoint (CodeRabbit on #115). The image-input check
+compares content only: the image is built from `git show HEAD:<path>` and
+`check_image` compares bytes, so a mount that does not keep file modes (Docker
+Desktop) no longer stops the run there. The mode change still shows in
+`git status`, so that tree gets no T1 line. And `HEAD` is read before the copy
+and must be the same after it and again before the tier line, so a commit made
+on the host during a run stops it instead of naming files the run did not test.

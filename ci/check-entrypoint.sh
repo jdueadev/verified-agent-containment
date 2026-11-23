@@ -157,8 +157,13 @@ check_inputs_committed() {
   local inputs
   mapfile -t inputs < <(context_files)
   inputs+=(scripts/check-in-container.sh)
-  git diff --quiet HEAD -- "${inputs[@]}" \
-    || die "the image's inputs have uncommitted changes ($(git diff --name-only HEAD -- "${inputs[@]}" | paste -sd " " -)); commit them first"
+  # Content only: the wrapper builds the image from `git show HEAD:<path>` and
+  # check_image compares bytes, so a file mode cannot change the image. A mount
+  # that does not keep modes (Docker Desktop shows 0755 or 0777) would otherwise
+  # stop the run here; it still shows in `git status`, so such a tree gets no
+  # T1 line (CodeRabbit on #115). GIT_CONFIG_VALUE_3 is core.fileMode.
+  GIT_CONFIG_VALUE_3=false git diff --quiet HEAD -- "${inputs[@]}" \
+    || die "the image's inputs have uncommitted changes ($(GIT_CONFIG_VALUE_3=false git diff --name-only HEAD -- "${inputs[@]}" | paste -sd " " -)); commit them first"
   [ -z "$(git ls-files --others --exclude-standard -- "${inputs[@]}")" ] \
     || die "the image's inputs include untracked files; commit them first"
 }
@@ -259,10 +264,16 @@ main() {
   esac
   git_env
   check_hardening
+  # HEAD before the copy: a commit made on the host while the copy is taken, or
+  # while check.sh runs, must stop the run rather than lend HEAD a result its
+  # files did not earn (CodeRabbit on #115).
+  HEAD_BEFORE="$(GIT_WORK_TREE="$SRC" git -C "$SRC" rev-parse --verify --quiet 'HEAD^{commit}')" \
+    || die "HEAD does not resolve: the git mount is broken or GIT_DIR is wrong"
   copy_tree
   export GIT_WORK_TREE="$REPO" HOME="$WORK/home" TMPDIR=/tmp
   cd "$REPO"
   check_history
+  [ "$HEAD_SHA" = "$HEAD_BEFORE" ] || die "HEAD moved from $HEAD_BEFORE to $HEAD_SHA while the checkout was copied"
   check_inputs_committed
   check_image
   read_pins
@@ -311,6 +322,8 @@ main() {
   if grep -nE 'skipped=[0-9]' /tmp/check.log >&2; then
     die "a unit test was skipped, so this run is T0, not T1"
   fi
+  [ "$(git rev-parse --verify --quiet 'HEAD^{commit}')" = "$HEAD_SHA" ] \
+    || die "HEAD moved during the run; this is no result for HEAD $HEAD_SHA"
   if [ "$TREE_STATE" != clean ]; then
     say "scripts/check.sh passed on a tree with uncommitted changes, so this is no T1 result for HEAD $HEAD_SHA"
     return
