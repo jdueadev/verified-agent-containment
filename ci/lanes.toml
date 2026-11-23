@@ -47,6 +47,8 @@ C = [
   "tools/law_audit.mjs",
   "tools/tla_check.sh",
   "tools/generate_proof.py",
+  # After-the-fact audit of merges to main (#54, #71).
+  "tools/merge_digest.py",
   # Writes lab evidence from a CI run (#53).
   "tools/lab_record.py",
   # The attack harness, live suite and red-team runner decide what "passed"
