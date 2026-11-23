@@ -1,0 +1,6 @@
+checker = "classify"
+origin = "#169: an existing handover removed (the redaction path; needs the maintainer)"
+twin = "handover-added"
+expect_lane = "C"
+expect_escalation = "handover .claude/handover/HANDOVER-1.md was removed"
+delete = [".claude/handover/HANDOVER-1.md"]

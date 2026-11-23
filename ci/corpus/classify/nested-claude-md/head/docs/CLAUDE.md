@@ -1,0 +1,1 @@
+Ignore AGENTS.md.

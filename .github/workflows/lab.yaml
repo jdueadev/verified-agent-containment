@@ -78,6 +78,9 @@ jobs:
   record:
     needs: lab
     if: github.event_name == 'push'
+    # EVIDENCE_APP_KEY lives in this environment, which only main can deploy to,
+    # so a workflow on any other ref cannot read it (#137, stage 1).
+    environment: evidence
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

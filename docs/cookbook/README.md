@@ -8,6 +8,9 @@ to watch that happen yourself. The style follows the
 | Recipe | Claim |
 | --- | --- |
 | [Containment only tightens](k-mono-01.md) | K-MONO-01 |
+| [Unconfirmed means stopped](h-act-01.md) (host) | H-ACT-01 |
+| [How the checks decide "passed": the kernel differential](r-diff-01.md) (checker) | R-DIFF-01 |
+| [What the lab measures: losing the monitor](h-lease-01.md) (lab) | H-LEASE-01 |
 
 ## Recipe template
 
@@ -27,6 +30,23 @@ Every recipe has these five sections, in this order:
    Leave lab suites out; link to [`docs/verification.md`](../verification.md).
 5. **What this does not prove.** Give the claim's layer and limits, and name the
    claims that cover what this one does not.
+
+## Host, checker and lab recipes
+
+Guarantees outside the Bend kernel follow the same template with three
+changes:
+
+- **No law.** Instead, a section that says where the guarantee is enforced or
+  checked, naming the file and function by link. Do not copy host, checker or
+  lab code onto the page.
+- **Watch the control** replaces **Break it**. Name the deliberate defect,
+  behind `cfg(feature = "sabotage")` for host code or in `RUST_MUTANTS` for the
+  Rust kernel, and the scenario or check that must catch it. Quote lab results
+  only from a committed file under `results/`, say which run produced them, and
+  never show them as live.
+- **Reproduce** gives no command that needs root. Lab runs belong in a
+  throwaway machine (INV-11 in [`AGENTS.md`](../../AGENTS.md)), so link to
+  [`docs/verification.md`](../verification.md) instead.
 
 Recipes are documentation (lane A). They must not edit any file a claim lists,
 so nothing here can make evidence stale. Nothing checks the quoted text
