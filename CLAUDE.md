@@ -13,4 +13,9 @@ AGENTS.md is the rulebook. If anything here disagrees with it, AGENTS.md wins.
 - **Design review (optional tooling):** the multi-perspective review that AGENTS.md
   asks for can be done with any method. If you happen to have a council-style review
   command available, that is one way to do it.
+- **Scope and levers:** the section of that name in AGENTS.md is the rule, for
+  Claude Code and for every other agent. The worked form in this checkout is
+  `.claude/skills/scope-and-lever`. Read that skill when you plan a change. It
+  adds no rule, and workflow step 2 still accepts any design-review method that
+  covers the three angles.
 - Personal workflow notes belong in `CLAUDE.local.md`, which git ignores.

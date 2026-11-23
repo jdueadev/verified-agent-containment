@@ -208,6 +208,38 @@ No merge rests on a local result. The `check` workflow is the gate.
    `POLICY_ENFORCE` variable to get a change in. A lane C change merges only
    after the maintainer approves its head commit.
 
+## Scope and levers
+
+How big the change is, and how the work is done. This is process, beside the
+workflow above. INV-1 through INV-11 are unchanged by it.
+
+- **Smallest change.** Make the smallest change that meets the goal. A
+  deletion belongs in the diff only when the goal requires that deletion and
+  INV-2, INV-7 and INV-9 still hold.
+- **Lane and weight before the first push.** Run
+  `python3 tools/policy_check.py classify --base origin/main` and read the
+  lane and any ratchet that raised it. Read workflow step 1 and say whether
+  the change is heavy.
+- **One topic, one pull request.** Workflow step 3. `main` squash-merges
+  that pull request.
+- **Verifiable units.** Break the work into small units that each end in a
+  check you can rerun. The check is green before the next unit starts. The
+  units of one topic stay in that one pull request.
+- **Build the lever.** When the work is more than a couple of obvious edits,
+  build a small rerunnable script, codemod, generator, or check that does the
+  work or proves it, and commit that lever. A new skill is not a lever. A
+  skill is trusted base (INV-3) and lands only in a lane C pull request that
+  says so.
+- **Prove the result.** Before calling the work done, run the check against
+  the artifact itself and name the tier under What "checked" means. A failing
+  check stays a failing check. Changing the check so that it passes is INV-2,
+  and the maintainer decides.
+
+Claude Code's worked form of this section is
+`.claude/skills/scope-and-lever/SKILL.md`. The skill names these bullets. It
+adds no rule. Workflow step 2 is unchanged: a design review may use any
+method that covers the three angles.
+
 ## Rust
 
 - Lints and the toolchain are configuration, not prose: see `Cargo.toml` and
