@@ -168,5 +168,30 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(json.loads(child.stdout.splitlines()[-1])["summary"]["ran"], 1)
 
 
+class GenTests(unittest.TestCase):
+    def test_agents_lists_every_rule_and_every_gap(self):
+        gen = importlib.import_module("vac_gen")
+        text = gen.render_agents(registry.RULES, registry.UNENFORCED)
+        for r in registry.RULES:
+            self.assertIn(f"| {r.id} |", text)
+        for rule_id, _title, issue in registry.UNENFORCED:
+            self.assertIn(f"| {rule_id} |", text)
+            self.assertIn(f"#{issue}", text)
+        self.assertEqual(gen.render_claude(), "@AGENTS.md\n")
+
+    def test_an_unenforced_id_never_shadows_an_enforced_one(self):
+        self.assertEqual({r.id for r in registry.RULES} & {u[0] for u in registry.UNENFORCED}, set())
+
+    def test_generated_files_in_the_tree_match(self):
+        self.assertEqual(registry.generated_files_match(core.Ctx()), [])
+
+    def test_a_decision_record_is_refused(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, tmp)
+        (tmp / "docs/decisions").mkdir(parents=True)
+        (tmp / "docs/decisions/0001-x.md").write_text("x", encoding="utf-8")
+        self.assertEqual([f.rule for f in registry.no_decision_records(core.Ctx(root=tmp))], ["DEC-1"])
+
+
 if __name__ == "__main__":
     unittest.main()

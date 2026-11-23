@@ -66,6 +66,7 @@ C = [
   "tools/vac_rules.py",
   "tools/vac_verify.py",
   "tools/vac_safety.py",
+  "tools/vac_gen.py",
   "tools/results_ratchet.py",
   # Writes lab evidence from a CI run (#53).
   "tools/lab_record.py",

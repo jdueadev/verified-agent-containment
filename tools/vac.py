@@ -264,6 +264,23 @@ def cmd_waive(args):
     return 0
 
 
+def cmd_gen(args):
+    core, registry = load_registry()
+    import importlib
+    gen = importlib.import_module("vac_gen")
+    drift = 0
+    for path, text in gen.generated(registry.RULES, registry.UNENFORCED).items():
+        target = ROOT / path
+        same = target.exists() and target.read_text(encoding="utf-8") == text
+        if args.write and not same:
+            target.write_text(text, encoding="utf-8", newline="\n")
+            print(f"wrote {path}")
+        elif not same:
+            drift += 1
+            print(f"DRIFT {path} | fix: python3 tools/vac.py gen --write")
+    return 1 if drift else 0
+
+
 def cmd_rules(args):
     core, registry = load_registry()
     for rule in registry.RULES:
@@ -666,6 +683,10 @@ def build_parser():
     waive.add_argument("--issue", required=True, type=int)
     waive.add_argument("--base")
     waive.set_defaults(func=cmd_waive)
+
+    gen = sub.add_parser("gen", help="write or check AGENTS.md and CLAUDE.md from the registry")
+    gen.add_argument("--write", action="store_true")
+    gen.set_defaults(func=cmd_gen)
 
     rules = sub.add_parser("rules", help="list every rule: id, stages, title")
     rules.set_defaults(func=cmd_rules)

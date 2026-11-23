@@ -13,6 +13,7 @@ workflow_lint = importlib.import_module("workflow_lint")
 pins_check = importlib.import_module("pins_check")
 vac_verify = importlib.import_module("vac_verify")
 vac_safety = importlib.import_module("vac_safety")
+vac_gen = importlib.import_module("vac_gen")
 results_ratchet = importlib.import_module("results_ratchet")
 
 Finding = vac_core.Finding
@@ -207,6 +208,21 @@ def results_rule(rule_id, watches):
     return check
 
 
+def generated_files_match(ctx):
+    out = []
+    for path, text in vac_gen.generated(RULES, UNENFORCED).items():
+        target = ctx.root / path
+        if not target.exists() or target.read_text(encoding="utf-8") != text:
+            out.append(Finding("GEN-1", path, 0, "differs from what vac gen writes; generated files are never edited by hand"))
+    return out
+
+
+def no_decision_records(ctx):
+    found = sorted(p.relative_to(ctx.root).as_posix() for p in (ctx.root / "docs/decisions").glob("*")) \
+        if (ctx.root / "docs/decisions").exists() else []
+    return [Finding("DEC-1", p, 0, "decision records are gone; put the reason in the rule's refs issue") for p in found]
+
+
 def tool_run(rule_id, argv, path, timeout=3600):
     def check(ctx):
         code, out, err = vac_core.run_tool(ctx, rule_id, argv, timeout)
@@ -311,6 +327,11 @@ RULES = (
            f"rerun {producer} and fix the code until results/ is no weaker; a deliberate weakening needs its own "
            "issue (#213)", (213,))
       for rule_id, (title, watches, producer) in RESULT_RULES.items()),
+    Rule("GEN-1", "AGENTS.md and CLAUDE.md are exactly what vac gen writes from this registry", T0,
+         ("AGENTS.md", "CLAUDE.md", "tools/vac_rules.py", "tools/vac_gen.py"), generated_files_match,
+         "python3 tools/vac.py gen --write", (209,)),
+    Rule("DEC-1", "No decision record exists; a rule's reason lives in its refs issue", T0, ("docs/decisions/**",),
+         no_decision_records, "delete the file and put the reason in the issue the rule's refs name", (209,)),
     Rule("TOOL-TESTS", "The tool unit tests pass", T0, ("tools/**", "ci/**", "claims.toml", "results/**", "formal/**"),
          tool_run("TOOL-TESTS", [sys.executable, "-m", "unittest", "discover", "-s", "tools", "-p", "test_*.py"], "tools"),
          "python3 -m unittest discover -s tools -p 'test_*.py'", (65,)),
@@ -321,4 +342,22 @@ RULES = (
          tool_run("T1-GATE", ["bash", "scripts/check.sh"], "scripts/check.sh", 7200),
          "run vac check --t1 in the pinned container and fix the first failing step", (176,),
          needs=("cargo", "node", "bend", "java")),
+)
+
+UNENFORCED = (
+    ("PR-ISSUE", "A pull request links an open issue with Closes #n or Part of #n, in any lane, from any author", 211),
+    ("PR-ONE", "No other open pull request closes the same issue", 211),
+    ("PR-BODY", "The pull request body is written by vac pr and carries a receipt for its head", 212),
+    ("NC-1", "No comments outside the closed exceptions (shebang, Rust // SAFETY: above unsafe)", 209),
+    ("WF-THIN", "Every workflow run: is one line, python3 tools/vac.py ci <job>", 206),
+    ("WF-TRIG", "No schedule except the weekly digest, no workflow_run, no push to main", 206),
+    ("RS-ALLOW", "No #[allow] is added to get past a lint", 209),
+    ("RS-UNWRAP", "No new unwrap or expect on input an agent can influence in the host", 209),
+    ("RS-SAFETY", "Every unsafe block in the host says why it is sound (clippy undocumented_unsafe_blocks)", 209),
+    ("RS-PANIC", "Release builds abort on panic", 209),
+    ("LAB-THROWAWAY", "The root lab runs only in a disposable Linux or WSL2 machine; vac refuses its commands", 209),
+    ("CLAUDE-REVIEW", "Review a branch that touches agent configuration by its diff, or with claude --bare --setting-sources user", 169),
+    ("EV-REPRO", "At a release candidate, check outputs are regenerated and compared byte for byte with results/", 209),
+    ("EOL-1", "Text files are LF; only *.cmd keeps CRLF, byte for byte", 209),
+    ("SAFE-ATTEST", "At a release candidate, the safety loop runs in CI and is attested; a waiver without it blocks the tag", 209),
 )

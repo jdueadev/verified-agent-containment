@@ -104,4 +104,4 @@ follow-up pull request.
   and blocks egress before it freezes or kills is K-PLAN-01, proved on the Bend
   model. This claim is about the host carrying out whatever plan it is given.
 - **Host code can fool the lab.** That is why host code is lane C and needs
-  the maintainer ([`docs/decisions/0004-host-code-in-lane-c.md`](../decisions/0004-host-code-in-lane-c.md)).
+  the maintainer ([#83](https://github.com/jdueadev/verified-agent-containment/issues/83)).
