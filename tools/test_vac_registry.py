@@ -141,6 +141,24 @@ class LawKillTests(unittest.TestCase):
         self.assertEqual(registry.laws_without_killer(ctx), [])
 
 
+class RustRuleTests(unittest.TestCase):
+    def tree(self, cargo):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, tmp)
+        (tmp / "Cargo.toml").write_text(cargo, encoding="utf-8")
+        return core.Ctx(root=tmp)
+
+    def test_release_must_abort_on_panic(self):
+        self.assertEqual(registry.panic_aborts(self.tree('[profile.release]\npanic = "abort"\n')), [])
+        self.assertEqual([f.rule for f in registry.panic_aborts(self.tree('[profile.release]\npanic = "unwind"\n'))],
+                         ["RS-PANIC"])
+        self.assertEqual([f.rule for f in registry.panic_aborts(self.tree(""))], ["RS-PANIC"])
+
+    def test_allow_attributes_are_counted_inner_and_outer(self):
+        files = {"a.rs": "#[allow(x)]\n#![allow(y)]\n# [ allow (z)]\n", "b.rs": "#[deny(x)]\nallow\n"}
+        self.assertEqual(registry.allow_count(files.get, ["a.rs", "b.rs", "gone.rs"]), 3)
+
+
 class CommandTests(unittest.TestCase):
     def vac(self, *args):
         return subprocess.run([sys.executable, str(ROOT / "tools/vac.py"), *args], cwd=ROOT, capture_output=True,

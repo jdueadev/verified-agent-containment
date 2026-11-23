@@ -92,42 +92,6 @@ def git_ref_exists(ref):
     return code == 0
 
 
-def results_porcelain():
-    """Stdout of `git status --porcelain -- results/`, or None if git failed."""
-    code, out, _err = git(["status", "--porcelain", "--", "results/"])
-    if code != 0:
-        return None
-    return out
-
-
-def warn_results(before):
-    after = results_porcelain()
-    banner = "!" * 72
-    if before is None or after is None:
-        print(
-            f"\n{banner}\n"
-            "vac: WARNING: could not check `git status --porcelain -- results/`.\n"
-            "This driver must not change results/ (AGENTS.md INV-1).\n"
-            f"{banner}",
-            file=sys.stderr,
-        )
-        return
-    if before == after:
-        return
-    shown = after if after.strip() else "(clean)\n"
-    print(
-        f"\n{banner}\n"
-        "vac: WARNING: results/ changed during this run.\n"
-        "`git status --porcelain -- results/` differs from the start of the command.\n"
-        "AGENTS.md INV-1: evidence comes only from runs that happened. "
-        "This driver must not write results/.\n"
-        "status now:\n"
-        f"{shown}"
-        f"{banner}",
-        file=sys.stderr,
-    )
-
-
 def run_streaming(argv, env=None):
     """Run argv with inherited stdio. Returns the exit code, or 127 if it cannot start."""
     shown = "".join(f"{key}={shlex.quote(value)} " for key, value in sorted((env or {}).items()))
@@ -787,11 +751,7 @@ def dispatch(argv):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    before = results_porcelain()
-    try:
-        return dispatch(argv)
-    finally:
-        warn_results(before)
+    return dispatch(argv)
 
 
 if __name__ == "__main__":

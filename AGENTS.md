@@ -40,6 +40,10 @@ Every pull request starts from an open issue and says `Closes #n` or `Part of #n
 | RES-LAB | t0, t1, pr, rc, release | No lab scenario or sabotage control is lost, timed_repeat never drops, no cgroup waiver appears | rerun the lab, .github/workflows/lab.yaml on main, and fix the code until results/ is no weaker; a deliberate weakening needs its own issue (#213) |
 | GEN-1 | t0, t1, pr, rc, release | AGENTS.md and CLAUDE.md are exactly what vac gen writes from this registry | python3 tools/vac.py gen --write |
 | DEC-1 | t0, t1, pr, rc, release | No decision record exists; a rule's reason lives in its refs issue | delete the file and put the reason in the issue the rule's refs name |
+| RS-PANIC | t0, t1, pr, rc, release | Release builds abort on panic, so a controller panic is a fail-stop | set panic = "abort" under [profile.release] in Cargo.toml |
+| RS-ALLOW | t0, t1, pr, rc, release | No #[allow] is added to get past a lint | remove the #[allow] and fix what the lint reports |
+| EOL-1 | t0, t1, pr, rc, release | Text files are committed LF; only *.cmd keeps CRLF | convert the file to LF (git add --renormalize) |
+| RS-CLIPPY | t0, t1, pr, rc, release | Kernel and host pass clippy with -D warnings, sabotage build included; every unsafe says why | cargo clippy -p containment-host --all-targets -- -D warnings; add // SAFETY: above each unsafe block |
 | TOOL-TESTS | t0, t1, pr, rc, release | The tool unit tests pass | python3 -m unittest discover -s tools -p 'test_*.py' |
 | KERNEL-TEST | t0, t1, pr, rc, release | The kernel crate's tests pass | cargo test -p containment-kernel |
 | T1-GATE | t1, rc, release | The full local gate, scripts/check.sh, passes with every tool present | run vac check --t1 in the pinned container and fix the first failing step |
@@ -56,12 +60,8 @@ Each is a gap. Turn it into a rule in `tools/vac_rules.py` and delete its row fr
 | NC-1 | No comments outside the closed exceptions (shebang, Rust // SAFETY: above unsafe) | #209 |
 | WF-THIN | Every workflow run: is one line, python3 tools/vac.py ci <job> | #206 |
 | WF-TRIG | No schedule except the weekly digest, no workflow_run, no push to main | #206 |
-| RS-ALLOW | No #[allow] is added to get past a lint | #209 |
 | RS-UNWRAP | No new unwrap or expect on input an agent can influence in the host | #209 |
-| RS-SAFETY | Every unsafe block in the host says why it is sound (clippy undocumented_unsafe_blocks) | #209 |
-| RS-PANIC | Release builds abort on panic | #209 |
 | LAB-THROWAWAY | The root lab runs only in a disposable Linux or WSL2 machine; vac refuses its commands | #209 |
 | CLAUDE-REVIEW | Review a branch that touches agent configuration by its diff, or with claude --bare --setting-sources user | #169 |
 | EV-REPRO | At a release candidate, check outputs are regenerated and compared byte for byte with results/ | #209 |
-| EOL-1 | Text files are LF; only *.cmd keeps CRLF, byte for byte | #209 |
 | SAFE-ATTEST | At a release candidate, the safety loop runs in CI and is attested; a waiver without it blocks the tag | #209 |

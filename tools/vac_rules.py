@@ -223,6 +223,43 @@ def no_decision_records(ctx):
     return [Finding("DEC-1", p, 0, "decision records are gone; put the reason in the rule's refs issue") for p in found]
 
 
+def panic_aborts(ctx):
+    import tomllib
+    profile = tomllib.loads((ctx.root / "Cargo.toml").read_text(encoding="utf-8")).get("profile", {}).get("release", {})
+    if profile.get("panic") != "abort":
+        return [Finding("RS-PANIC", "Cargo.toml", 0, f"[profile.release] panic is {profile.get('panic')!r}, not \"abort\"")]
+    return []
+
+
+ALLOW_ATTR = re.compile(r"#\s*!?\s*\[\s*allow\s*\(")
+
+
+def allow_count(get, paths):
+    return sum(len(ALLOW_ATTR.findall(get(p) or "")) for p in paths)
+
+
+def allow_not_added(ctx):
+    base = base_ref(ctx)
+    head_paths = [p for p in vac_core.git(ctx, "ls-files", "--", "crates").splitlines() if p.endswith(".rs")]
+    base_paths = [p for p in vac_core.git(ctx, "ls-tree", "-r", "--name-only", base, "--", "crates").splitlines()
+                  if p.endswith(".rs")]
+    before = allow_count(policy_check.reader(base), base_paths)
+    after = allow_count(lambda p: (ctx.root / p).read_text(encoding="utf-8") if (ctx.root / p).exists() else None,
+                        head_paths)
+    if after > before:
+        return [Finding("RS-ALLOW", "crates", 0, f"#[allow] attributes rose from {before} to {after}")]
+    return []
+
+
+def line_endings(ctx):
+    out = []
+    for line in vac_core.git(ctx, "ls-files", "--eol").splitlines():
+        fields = line.split(None, 3)
+        if len(fields) == 4 and fields[0] == "i/crlf" and not fields[3].endswith(".cmd"):
+            out.append(Finding("EOL-1", fields[3], 0, "committed with CRLF; only *.cmd may be"))
+    return out
+
+
 def tool_run(rule_id, argv, path, timeout=3600):
     def check(ctx):
         code, out, err = vac_core.run_tool(ctx, rule_id, argv, timeout)
@@ -332,6 +369,19 @@ RULES = (
          "python3 tools/vac.py gen --write", (209,)),
     Rule("DEC-1", "No decision record exists; a rule's reason lives in its refs issue", T0, ("docs/decisions/**",),
          no_decision_records, "delete the file and put the reason in the issue the rule's refs name", (209,)),
+    Rule("RS-PANIC", "Release builds abort on panic, so a controller panic is a fail-stop", T0, ("Cargo.toml",),
+         panic_aborts, "set panic = \"abort\" under [profile.release] in Cargo.toml", (209,)),
+    Rule("RS-ALLOW", "No #[allow] is added to get past a lint", T0, ("crates/**",), allow_not_added,
+         "remove the #[allow] and fix what the lint reports", (209,)),
+    Rule("EOL-1", "Text files are committed LF; only *.cmd keeps CRLF", T0, EVERYWHERE, line_endings,
+         "convert the file to LF (git add --renormalize)", (209,)),
+    Rule("RS-CLIPPY", "Kernel and host pass clippy with -D warnings, sabotage build included; every unsafe says why",
+         T0, ("crates/**", "Cargo.toml", "Cargo.lock", "clippy.toml"),
+         tool_run("RS-CLIPPY", ["bash", "-c", "cargo clippy -q --locked -p containment-kernel -p containment-host --all-targets -- -D warnings"
+                             " && cargo clippy -q --locked -p containment-host --all-targets --features sabotage -- -D warnings"],
+                  "crates"),
+         "cargo clippy -p containment-host --all-targets -- -D warnings; add // SAFETY: above each unsafe block", (209,),
+         needs=("cargo",)),
     Rule("TOOL-TESTS", "The tool unit tests pass", T0, ("tools/**", "ci/**", "claims.toml", "results/**", "formal/**"),
          tool_run("TOOL-TESTS", [sys.executable, "-m", "unittest", "discover", "-s", "tools", "-p", "test_*.py"], "tools"),
          "python3 -m unittest discover -s tools -p 'test_*.py'", (65,)),
@@ -351,13 +401,9 @@ UNENFORCED = (
     ("NC-1", "No comments outside the closed exceptions (shebang, Rust // SAFETY: above unsafe)", 209),
     ("WF-THIN", "Every workflow run: is one line, python3 tools/vac.py ci <job>", 206),
     ("WF-TRIG", "No schedule except the weekly digest, no workflow_run, no push to main", 206),
-    ("RS-ALLOW", "No #[allow] is added to get past a lint", 209),
     ("RS-UNWRAP", "No new unwrap or expect on input an agent can influence in the host", 209),
-    ("RS-SAFETY", "Every unsafe block in the host says why it is sound (clippy undocumented_unsafe_blocks)", 209),
-    ("RS-PANIC", "Release builds abort on panic", 209),
     ("LAB-THROWAWAY", "The root lab runs only in a disposable Linux or WSL2 machine; vac refuses its commands", 209),
     ("CLAUDE-REVIEW", "Review a branch that touches agent configuration by its diff, or with claude --bare --setting-sources user", 169),
     ("EV-REPRO", "At a release candidate, check outputs are regenerated and compared byte for byte with results/", 209),
-    ("EOL-1", "Text files are LF; only *.cmd keeps CRLF, byte for byte", 209),
     ("SAFE-ATTEST", "At a release candidate, the safety loop runs in CI and is attested; a waiver without it blocks the tag", 209),
 )
