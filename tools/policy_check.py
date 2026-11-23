@@ -11,13 +11,18 @@ Usage:
 classify   prints the lane of the diff between two commits. Lanes are defined in
            ci/lanes.toml. A ratchet raises the lane to C when the change removes
            or rewords a law, mutant, scenario or sabotage control, or weakens a
-           row of claims.toml. With --enforce, a lane C change (or any change
-           from a fork) fails unless the maintainer approved the head commit.
+           row of claims.toml, or adds agent configuration outside the root
+           allow-list. With --enforce, a lane C change (or any change from a
+           fork) fails unless the maintainer approved the head commit. A
+           violation (an existing handover changed) fails whatever the
+           approvals, with or without --enforce.
 codeowners checks that .github/CODEOWNERS is exactly lane C (--write regenerates it).
 invariants checks rules that hold on every commit: `sabotage` is not a default
            feature, the lane map parses, CODEOWNERS matches it, and the kernel
            stays pure (no_std, no unsafe, nothing beyond core, no build-time
-           file or environment reads). With --ref it checks that commit, read
+           file or environment reads), and the tracked .claude/ holds only
+           allow-listed regular files and a settings.json with allowed keys.
+           With --ref it checks that commit, read
            through git, instead of the working tree, so `policy` can run it from
            the base branch against an untrusted head.
 fresh-reviews prints the PR's reviews (the API's JSON) with commit_id cleared on every
@@ -40,6 +45,7 @@ import re
 import subprocess
 import sys
 import tomllib
+import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -401,19 +407,160 @@ def data_module_ratchets(paths, head_get):
     return out
 
 
+# ---------- agent configuration (#169) ----------
+
+# Names that Claude Code or another agent tool reads as configuration or as
+# instructions, at any depth: a nested CLAUDE.md or .claude/ steers a session that
+# works in that directory. Compared after NFKC and casefold, because a
+# case-insensitive checkout (Windows, macOS) opens `.Claude/` as `.claude/`.
+AGENT_CONFIG_NAMES = (".claude", "claude.md", "claude.local.md", "agents.md", ".mcp.json")
+# The sanctioned copies: the root rule files, and the root .claude/ directory,
+# which `invariants` holds to CLAUDE_ALLOWED.
+ROOT_AGENT_FILES = ("AGENTS.md", "CLAUDE.md")
+CLAUDE_DIR = ".claude"
+CLAUDE_ALLOWED = ("settings.json", "hooks/", "skills/", "agents/", "handover/")
+# Top-level keys a tracked .claude/settings.json may use. Settings such as hooks,
+# env, apiKeyHelper, statusLine and MCP servers take effect when a session starts,
+# before anyone has reviewed the branch, so each key is added here by its own
+# reviewed change. Empty: no shared settings yet.
+SETTINGS_KEYS = ()
+CLAUDE_SETTINGS = ".claude/settings.json"
+# Handovers are written once: a later change may remove one (with the maintainer),
+# never rewrite it.
+HANDOVER_DIR = ".claude/handover/"
+REGULAR_MODES = ("100644", "100755")
+MODE_NAMES = {"120000": "symbolic link", "160000": "gitlink (submodule)", "040000": "directory"}
+
+
+def _folded(name):
+    return unicodedata.normalize("NFKC", name).casefold()
+
+
+def agent_config_escalations(paths):
+    """Paths that add or change agent configuration outside the sanctioned root copies."""
+    out = []
+    for path in sorted(paths):
+        if path in ROOT_AGENT_FILES or path.startswith(CLAUDE_DIR + "/"):
+            continue
+        hits = [part for part in path.split("/") if _folded(part) in AGENT_CONFIG_NAMES]
+        if hits:
+            out.append(f"agent config {path}: agent tools read {hits[0]!r} as configuration or instructions, "
+                       "and only the root AGENTS.md, CLAUDE.md and .claude/ are sanctioned")
+    return out
+
+
+def tree_entries(ref, *pathspec):
+    """{path: (mode, object id)} for every blob and gitlink of a commit."""
+    out = git("ls-tree", "-r", "-z", "--full-tree", f"{ref}^{{commit}}", "--", *pathspec)
+    entries = {}
+    for item in out.split("\0"):
+        if "\t" in item:
+            meta, path = item.split("\t", 1)
+            mode, _kind, oid = meta.split(" ")
+            entries[path] = (mode, oid)
+    return entries
+
+
+def index_entries():
+    """{path: (mode, object id)} for every tracked path in the index: what would be committed,
+    not what happens to be on disk."""
+    entries = {}
+    for item in git("ls-files", "-s", "-z").split("\0"):
+        if "\t" in item:
+            meta, path = item.split("\t", 1)
+            mode, oid, _stage = meta.split(" ")
+            entries[path] = (mode, oid)
+    return entries
+
+
+def handover_violations(base_entries, head_entries):
+    """Rules no approval clears. A handover on the base must keep its bytes and mode
+    (compared by object id, so a CRLF-only rewrite counts) and its path."""
+    out = []
+    head_oids = {oid: path for path, (_, oid) in head_entries.items()}
+    for path, entry in sorted(base_entries.items()):
+        if not path.startswith(HANDOVER_DIR):
+            continue
+        new = head_entries.get(path)
+        if new is None:
+            moved = head_oids.get(entry[1])
+            if moved is not None:
+                out.append(f"handover {path} was renamed to {moved}: handovers are written once")
+        elif new != entry:
+            out.append(f"handover {path} was changed: handovers are written once")
+    return out
+
+
+def handover_escalations(paths, base_entries, head_entries):
+    out = []
+    head_oids = {oid for _, oid in head_entries.values()}
+    for path, (_, oid) in sorted(base_entries.items()):
+        if path.startswith(HANDOVER_DIR) and path not in head_entries and oid not in head_oids:
+            out.append(f"handover {path} was removed")
+    added = [p for p in paths if p.startswith(HANDOVER_DIR) and p not in base_entries]
+    others = sorted(p for p in paths if not p.startswith(HANDOVER_DIR))
+    if added and others:
+        shown = ", ".join(others[:5]) + (", ..." if len(others) > 5 else "")
+        out.append(f"a change that adds a handover also touches other paths: {shown}")
+    return out
+
+
+def _unique_object(pairs):
+    keys = [k for k, _ in pairs]
+    if len(keys) != len(set(keys)):
+        raise ValueError(f"duplicate key {sorted(k for k in keys if keys.count(k) > 1)[0]!r}")
+    return dict(pairs)
+
+
+def claude_path_errors(entries, get):
+    """The tracked root .claude/ holds only allow-listed regular files, under its exact
+    name, and its settings.json uses only SETTINGS_KEYS."""
+    out = []
+    for path, (mode, _) in sorted(entries.items()):
+        top = path.split("/", 1)[0]
+        if _folded(top) != CLAUDE_DIR:
+            continue
+        if top != CLAUDE_DIR:
+            out.append(f"{path}: {top!r} opens as {CLAUDE_DIR!r} on a case-insensitive checkout; "
+                       f"only the exact name {CLAUDE_DIR!r} is allowed")
+            continue
+        if path == CLAUDE_DIR:
+            out.append(f"{path}: is a {MODE_NAMES.get(mode, 'file')}, not a directory")
+            continue
+        rest = path[len(CLAUDE_DIR) + 1:]
+        if not any(rest == a or (a.endswith("/") and rest.startswith(a)) for a in CLAUDE_ALLOWED):
+            out.append(f"{path}: is not on the shared {CLAUDE_DIR}/ allow-list ({', '.join(CLAUDE_ALLOWED)})")
+        elif mode not in REGULAR_MODES:
+            out.append(f"{path}: is a {MODE_NAMES.get(mode, 'mode ' + mode)}; only regular files are allowed "
+                       f"under {CLAUDE_DIR}/")
+    if CLAUDE_SETTINGS in entries and entries[CLAUDE_SETTINGS][0] in REGULAR_MODES:
+        try:
+            settings = json.loads(get(CLAUDE_SETTINGS) or "", object_pairs_hook=_unique_object)
+        except ValueError as error:
+            return out + [f"{CLAUDE_SETTINGS}: is not a JSON object ({error})"]
+        if not isinstance(settings, dict):
+            return out + [f"{CLAUDE_SETTINGS}: is not a JSON object"]
+        for key in sorted(set(settings) - set(SETTINGS_KEYS)):
+            out.append(f"{CLAUDE_SETTINGS}: key {key!r} is not allowed yet; each settings key is added "
+                       "to SETTINGS_KEYS by its own reviewed change")
+    return out
+
+
 # ---------- classify ----------
 
-def classify(paths, base_get, head_get, lanes, head_links=()):
+def classify(paths, base_get, head_get, lanes, head_links=(), handovers=({}, {})):
     head_claims = head_get("claims.toml") or ""
     doc_cited = set(re.findall(r'"doc:([^#"]+)', head_claims)) | set(re.findall(r'"doc:([^#"]+)', base_get("claims.toml") or ""))
     by_path = {path: lane_of(path, lanes, doc_cited) for path in paths}
+    violations = handover_violations(*handovers)
     escalations = ratchets(base_get, head_get) + spec_ratchets(paths, base_get, head_get)
     escalations += data_module_ratchets(paths, head_get)
     escalations += [f"spec {path} is a symbolic link" for path in head_links]
+    escalations += agent_config_escalations(paths) + handover_escalations(paths, *handovers) + violations
     lane = max([entry[0] for entry in by_path.values()] + ["A"], key=ORDER.get)
     if escalations:
         lane = "C"
-    return {"lane": lane, "escalations": escalations,
+    return {"lane": lane, "escalations": escalations, "violations": violations,
             "paths": {path: {"lane": entry[0], "rule": entry[1]} for path, entry in sorted(by_path.items())}}
 
 
@@ -754,7 +901,8 @@ def run(parser, args):
         quoted = [p for p in paths if p.startswith('"')]
         if quoted:
             sys.exit(f"policy: paths with unusual characters cannot be classified: {quoted}")
-        result = classify(paths, base_get, head_get, lanes, spec_links(args.head, paths))
+        handovers = (tree_entries(args.base, HANDOVER_DIR), tree_entries(args.head, HANDOVER_DIR))
+        result = classify(paths, base_get, head_get, lanes, spec_links(args.head, paths), handovers)
         needs_owner = result["lane"] == "C" or args.fork
         reviews = json.loads(Path(args.reviews).read_text(encoding="utf-8")) if args.reviews else []
         result["fork"] = args.fork
@@ -762,6 +910,10 @@ def run(parser, args):
         result["approved"] = approved(reviews, owner, args.head_sha) if needs_owner else None
         result["enforced"] = args.enforce
         print(json.dumps(result, indent=2))
+        if result["violations"]:
+            print("policy: this change breaks a rule that no approval clears: "
+                  + "; ".join(result["violations"]), file=sys.stderr)
+            return 1
         if needs_owner and not result["approved"]:
             why = "it comes from a fork" if args.fork and result["lane"] != "C" else "it is lane C"
             print(f"policy: this change needs {owner}'s approval of the head commit because {why}.", file=sys.stderr)
@@ -775,9 +927,10 @@ def run(parser, args):
             return 0
         errors = codeowners_errors(owner, lanes, read(CODEOWNERS_FILE))
     elif args.ref:
-        errors = invariant_errors(reader(args.ref), kernel_sources(args.ref))
+        get = reader(args.ref)
+        errors = invariant_errors(get, kernel_sources(args.ref)) + claude_path_errors(tree_entries(args.ref), get)
     else:
-        errors = invariant_errors(read, kernel_sources())
+        errors = invariant_errors(read, kernel_sources()) + claude_path_errors(index_entries(), read)
     print(json.dumps({"errors": errors}, indent=2))
     return 1 if errors else 0
 

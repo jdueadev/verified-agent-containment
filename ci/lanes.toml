@@ -25,6 +25,10 @@ C = [
   ".gitattributes",
   # Steers what the automated reviewer looks at, and how closely.
   ".coderabbit.yaml",
+  # Claude Code reads these as settings, hooks, skills, agent prompts and session
+  # handovers. Settings and hooks run on the machine of whoever opens a session in
+  # the checkout, and the rest steers the next agent session (#169).
+  ".claude/**",
   "AGENTS.md",
   "CLAUDE.md",
   "docs/decisions/**",
