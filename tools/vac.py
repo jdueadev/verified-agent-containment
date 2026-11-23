@@ -66,13 +66,6 @@ HOST_PREFLIGHT = (
     ("release-build-sabotage", ("cargo", "build", "-q", "--locked", "--release", "-p", "containment-host",
                                 "--features", "sabotage", "--target-dir", "target-sabotage")),
 )
-CHECKS = (
-    Check("policy", ("python3", "tools/policy_check.py", "invariants")),
-    Check("claims", ("python3", "tools/claims_check.py", "--affected", "origin/main")),
-    Check("kernel", ("cargo", "test", "-q", "--locked", "-p", "containment-kernel")),
-    Check("differential", ("target/debug/containment-lab", "differential-cases", "3", "24301")),
-    Check("unittest", ("python3", "-m", "unittest", "discover", "-s", "tools", "-p", "test_*.py")),
-)
 
 
 def quote_cmd(argv):
@@ -146,46 +139,6 @@ def run_streaming(argv, env=None):
     return proc.returncode
 
 
-def run_one(check):
-    """Run one T0 check. Returns (status, seconds). status is PASS, FAIL or SKIPPED."""
-    start = time.monotonic()
-    if check.name == "claims" and not git_ref_exists("origin/main"):
-        print("SKIPPED claims: origin/main is missing", flush=True)
-        return "SKIPPED", time.monotonic() - start
-    if check.name == "differential":
-        lab = ROOT / LAB_REL
-        if not lab.is_file():
-            print(
-                "differential: target/debug/containment-lab is missing; building it first",
-                flush=True,
-            )
-            code = run_streaming(BUILD_ARGV)
-            if code != 0 or not lab.is_file():
-                print("vac: differential build failed", file=sys.stderr, flush=True)
-                return "FAIL", time.monotonic() - start
-    code = run_streaming(check.argv)
-    status = "PASS" if code == 0 else "FAIL"
-    return status, time.monotonic() - start
-
-
-def run_selected(checks, run_one_fn):
-    """Run every check. A failure does not stop the rest.
-
-    run_one_fn(check) -> (status, seconds). Exit code is 1 when any check
-    ran and failed. SKIPPED is not a failure.
-    """
-    rows = []
-    for check in checks:
-        print(f"== {check.name} ==", flush=True)
-        status, seconds = run_one_fn(check)
-        if status not in STATUSES:
-            raise ValueError(f"unknown status {status!r} from {check.name}")
-        rows.append((check.name, status, seconds))
-        print(f"-- {check.name}: {status} ({seconds:.2f}s)", flush=True)
-    failed = any(status == "FAIL" for _name, status, _seconds in rows)
-    return rows, (1 if failed else 0)
-
-
 def format_summary(rows):
     """Render the check table and the tier line.
 
@@ -212,18 +165,54 @@ def cmd_build(_args):
     return run_streaming(BUILD_ARGV)
 
 
+def load_registry():
+    sys.path.insert(0, str(ROOT / "tools"))
+    import importlib
+    return importlib.import_module("vac_core"), importlib.import_module("vac_rules")
+
+
 def cmd_check(args):
-    checks = CHECKS
-    if args.only is not None:
-        checks = tuple(check for check in CHECKS if check.name == args.only)
-        if not checks:
-            names = ", ".join(check.name for check in CHECKS)
-            print(f"vac: unknown check {args.only!r}. Names: {names}", file=sys.stderr)
-            return 2
-    rows, code = run_selected(checks, run_one)
-    sys.stdout.write("\n")
-    sys.stdout.write(format_summary(rows))
-    return code
+    core, registry = load_registry()
+    stage = "t1" if args.t1 else args.stage
+    ctx = core.Ctx(root=ROOT)
+    if args.changed:
+        ctx.changed = core.changed_paths(ctx, args.changed)
+    rules = registry.RULES
+    if args.rule:
+        rules = tuple(r for r in rules if r.id in args.rule)
+        unknown = sorted(set(args.rule) - {r.id for r in rules})
+        if unknown:
+            print(f"vac: unknown rule {', '.join(unknown)}; vac rules lists them", file=sys.stderr)
+            return core.EXIT_USAGE
+    outcomes = core.run(rules, stage, ctx)
+    (core.render_json if args.json else core.render_text)(outcomes, stage)
+    return core.exit_code(outcomes)
+
+
+def cmd_rules(args):
+    core, registry = load_registry()
+    for rule in registry.RULES:
+        print(f"{rule.id}\t{','.join(s for s in core.STAGES if s in rule.stages)}\t{rule.title}")
+    return 0
+
+
+def cmd_explain(args):
+    core, registry = load_registry()
+    hits = [r for r in registry.RULES if r.id == args.target]
+    if not hits:
+        hits = [r for r in registry.RULES if any(core.matches(args.target, w) for w in r.watches)]
+    if not hits:
+        print(f"vac: no rule is named or watches {args.target}", file=sys.stderr)
+        return core.EXIT_USAGE
+    for rule in hits:
+        print(f"{rule.id}: {rule.title}")
+        print(f"  stages: {', '.join(s for s in core.STAGES if s in rule.stages)}")
+        print(f"  watches: {', '.join(rule.watches)}")
+        print(f"  fix: {rule.fix}")
+        print(f"  refs: {', '.join('#' + str(n) for n in rule.refs)}")
+        if rule.needs:
+            print(f"  needs: {', '.join(rule.needs)}")
+    return 0
 
 
 def node_too_old(node):
@@ -577,20 +566,22 @@ def build_parser():
 
     check = sub.add_parser(
         "check",
-        help="run the T0 checks (continues after a failure)",
-        description=(
-            "Run the T0 checks one by one and keep going after a failure. "
-            "Print a summary table and a tier line that names only the checks "
-            "that passed. Does not run scripts/check.sh."
-        ),
+        help="run every registered rule for a stage (default t0)",
+        description="Run the rules in tools/vac_rules.py. Exit 0 pass, 1 a rule failed, 2 usage, 3 a tool is missing.",
     )
-    check.add_argument(
-        "--only",
-        metavar="NAME",
-        choices=[item.name for item in CHECKS],
-        help="run a single check instead of the whole T0 set",
-    )
+    check.add_argument("--t1", action="store_true", help="run stage t1, the full gate; tier T1 only if every rule ran and passed")
+    check.add_argument("--stage", choices=("t0", "t1", "pr", "rc", "release"), default="t0")
+    check.add_argument("--changed", metavar="BASE", help="run only rules watching paths changed since BASE")
+    check.add_argument("--rule", action="append", metavar="ID", help="run only this rule (repeatable)")
+    check.add_argument("--json", action="store_true", help="JSON Lines with a final summary object")
     check.set_defaults(func=cmd_check)
+
+    rules = sub.add_parser("rules", help="list every rule: id, stages, title")
+    rules.set_defaults(func=cmd_rules)
+
+    explain = sub.add_parser("explain", help="explain a rule id, or the rules that watch a path")
+    explain.add_argument("target")
+    explain.set_defaults(func=cmd_explain)
 
     run = sub.add_parser(
         "run",
