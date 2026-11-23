@@ -48,6 +48,7 @@ BEND_MUTANTS = [
     ("events_zero_counter", "    case _:\n      counter\n\ndef seal", "    case _:\n      0n\n\ndef seal"),
     ("clock_jumps_forward", "seal(at, next_counter(m, counter, e, at), core_step", "seal(Nat.add(at, 1n), next_counter(m, counter, e, at), core_step"),
     ("rejected_reset_burns_counter", "      next_counter_with(reset_ok(m, counter, s, n, f, na, at), counter, n)", "      n"),
+    ("kill_lowers_to_freeze", "case ModeKill{} _:\n      StepResult{core_state(ModeKill{}, d), NoMore{}}", "case ModeKill{} _:\n      StepResult{core_state(ModeFreeze{}, d), NoMore{}}"),
 ]
 
 RUST_MUTANTS = [

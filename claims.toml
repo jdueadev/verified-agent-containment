@@ -46,7 +46,8 @@ status = "proved"
 evidence = ["law:tighten_only", "law:no_sequence_lowers_containment", "law:no_recovery_without_reset",
   "law:counter_needs_accepted_reset", "law:hard_rule_reaches_level", "law:kill_needs_accepted_reset",
   "mutant:restrict_can_lower", "mutant:hard_rule_ignored", "mutant:kill_signal_recovers", "mutant:hold_freeze_thaws",
-  "mutant:freeze_repeat_restores", "mutant:events_zero_counter", "mutant:rejected_reset_burns_counter"]
+  "mutant:freeze_repeat_restores", "mutant:events_zero_counter", "mutant:rejected_reset_burns_counter",
+  "mutant:kill_lowers_to_freeze"]
 falsifier = "An unsigned sequence that ends in a lower mode, a changed counter, or a thaw/rebuild/restore action"
 files = ["formal/kernel.bend", "formal/LAWS.bend"]
 
