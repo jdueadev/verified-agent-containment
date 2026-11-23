@@ -129,21 +129,24 @@ class RepositoryTests(unittest.TestCase):
     def run_copy(self, edit, prepare=None, args=()):
         with tempfile.TemporaryDirectory() as tmp:
             copy = Path(tmp) / "repo"
-            subprocess.run(["git", "-C", str(ROOT), "worktree", "add", "-q", "--detach", str(copy), "HEAD"],
+            # A clone of its own, sharing objects read-only: the judges (spec, the check
+            # container) mount this checkout's gitdir read-only, so `git worktree add`,
+            # which writes into it, cannot run there.
+            head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], check=True, capture_output=True,
+                                  text=True).stdout.strip()
+            subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", str(ROOT), str(copy)],
                            check=True, capture_output=True)
-            try:
-                for name in ("tools/claims_check.py", "tools/rust_tokens.py"):
-                    shutil.copy2(ROOT / name, copy / name)
-                if prepare is not None:
-                    prepare(copy)
-                path = copy / "docs/claims.md"
-                path.write_text(edit(path.read_text(encoding="utf-8")), encoding="utf-8", newline="\n")
-                child = subprocess.run([sys.executable, "-I", "-B", str(copy / "tools/claims_check.py"), *args],
-                                       cwd=copy, capture_output=True, text=True, timeout=300)
-                return child.returncode, json.loads(child.stdout[child.stdout.index("{"):])
-            finally:
-                subprocess.run(["git", "-C", str(ROOT), "worktree", "remove", "--force", str(copy)],
-                               capture_output=True)
+            subprocess.run(["git", "-C", str(copy), "checkout", "-q", "--detach", head], check=True,
+                           capture_output=True)
+            for name in ("tools/claims_check.py", "tools/rust_tokens.py"):
+                shutil.copy2(ROOT / name, copy / name)
+            if prepare is not None:
+                prepare(copy)
+            path = copy / "docs/claims.md"
+            path.write_text(edit(path.read_text(encoding="utf-8")), encoding="utf-8", newline="\n")
+            child = subprocess.run([sys.executable, "-I", "-B", str(copy / "tools/claims_check.py"), *args],
+                                   cwd=copy, capture_output=True, text=True, timeout=300)
+            return child.returncode, json.loads(child.stdout[child.stdout.index("{"):])
 
     def test_hand_edited_status_fails_without_strict(self):
         def forge(text):
