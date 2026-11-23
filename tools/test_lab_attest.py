@@ -214,6 +214,16 @@ class KeyRefreshTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             la.merge_keys({"keys": [self.key("k", n="AAAA")]}, {"keys": [self.key("k", n="BBBB")]})
 
+    def test_evidence_signed_with_a_rotated_out_key_still_verifies_after_refresh(self):
+        old = dict(TEST_KEYS["keys"][0], kid="old")
+        new = dict(TEST_KEYS["keys"][0], kid="new")
+        merged = la.merge_keys({"keys": [old]}, {"keys": [new]})
+        for kid in ("old", "new"):
+            files = recorded(token=sign(good_claims(), kid=kid))
+            self.assertEqual(la.verify_dir(WHERE, files, COMMIT, POLICY, merged), [], kid)
+        signed_old = recorded(token=sign(good_claims(), kid="old"))
+        self.assertNotEqual(la.verify_dir(WHERE, signed_old, COMMIT, POLICY, {"keys": [new]}), [])
+
     def test_refetching_the_same_keys_changes_nothing(self):
         pinned = {"keys": [self.key("a"), self.key("b")]}
         self.assertEqual(la.merge_keys(pinned, {"keys": [self.key("b"), self.key("a")]}), pinned)
