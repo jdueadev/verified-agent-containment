@@ -171,9 +171,10 @@ This is for a checkout of `main`. `git pull` with no arguments only works when t
 ```bash
 git pull origin main
 cargo build --release -p containment-host
+cargo build -q --locked -p containment-host
 ```
 
-On a clone of `main` that was behind, `git pull origin main` fast-forwarded `0babf9e..906b568` and exited 0. The rebuild is the release command from [Build](#build), which exited 0. On a feature branch, `git pull origin main` merges `main` into that branch. Do not use it there. [Change something](#change-something) updates a feature branch with rebase.
+On a clone of `main` that was behind, `git pull origin main` fast-forwarded `0babf9e..906b568` and exited 0. Both rebuilds are the commands from [Build](#build). The release one exited 0. The debug one exited 0 and printed nothing. `driver.mjs servers` runs `target/debug/containment-lab`, so the upgrade rebuilds that binary too. On a feature branch, `git pull origin main` merges `main` into that branch. Do not use it there. [Change something](#change-something) updates a feature branch with rebase.
 
 ## Change something
 
