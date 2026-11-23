@@ -36,9 +36,9 @@ traceback and a last stderr line that starts with "fresh-reviews: " and contains
 expect_error, which is how a workflow step stops. Anything else, such as unreadable
 output, a null verdict, another lane, an argparse error or a crash, fails the case.
 
-`approval` is in STAGED, not CHECKERS: the runner knows it, but the corpus has no
-approval cases until the checker has fresh-reviews (#149, PR 2). That change moves it
-into CHECKERS, which requires every checker to have cases.
+`approval` moved from STAGED into CHECKERS with its first cases and the checker's
+fresh-reviews (#149, PR 2). STAGED holds a kind the runner knows before the corpus has
+cases of it; CHECKERS requires every checker to have cases.
 
 The checker runs as a black box: the head's policy_check.py and rust_tokens.py are
 copied into a new git repository built from the case, and run there with `python3 -I
@@ -58,10 +58,10 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-CHECKERS = ("classify", "invariants")
+CHECKERS = ("classify", "invariants", "approval")
 # Known to the runner, but not yet required to have cases. Each moves into CHECKERS
 # in the change that adds its first cases.
-STAGED = ("approval",)
+STAGED = ()
 KINDS = CHECKERS + STAGED
 INPUT_NAME = re.compile(r"[a-z][a-z0-9-]*\.json")
 GATE_FILES = ("tools/policy_check.py", "tools/rust_tokens.py")
