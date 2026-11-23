@@ -4,10 +4,56 @@ import json, os, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from kernel_mutants import BEND_MUTANTS, RUST_MUTANTS
 from rust_tokens import splice_once
 
 ROOT = Path(__file__).resolve().parents[1]
+MUTANT_LISTS = ("BEND_MUTANTS", "RUST_MUTANTS")
+
+
+def load_mutants(text):
+    """BEND_MUTANTS and RUST_MUTANTS from tools/kernel_mutants.py, read as data (#185).
+
+    The file is lane B. Importing it ran it inside this judge, where it could patch
+    subprocess or exit 0 before any mutant ran. Now it is parsed, never executed: only a
+    module docstring and pure-literal assignments to plain names, each list exactly once,
+    and each mutant a (name, old, new) triple of strings with a non-empty name and old
+    text (new may be empty, to delete) and unique names.
+    claims_check.py reads the same file the same way."""
+    import ast
+    out = {}
+    for index, node in enumerate(ast.parse(text).body):
+        where = f"tools/kernel_mutants.py line {node.lineno}"
+        if index == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) \
+                and isinstance(node.value.value, str):
+            continue
+        if not (isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)):
+            raise ValueError(f"{where}: only literal assignments to plain names are allowed")
+        try:
+            value = ast.literal_eval(node.value)
+        except (ValueError, TypeError, SyntaxError):
+            raise ValueError(f"{where}: {node.targets[0].id} is not a pure literal") from None
+        name = node.targets[0].id
+        if name in MUTANT_LISTS:
+            if name in out:
+                raise ValueError(f"{where}: {name} is assigned more than once")
+            if not isinstance(value, list) or not value:
+                raise ValueError(f"{where}: {name} must be a non-empty list")
+            for entry in value:
+                # The replacement may be empty: a mutant can delete the matched code.
+                if not (isinstance(entry, tuple) and len(entry) == 3 and all(isinstance(part, str) for part in entry)
+                        and entry[0] and entry[1]):
+                    raise ValueError(f"{where}: {name} has an entry that is not (name, old, new)")
+            names = [entry[0] for entry in value]
+            if len(names) != len(set(names)):
+                raise ValueError(f"{where}: {name} repeats a mutant name")
+            out[name] = value
+    missing = [name for name in MUTANT_LISTS if name not in out]
+    if missing:
+        raise ValueError(f"tools/kernel_mutants.py: {', '.join(missing)} missing")
+    return out["BEND_MUTANTS"], out["RUST_MUTANTS"]
+
+
+BEND_MUTANTS, RUST_MUTANTS = load_mutants((ROOT / "tools/kernel_mutants.py").read_text(encoding="utf-8"))
 BEND = os.environ.get("BEND", "bend")
 def run(cmd, **kw):
     return subprocess.run(cmd, text=True, capture_output=True, **kw)
