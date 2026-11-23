@@ -12,6 +12,7 @@ lag decision 0002 accepts and tools/test_claims_check.py pins; --strict, at
 release, refuses it.
 """
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -151,24 +152,51 @@ class RepositoryTests(unittest.TestCase):
 
     def test_a_table_lagging_a_new_staleness_warns_and_strict_refuses(self):
         """Make a fresh claim stale in the copy, by committing a change to a file it lists,
-        and leave docs/claims.md as it was: the lag decision 0002 accepts until release."""
+        and leave docs/claims.md as it was: the lag decision 0002 accepts until release.
+
+        The fresh claim is built in the copy, so the test does not depend on the checkout's
+        history: the spec job checks the head out at depth 1, where no platform commit of
+        claims.toml is reachable and every claim is stale. Commit A is empty; commit B adds an
+        artifact naming A under results/ (CI-9), a passing platform at A for one claim, and the
+        regenerated table; commit C changes a file that claim lists."""
+        def git(copy, *args):
+            return subprocess.run(["git", "-C", str(copy), "-c", "user.name=t", "-c", "user.email=t@localhost",
+                                   *args], check=True, capture_output=True, text=True).stdout.strip()
+
         def make_stale(copy):
-            report = json.loads(subprocess.run([sys.executable, "-I", "-B", str(copy / "tools/claims_check.py")],
-                                               cwd=copy, capture_output=True, text=True, timeout=300).stdout)
-            stale_ids = {w.split()[1].rstrip(":") for w in report["stale"] if w.startswith("CI-4 ")}
             claims = tomllib.loads((copy / "claims.toml").read_text(encoding="utf-8"))["claim"]
-            for claim in claims:
-                files = [f for f in claim.get("files", []) if (copy / f).is_file() and f.endswith((".rs", ".py"))]
-                if claim.get("platforms") and claim["id"] not in stale_ids and files:
-                    target = copy / files[0]
-                    target.write_text(target.read_text(encoding="utf-8") + "\n// drift test\n"
-                                      if files[0].endswith(".rs") else target.read_text(encoding="utf-8") + "\n# drift test\n",
-                                      encoding="utf-8")
-                    for args in (["add", files[0]], ["-c", "user.name=t", "-c", "user.email=t@localhost",
-                                                     "commit", "-q", "-m", "make a claim stale"]):
-                        subprocess.run(["git", "-C", str(copy), *args], check=True, capture_output=True)
-                    return
-            self.fail("no fresh claim with a listed source file to make stale")
+            claim = next((c for c in claims if c.get("platforms")
+                          and any((copy / f).is_file() and f.endswith((".rs", ".py")) for f in c.get("files", []))),
+                         None)
+            if claim is None:
+                self.fail("no claim with platforms and a listed source file")
+            listed = next(f for f in claim["files"] if (copy / f).is_file() and f.endswith((".rs", ".py")))
+            git(copy, "commit", "-q", "--allow-empty", "-m", "platform commit")
+            commit = git(copy, "rev-parse", "HEAD")
+            artifact = copy / "results" / f"drift-test-{commit}" / "run.txt"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text("drift test\n", encoding="utf-8")
+            text = (copy / "claims.toml").read_text(encoding="utf-8")
+            block = re.search(r'(?ms)^id = "' + re.escape(claim["id"]) + r'"\n.*?^platforms = \[.*?\]$', text)
+            self.assertIsNotNone(block, claim["id"])
+            entry = f', {{ name = "drift-test", commit = "{commit}", result = "pass" }}]'
+            text = text[:block.end() - 1] + entry + text[block.end():]
+            (copy / "claims.toml").write_text(text, encoding="utf-8", newline="\n")
+            subprocess.run([sys.executable, "-I", "-B", str(copy / "tools/claims_check.py"), "--write"],
+                           cwd=copy, capture_output=True, text=True, timeout=300)
+            git(copy, "add", "-A")
+            git(copy, "commit", "-q", "-m", "fresh claim")
+            fresh = json.loads(subprocess.run([sys.executable, "-I", "-B", str(copy / "tools/claims_check.py")],
+                                              cwd=copy, capture_output=True, text=True, timeout=300).stdout)
+            self.assertFalse([w for w in fresh["stale"] if w.startswith(f"CI-4 {claim['id']}:")], fresh["stale"])
+            self.assertNotIn("docs/claims.md will need regeneration after refreshing stale lab evidence",
+                             fresh["stale"])
+            target = copy / listed
+            target.write_text(target.read_text(encoding="utf-8")
+                              + ("\n// drift test\n" if listed.endswith(".rs") else "\n# drift test\n"),
+                              encoding="utf-8")
+            git(copy, "add", listed)
+            git(copy, "commit", "-q", "-m", "make a claim stale")
         code, result = self.run_copy(lambda text: text, prepare=make_stale)
         self.assertEqual((code, result["errors"]), (0, []))
         self.assertIn("docs/claims.md will need regeneration after refreshing stale lab evidence", result["stale"])
