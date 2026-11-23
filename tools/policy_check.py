@@ -11,15 +11,20 @@ Usage:
 classify   prints the lane of the diff between two commits. Lanes are defined in
            ci/lanes.toml. A ratchet raises the lane to C when the change removes
            or rewords a law, mutant, scenario or sabotage control, or weakens a
-           row of claims.toml, or adds agent configuration outside the root
-           allow-list. With --enforce, a lane C change (or any change from a
+           row of claims.toml, adds agent configuration below the root, or
+           departs from written-once handovers (a rewrite, rename, re-used
+           path, removal, or handover mixed with other work). With --enforce, a lane C change (or any change from a
            fork) fails unless the maintainer approved the head commit.
 codeowners checks that .github/CODEOWNERS is exactly lane C (--write regenerates it).
 invariants checks rules that hold on every commit: `sabotage` is not a default
            feature, the lane map parses, CODEOWNERS matches it, and the kernel
            stays pure (no_std, no unsafe, nothing beyond core, no build-time
            file or environment reads), and the tracked .claude/ holds only
-           allow-listed regular files and a settings.json with allowed keys.
+           allow-listed regular files under plain ASCII names that no
+           checkout folds together, with no agent names inside, dated flat
+           handovers, prompt frontmatter keys from PROMPT_KEYS, no shell
+           injection or carriage returns in prompts, and a settings.json with
+           allowed keys.
            With --ref it checks that commit, read
            through git, instead of the working tree, so `policy` can run it from
            the base branch against an untrusted head.
@@ -433,7 +438,7 @@ FRONTMATTER_KEY = re.compile(r"[A-Za-z0-9_-]+:(?: |$)")
 # A skill's `!` + backquoted command, or a fenced block opened with ```!, runs when
 # the skill loads, without a prompt.
 SHELL_INJECTION = re.compile(r"!`|^[ \t]*(?:`{3,}|~{3,})[ \t]*!", re.M)
-# Handovers are written once and kept as written. Every change to that rule (a
+# Handovers are written once and kept as written. Every departure from that rule (a
 # rewrite, a replacement, a re-used path, a handover mixed with other work, a
 # removal) escalates with its own reason, so the maintainer sees it; the maintainer
 # chose a flag over a hard failure (#169). One flat directory of dated names.
@@ -444,10 +449,12 @@ MODE_NAMES = {"120000": "symbolic link", "160000": "gitlink (submodule)", "04000
 
 
 def _folded(name):
-    """One path component as a Windows or macOS checkout would see it: NFKC, case
+    """One path component as a Windows or macOS checkout would see it: NFKC, without
+    the format characters (zero-width joiners and the like) that HFS+ ignores, case
     folded, without the trailing dots and spaces Windows drops, and without an NTFS
     `:stream` suffix."""
-    return unicodedata.normalize("NFKC", name).split(":", 1)[0].rstrip(" .").casefold()
+    name = "".join(c for c in unicodedata.normalize("NFKC", name) if unicodedata.category(c) != "Cf")
+    return name.split(":", 1)[0].rstrip(" .").casefold()
 
 
 def agent_config_escalations(paths):
@@ -541,6 +548,10 @@ def frontmatter_errors(path, text):
     """A shared skill or agent prompt: frontmatter keys from PROMPT_KEYS only, written
     plainly, and no command that runs when the prompt loads."""
     out = []
+    if "\r" in text:
+        # The reader folds CRLF, so a CR here ends no line for us, but YAML reads a
+        # lone CR as a line break: `name: a<CR>allowed-tools: x` is two keys to it.
+        out.append(f"{path}: contains a carriage return, which YAML reads as a line break")
     lines = text.lstrip("﻿").split("\n")
     if lines and lines[0].rstrip() == "---":
         # YAML lets the whole root mapping be indented, so the root's indent is that
@@ -610,6 +621,10 @@ def claude_path_errors(entries, get):
             out.append(f"{path}: {top!r} opens as {CLAUDE_DIR!r} on a case-insensitive checkout; "
                        f"only the exact name {CLAUDE_DIR!r} is allowed")
             continue
+        if not path.isascii() or any(_folded(part) != part.casefold() for part in path.split("/")):
+            out.append(f"{path}: names under {CLAUDE_DIR}/ must be plain ASCII that every checkout "
+                       "opens as written (no trailing dot or space, no `:`)")
+            continue
         if path == CLAUDE_DIR:
             out.append(f"{path}: is a {MODE_NAMES.get(mode, 'file')}, not a directory")
             continue
@@ -635,7 +650,10 @@ def claude_path_errors(entries, get):
             except ValueError as error:
                 out.append(f"{path}: cannot be read ({error})")
                 continue
-            out.extend(frontmatter_errors(path, text or ""))
+            if text is None:
+                out.append(f"{path}: is tracked but cannot be read")
+                continue
+            out.extend(frontmatter_errors(path, text))
     if CLAUDE_SETTINGS in entries and entries[CLAUDE_SETTINGS][0] in REGULAR_MODES:
         try:
             out.extend(settings_errors(get(CLAUDE_SETTINGS)))

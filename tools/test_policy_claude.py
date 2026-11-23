@@ -2,8 +2,8 @@
 """Tests for the shared .claude/ rules in tools/policy_check.py (#169).
 
 The pure rules are tested directly. What needs real git objects (symbolic links,
-gitlinks, a CRLF-only or mode-only rewrite, the exit status of a violation that an
-approval cannot clear) runs the checker as a child process in a throwaway repository,
+gitlinks, a CRLF-only or mode-only rewrite, the exit status under --enforce before
+and after an approval) runs the checker as a child process in a throwaway repository,
 the way `policy` and the corpus runner do. The corpus cannot hold those cases: its
 runner copies trees without keeping links, and `spec_links` rejects links under
 ci/corpus/.
@@ -69,7 +69,7 @@ class ClaudePathTests(unittest.TestCase):
         tree = entries(".claude/hooks/guard.py", ".claude/skills/s/SKILL.md", ".claude/agents/a.md",
                        ".claude/handover/HANDOVER-2026-01-01-0000.md", "README.md", "docs/x.md")
         tree[".claude/hooks/run.sh"] = ("100755", BLOB)
-        self.assertEqual(self.errors(tree), [])
+        self.assertEqual(self.errors(tree, "---\nname: s\n---\n"), [])
 
     def test_off_the_list_fails(self):
         for path in (".claude/ship-state.md", ".claude/settings.local.json", ".claude/commands/x.md",
@@ -105,7 +105,9 @@ class ClaudePathTests(unittest.TestCase):
     def test_settings_must_be_one_json_object(self):
         tree = entries(".claude/settings.json")
         for text in ("", "[]", "not json", '{"a": 1} trailing', '{"x": 1, "x": 2}'):
-            self.assertEqual(len(self.errors(tree, text)), 1, text)
+            found = self.errors(tree, text)
+            self.assertEqual(len(found), 1, text)
+            self.assertIn("is not a JSON object", found[0], text)
 
 
 class HandoverRuleTests(unittest.TestCase):
@@ -205,13 +207,15 @@ class InsideClaudeTests(unittest.TestCase):
         # YAML allows an indented root mapping, so indentation does not hide a key.
         for text in ("---\n  allowed-tools: Bash\n---\n", "---\n  name: s\n  allowed-tools: Bash\n---\n",
                      "---\n    name: s\n  allowed-tools: Bash\n---\n", "---\n\tallowed-tools: Bash\n---\n"):
-            self.assertTrue(self.errors({".claude/skills/s/SKILL.md": text}), text)
+            found = self.errors({".claude/skills/s/SKILL.md": text})
+            self.assertTrue(any("'allowed-tools'" in e or "tab" in e or "not a plain" in e for e in found), (text, found))
         self.assertEqual(self.errors({".claude/skills/s/SKILL.md": "---\n  name: s\n  description: d\n    more\n---\n"}), [])
 
     def test_unplain_or_unclosed_frontmatter_fails(self):
         for text in ("---\n? allowed-tools\n: Bash\n---\n", '---\n"allowed-tools": x\n---\n',
                      "---\n{allowed-tools: x}\n---\n", "---\nname: s\n"):
-            self.assertTrue(self.errors({".claude/agents/a.md": text}), text)
+            found = self.errors({".claude/agents/a.md": text})
+            self.assertTrue(any("not a plain `key: value`" in e or "not closed" in e for e in found), (text, found))
 
     def test_shell_injection_fails(self):
         for body in ("Run !`id` first.", "```!\nid\n```", "  ~~~ !\nid\n~~~"):
@@ -220,10 +224,50 @@ class InsideClaudeTests(unittest.TestCase):
         self.assertEqual(self.errors({".claude/skills/s/x.md": "Use ! to negate, and `x != y`; ```sh\nls\n```\n"}), [])
 
     def test_settings_edge_cases_report_not_crash(self):
-        deep = "[" * 100000 + "]" * 100000
-        for text in (deep, '{"a": "' + "x" * (70 * 1024) + '"}'):
+        deep = "[" * 20000 + "]" * 20000  # under the size cap; reported, whatever the parser's depth limit
+        for text, phrase in ((deep, "is not a JSON object"), ('{"a": "' + "x" * (70 * 1024) + '"}', "larger than")):
             found = self.errors({".claude/settings.json": text})
             self.assertEqual(len(found), 1)
+            self.assertIn(phrase, found[0])
+
+    def test_carriage_returns_in_prompts_fail(self):
+        # YAML reads a lone CR as a line break, so it would hide a second key.
+        for text in ("---\nname: a\rallowed-tools: Bash(*)\n---\n", "---\r\nallowed-tools: Bash\r\n---\r\n"):
+            found = self.errors({".claude/skills/s/SKILL.md": text})
+            self.assertTrue(any("carriage return" in e for e in found), (text, found))
+
+    def test_bom_does_not_hide_frontmatter(self):
+        found = self.errors({".claude/skills/s/SKILL.md": "\ufeff---\nallowed-tools: Bash\n---\n"})
+        self.assertTrue(any("'allowed-tools'" in e for e in found), found)
+
+    def test_upper_case_md_is_a_prompt(self):
+        found = self.errors({".claude/skills/s/SKILL.MD": "---\nallowed-tools: Bash\n---\n"})
+        self.assertTrue(any("'allowed-tools'" in e for e in found), found)
+
+    def test_names_must_open_as_written(self):
+        for path in (".claude/skills/s/SKILL.md.", ".claude/agents/a.MD:x", ".claude/hooks/x ",
+                     ".claude/skills/\u00e9/SKILL.md", ".claude/skills/s\u200d/SKILL.md"):
+            found = self.errors({path: "---\nallowed-tools: Bash\n---\n"})
+            self.assertEqual(len(found), 1, path)
+            self.assertIn("plain ASCII", found[0], path)
+
+    def test_format_characters_do_not_hide_names(self):
+        found = self.errors({".cla\u200cude/settings.json": "{}"})
+        self.assertTrue(any("case-insensitive" in e for e in found), found)
+        self.assertEqual(len(pc.agent_config_escalations(["docs/CLA\u200dUDE.md"])), 1)
+
+    def test_unreadable_prompt_is_an_error(self):
+        tree = {".claude/agents/a.md": ("100644", BLOB)}
+        def broken(path):
+            raise ValueError("not UTF-8")
+        self.assertTrue(any("cannot be read" in e for e in pc.claude_path_errors(tree, broken)))
+        self.assertTrue(any("cannot be read" in e for e in pc.claude_path_errors(tree, lambda path: None)))
+
+    def test_case_variant_of_an_earlier_handover(self):
+        earlier = frozenset({pc._folded(".claude/handover/HANDOVER-2026-01-01-0000.md")})
+        lower = ".claude/handover/handover-2026-01-01-0000.md"
+        found = pc.handover_escalations([lower], {}, {lower: ("100644", BLOB)}, earlier)
+        self.assertEqual(found, [f"handover {lower} existed before: a removed handover is not written again"])
 
 
 class RepositoryTests(unittest.TestCase):
@@ -344,6 +388,13 @@ class RepositoryTests(unittest.TestCase):
         self.base = self.commit("remove")
         self.write(".claude/handover/HANDOVER-2026-01-01-0000.md", "new words\n")
         self.flagged(self.commit("re-add"), "handover .claude/handover/HANDOVER-2026-01-01-0000.md existed before: a removed handover is not written again")
+
+    def test_recreating_under_another_case_is_flagged(self):
+        self.git("rm", "-q", ".claude/handover/HANDOVER-2026-01-01-0000.md")
+        self.base = self.commit("remove")
+        lower = ".claude/handover/handover-2026-01-01-0000.md"
+        self.write(lower, "new words\n")
+        self.flagged(self.commit("re-add"), f"handover {lower} existed before: a removed handover is not written again")
 
     def test_removed_handover_is_flagged(self):
         self.git("rm", "-q", ".claude/handover/HANDOVER-2026-01-01-0000.md")

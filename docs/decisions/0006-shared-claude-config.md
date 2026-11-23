@@ -46,7 +46,8 @@ case-insensitive checkout opens `.Claude/` as `.claude/`.
 The design review (#169) found two blocking gaps in the first proposal:
 nested and case-variant configuration, and code that runs at checkout before
 anyone reviews it. It also found that an escalation-only handover ratchet adds
-nothing under lane C.
+no gate under lane C, only a visible reason. The maintainer chose that
+visibility for handovers (rule 6).
 
 ## Decision
 
@@ -60,14 +61,21 @@ nothing under lane C.
    `CLAUDE.md` and the root `.claude/` directory itself; such a name inside
    `.claude/` still escalates. A nested file may still be added, with the
    maintainer.
-3. **The tracked root `.claude/` is an allow-list.** `invariants` reads
-   tracked entries from git (`ls-tree -r -z` for a ref, `ls-files -s -z` for
-   the working tree), never the disk, and rejects:
+3. **The tracked root `.claude/` is an allow-list.** `invariants` takes the
+   list of tracked entries from git (`ls-tree -r -z` for a ref, `ls-files -s
+   -z` for the working tree), never from a directory listing. With a ref it
+   reads contents from that commit; in working-tree mode, which only local
+   `check.sh` uses, it reads them from disk. It rejects:
    - anything outside `settings.json`, `hooks/`, `skills/`, `agents/` and
      `handover/`;
    - anything that is not a regular file there, such as a symbolic link or a
      gitlink, including `.claude` itself;
-   - a top-level name that equals `.claude` only under casefold;
+   - a top-level name other than `.claude` that folds to `.claude` (rule 2's
+     folding, which also drops format characters such as zero-width joiners,
+     because HFS+ ignores them);
+   - a name under `.claude/` that is not plain ASCII, or that a Windows
+     checkout would open under another name (a trailing dot or space, or a
+     `:`);
    - two paths under `.claude/` that a case-insensitive checkout would write
      to the same file;
    - an agent configuration name (rule 2) anywhere inside `.claude/`, so a
@@ -90,8 +98,12 @@ nothing under lane C.
      Markdown file under `.claude/skills/` or `.claude/agents/` may use: only
      `name`, `description` and `disable-model-invocation`. `allowed-tools`,
      `hooks`, `model`, `permissionMode`, `mcpServers` and the rest grant or run
-     something before review, and each is added the same way. Frontmatter
-     must be plain `key: value` lines and must be closed.
+     something before review, and each is added the same way. Each line at
+     the root mapping's indent (YAML allows the whole mapping to be indented)
+     must be a plain `key: value`; deeper lines continue a value. The
+     frontmatter must be closed, may not be indented with tabs, and the file
+     may not contain a carriage return, which YAML reads as a line break and
+     which would hide a second key on what looks like one line.
    - **No commands at load.** No such file may contain the shell-injection
      forms: `!` before a backquote, or a fence opened with `!`.
 5. **Shared configuration executes only lane C files.** A shared hook, helper

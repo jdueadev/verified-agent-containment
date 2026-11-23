@@ -47,8 +47,8 @@ symbolic link always is (`docs/decisions/0005-root-judges-and-immutable-spec.md`
 **INV-3. A checker is part of the proof.** Workflows, `scripts/`, the checker
 and verifier tools, the attack harness and suites, the existing tool and kernel
 law tests, `ci/`, this file and the shared Claude Code configuration
-(`.claude/`, and any `CLAUDE.md`, `AGENTS.md`, `.claude/` or `.mcp.json` below the
-root) are the trusted base. Change them only on
+(`.claude/`, and any other `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `.claude/`
+or `.mcp.json`, at any depth or in any case) are the trusted base. Change them only on
 purpose, in a change that says so. Loosening an assertion in a scenario weakens
 evidence exactly as deleting the scenario would.
 *Enforced by:* lane C in `ci/lanes.toml` and `.github/CODEOWNERS`. An existing
