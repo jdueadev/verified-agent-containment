@@ -39,6 +39,20 @@ D = int(
     "e74b6871b2d7f9698501245e56299506b29203748100fd6fbd109cc5cb4718cc1a9ccc9", 16)
 E = 65537
 KID = "test-key"
+N2 = int(
+    "e7dee28fb9fd0bc7d569ec6de7ac9170685a06b31bad5a8bd89fdb860254700af6d1b4c76114a983c9cd85dc"
+    "eee27c29ec93d01cd641415e5a96a12ddca7b49564f1643250ba4d6125240f6018ede48171348ea87cd8a375"
+    "a0cdb92097d5cceed8f3c360c80a18a680e4cf5a8802fa0803e410831704600b980bffae0268fdc36e81a9da"
+    "a16f103da588d2e06a7bca18c8df49c000204f657d81f0d22e5be9aeae8d7d996739c24ced687272110e3184"
+    "c2cd4d834dfea3529f32fe07b83f38d20f75f9576518a84551c5032b37a5ae6cb70b376d50d186396b54cb56"
+    "84ef27077f2065b539461feae5b737cc232aa152a0f97478dc3e706acbef0d059e73a717", 16)
+D2 = int(
+    "3b0ad64622e5fc89f61df2c649a7f7a0d7f194a326f90d856eb3c60269b576925427321152f71ff31effe686"
+    "4b8e006fec7df71060be5d16d99a61907c0f783c5267e54baaa2c5f166b3b7f69062833d32c65f4d27fd4222"
+    "41c020d3dbd5e5492c9565bacf3542f1a300a08c3cf60514e568bd8ba3e0c9542a7363b7bb8560985705fb1b"
+    "a66b99bd71465d88db80cc7d60e6fbc5c5aeae99f049685f172879a438dab0e1b8b94aee4b3912b8b7f7865f"
+    "c6c03d83bceb642fefbc56b9f22f9a581576aea4024c99469b4d412f0d4ea6f1b031459819164ffe7e9d472b"
+    "06218137f59a46d32851c28a7618df6fa6616f32c7c9195c0bfab8856ed98faf6fe27a9", 16)
 
 
 def b64(data):
@@ -52,14 +66,14 @@ def int_b64(value):
 TEST_KEYS = {"keys": [{"kty": "RSA", "kid": KID, "alg": "RS256", "n": int_b64(N), "e": int_b64(E)}]}
 
 
-def sign(claims, kid=KID, d=D):
+def sign(claims, kid=KID, d=D, n=N):
     head = b64(json.dumps({"alg": "RS256", "kid": kid, "typ": "JWT"}).encode())
     body = b64(json.dumps(claims).encode())
     digest = hashlib.sha256(f"{head}.{body}".encode("ascii")).digest()
-    size = (N.bit_length() + 7) // 8
+    size = (n.bit_length() + 7) // 8
     padded = (b"\x00\x01" + b"\xff" * (size - len(gate_check.SHA256_INFO) - len(digest) - 3) + b"\x00"
               + gate_check.SHA256_INFO + digest)
-    signature = pow(int.from_bytes(padded, "big"), d, N).to_bytes(size, "big")
+    signature = pow(int.from_bytes(padded, "big"), d, n).to_bytes(size, "big")
     return f"{head}.{body}.{b64(signature)}"
 
 
@@ -216,13 +230,15 @@ class KeyRefreshTests(unittest.TestCase):
 
     def test_evidence_signed_with_a_rotated_out_key_still_verifies_after_refresh(self):
         old = dict(TEST_KEYS["keys"][0], kid="old")
-        new = dict(TEST_KEYS["keys"][0], kid="new")
+        new = dict(TEST_KEYS["keys"][0], kid="new", n=int_b64(N2))
         merged = la.merge_keys({"keys": [old]}, {"keys": [new]})
-        for kid in ("old", "new"):
-            files = recorded(token=sign(good_claims(), kid=kid))
-            self.assertEqual(la.verify_dir(WHERE, files, COMMIT, POLICY, merged), [], kid)
         signed_old = recorded(token=sign(good_claims(), kid="old"))
+        signed_new = recorded(token=sign(good_claims(), kid="new", d=D2, n=N2))
+        self.assertEqual(la.verify_dir(WHERE, signed_old, COMMIT, POLICY, merged), [])
+        self.assertEqual(la.verify_dir(WHERE, signed_new, COMMIT, POLICY, merged), [])
         self.assertNotEqual(la.verify_dir(WHERE, signed_old, COMMIT, POLICY, {"keys": [new]}), [])
+        crossed = recorded(token=sign(good_claims(), kid="new"))
+        self.assertNotEqual(la.verify_dir(WHERE, crossed, COMMIT, POLICY, merged), [])
 
     def test_refetching_the_same_keys_changes_nothing(self):
         pinned = {"keys": [self.key("a"), self.key("b")]}
