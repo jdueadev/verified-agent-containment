@@ -12,8 +12,9 @@
 # ENGINE=docker (the default) or ENGINE=podman. Nothing else can be set: every
 # pin comes from ci/pins.env and rust-toolchain.toml, passed as build-args.
 # A full run that passes on a clean, committed tree ends with
-# "Tier: T1 (container, image sha256:..., context <hash>)"; report the tier as
-# that line gives it. The image is linux/amd64 only.
+# "Tier: T1 (container, image sha256:..., context <hash>)"; a --no-strict run
+# ends with "Tier: T0 (...)", because it is not all of scripts/check.sh. Report
+# the tier as that line gives it. The image is linux/amd64 only.
 set -euo pipefail
 
 die() { echo "check-in-container: error: $*" >&2; exit 1; }

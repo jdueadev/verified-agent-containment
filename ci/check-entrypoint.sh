@@ -22,9 +22,10 @@
 #   - every tool reports exactly the version ci/pins.env and
 #     rust-toolchain.toml pin.
 # It also fails if check.sh printed SKIPPED or a unit test was skipped. A
-# passing run on a clean tree ends with a "Tier: T1 (container, ...)" line
-# naming the image id, the context hash, HEAD and the arguments. On a tree
-# with uncommitted changes it says so and prints no tier line.
+# passing run on a clean tree ends with a "Tier: ..." line naming the image id,
+# the context hash, HEAD and the arguments: T1 for a run with no arguments, T0
+# for --no-strict, which skips the strict claims verdict. On a tree with
+# uncommitted changes it says so and prints no tier line.
 #
 # These checks catch accidents and honest mistakes. They are not a defence
 # against a hostile image, which could print anything.
@@ -304,7 +305,14 @@ main() {
     say "scripts/check.sh passed on a tree with uncommitted changes, so this is no T1 result for HEAD $HEAD_SHA"
     return
   fi
-  echo "Tier: T1 (container, image $CHECK_IMAGE_ID, context $CONTEXT_HASH) at HEAD $HEAD_SHA (clean), scripts/check.sh${*:+ $*}"
+  # T1 is all of scripts/check.sh (AGENTS.md). --no-strict skips the strict
+  # claims verdict, so such a run is T0 however much else passed.
+  local tier=T1 why=""
+  if [ $# -gt 0 ]; then
+    tier=T0
+    why=": $* is not all of scripts/check.sh"
+  fi
+  echo "Tier: $tier (container, image $CHECK_IMAGE_ID, context $CONTEXT_HASH) at HEAD $HEAD_SHA (clean), scripts/check.sh${*:+ $*}$why"
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

@@ -81,7 +81,9 @@ entrypoint fails unless:
 
 It also fails if `check.sh` printed `SKIPPED` or a unit test was skipped. A
 passing run on a clean tree ends with `Tier: T1 (container, image
-sha256:..., context <hash>) at HEAD <sha> (clean), scripts/check.sh <args>`.
+sha256:..., context <hash>) at HEAD <sha> (clean), scripts/check.sh`. With
+`--no-strict` the line says `Tier: T0` and why: that run skips the strict
+claims verdict, so it is not all of `scripts/check.sh`.
 On a tree with uncommitted changes it says that `check.sh` passed and prints
 no tier line: the result is not one for HEAD. A locally built image has no
 registry digest, so `AGENTS.md` asks for the image id and the context hash
@@ -148,9 +150,11 @@ instead would pin only the packages the Dockerfile names.
   checksum, cargo with no network and no baked registry, a shallow clone, a
   partial clone, a run with the network on, a run without `--read-only`, a
   read-write checkout mount, and an image built from other pins.
-- A `--no-strict` run is reported as T1 with the argument in its tier line,
-  as `check` runs it on draft pull requests. Whether that counts as "all of
-  `scripts/check.sh`" is the maintainer's call; the line never hides it.
+- A `--no-strict` run is reported as T0, with the argument and the reason
+  in its tier line. The first draft printed T1 for it and left the question
+  to the maintainer; a line that is quoted as the tier must not claim more
+  than AGENTS.md's T1, "all of `scripts/check.sh`". While `main` carries
+  stale claims, no run reaches T1 in the container or on the host.
 - A tool bump now changes the checksum next to it in `ci/pins.env`.
 - The container's JRE and python are exact builds, while `check` takes
   `setup-java`'s newest Temurin 21 and the runner's python. The two can
