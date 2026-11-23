@@ -13,6 +13,15 @@ One command surface for the paths that do not need root:
       Pass through to the local node driver.
   vac status
       Checkout, binary freshness, toolchain.
+  vac preflight [--engine auto|podman|docker|host]
+      Before a root lab run: everything that needs no root. In the check
+      container (scripts/check-in-container.sh) when it and an engine are
+      present, otherwise the host crate's tests and both release builds on the
+      host. Then it names the lab evidence it did NOT exercise. Always T0, and
+      it records nothing.
+  vac lab plan
+      Print the steps for the maintainer's root lab run (T2) on main, and the
+      stale claims it would refresh. Prints only; runs nothing.
   vac attack-suite|live|live-suite|redteam|ctl|hud
       Refused with exit 2. AGENTS.md INV-11: throwaway machine only.
 
@@ -43,8 +52,19 @@ CHROMIUM_REL = (
     "chrome-linux64/chrome",
 )
 STATUSES = ("PASS", "FAIL", "SKIPPED")
+# Evidence only the root lab produces. A preflight never exercises these.
+LAB_KINDS = ("scenario", "sabotage", "live", "live-sabotage")
+CONTAINER_WRAPPER = Path("scripts/check-in-container.sh")
+ENGINES = ("auto", "podman", "docker", "host")
 
 Check = namedtuple("Check", "name argv")
+HOST_PREFLIGHT = (
+    ("host-tests", ("cargo", "test", "-q", "--locked", "-p", "containment-host")),
+    ("host-tests-sabotage", ("cargo", "test", "-q", "--locked", "-p", "containment-host", "--features", "sabotage")),
+    ("release-build", ("cargo", "build", "-q", "--locked", "--release", "-p", "containment-host")),
+    ("release-build-sabotage", ("cargo", "build", "-q", "--locked", "--release", "-p", "containment-host",
+                                "--features", "sabotage", "--target-dir", "target-sabotage")),
+)
 CHECKS = (
     Check("policy", ("python3", "tools/policy_check.py", "invariants")),
     Check("claims", ("python3", "tools/claims_check.py", "--affected", "origin/main")),
@@ -113,11 +133,12 @@ def warn_results(before):
     )
 
 
-def run_streaming(argv):
+def run_streaming(argv, env=None):
     """Run argv with inherited stdio. Returns the exit code, or 127 if it cannot start."""
-    print("+ " + quote_cmd(argv), flush=True)
+    shown = "".join(f"{key}={shlex.quote(value)} " for key, value in sorted((env or {}).items()))
+    print("+ " + shown + quote_cmd(argv), flush=True)
     try:
-        proc = subprocess.run(list(argv), cwd=ROOT)
+        proc = subprocess.run(list(argv), cwd=ROOT, env={**os.environ, **env} if env else None)
     except OSError as exc:
         print(f"vac: could not run {argv[0]}: {exc}", file=sys.stderr, flush=True)
         return 127
@@ -371,6 +392,158 @@ def cmd_status(_args):
     return 0
 
 
+def pick_engine(requested, which=shutil.which, wrapper_present=None):
+    """The engine a preflight uses: podman, docker, or host. `auto` takes the check
+    container when its wrapper is in this checkout and an engine is on PATH."""
+    if wrapper_present is None:
+        wrapper_present = (ROOT / CONTAINER_WRAPPER).is_file()
+    if requested == "host":
+        return "host"
+    if requested in ("podman", "docker"):
+        return requested if wrapper_present and which(requested) else None
+    if wrapper_present:
+        for engine in ("podman", "docker"):
+            if which(engine):
+                return engine
+    return "host"
+
+
+def preflight_steps(engine):
+    """(name, argv, env) for each preflight step. None of them needs root, and none
+    writes results/: the container judges a copy of the checkout, and the host
+    steps only test and build into target/ and target-sabotage/."""
+    if engine in ("podman", "docker"):
+        return [("container", (str(CONTAINER_WRAPPER), "--no-strict"), {"ENGINE": engine})]
+    return [(name, argv, None) for name, argv in HOST_PREFLIGHT]
+
+
+def stale_lab_evidence(report, claims):
+    """For each claim the strict claims check calls stale (CI-4), the lab-only
+    evidence it cites and the platforms it was recorded on: what a preflight does
+    not exercise and only a root lab run refreshes."""
+    by_id = {claim["id"]: claim for claim in claims}
+    out = []
+    for error in report.get("errors", []):
+        if not error.startswith("CI-4 "):
+            continue
+        cid = error.split()[1].rstrip(":")
+        claim = by_id.get(cid)
+        if claim is None:
+            continue
+        refs = [ref for ref in claim.get("evidence", []) if ref.partition(":")[0] in LAB_KINDS]
+        platforms = sorted({p.get("name", "?") for p in claim.get("platforms", [])})
+        out.append((cid, refs, platforms))
+    return out
+
+
+def read_stale_lab_evidence():
+    """Run the strict claims check (it only reads) and map its CI-4 errors."""
+    import json
+    import tomllib
+    try:
+        proc = subprocess.run([sys.executable, "tools/claims_check.py", "--strict"], cwd=ROOT,
+                              capture_output=True, text=True, timeout=600)
+        report = json.loads(proc.stdout[proc.stdout.index("{"):])
+        claims = tomllib.loads((ROOT / "claims.toml").read_text(encoding="utf-8"))["claim"]
+    except (OSError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
+        return None, f"could not read the strict claims check: {exc}"
+    # Only staleness is something a lab run fixes. Any other strict error means the
+    # list of what the lab would refresh cannot be trusted, so it is unknown.
+    other = [e for e in report.get("errors", []) if not e.startswith("CI-4 ")]
+    if other or (proc.returncode != 0 and not report.get("errors")):
+        shown = "; ".join(other[:3]) or f"exit {proc.returncode} with no errors listed"
+        return None, f"the strict claims check failed for reasons other than staleness: {shown}"
+    return stale_lab_evidence(report, claims), None
+
+
+def format_not_exercised(stale, problem=None):
+    """A preflight exercises no lab evidence at all; say so every time, then name
+    the stale claims that only a root lab run refreshes."""
+    lines = ["not exercised: any lab evidence (scenario, sabotage, live, live-sabotage); "
+             "a preflight runs none of it and records nothing"]
+    if problem:
+        lines.append(f"stale claims needing the root lab (T2): unknown ({problem})")
+    elif not stale:
+        lines.append("stale claims needing the root lab (T2): none reported by the strict claims check")
+    else:
+        lines.append("stale claims needing the root lab (T2):")
+        for cid, refs, platforms in stale:
+            lines.append(f"  {cid}: {', '.join(refs) or '(no lab refs)'}  (platforms: {', '.join(platforms) or 'none'})")
+    return "\n".join(lines) + "\n"
+
+
+def cmd_preflight(args):
+    engine = pick_engine(args.engine)
+    if engine is None:
+        print(f"vac: --engine {args.engine} needs {CONTAINER_WRAPPER} in this checkout and "
+              f"{args.engine} on PATH", file=sys.stderr)
+        return 2
+    rows = []
+    for name, argv, env in preflight_steps(engine):
+        print(f"== {name} ==", flush=True)
+        start = time.monotonic()
+        code = run_streaming(argv, env)
+        status = "PASS" if code == 0 else "FAIL"
+        rows.append((name, status, time.monotonic() - start))
+        print(f"-- {name}: {status}", flush=True)
+    stale, problem = read_stale_lab_evidence()
+    sys.stdout.write("\n" + format_summary(rows))
+    sys.stdout.write(format_not_exercised(stale, problem))
+    return 1 if any(status == "FAIL" for _name, status, _seconds in rows) else 0
+
+
+def lab_plan_text(commit, stale, problem=None, head_note=""):
+    """The maintainer's root lab run, as steps. Text only. `stale` is None when the
+    strict claims check could not say."""
+    if stale is None:
+        claims = f"  - unknown: {problem or 'the strict claims check could not be read'}. Fix that first."
+    else:
+        claims = "\n".join(f"  - {cid}: {', '.join(refs) or '(no lab refs)'} (platforms: {', '.join(platforms) or 'none'})"
+                           for cid, refs, platforms in stale) or "  - none: the strict claims check reports no stale claim"
+    return f"""Root lab run (T2): the maintainer runs this, never an agent (AGENTS.md INV-11, T2).
+
+Claims it would refresh (stale under --strict):
+{claims}
+
+Commit: {commit} (main). Lab evidence counts only for a commit on main (AGENTS.md).{head_note}
+
+1. Preflight first, here, without root:  tools/vac.py preflight
+   It must pass. It exercises none of the lab evidence above.
+2. Make the bundle from a checkout detached at exactly that commit (lab-inside.sh
+   clones it, so it must carry HEAD), and check the clone before you go on:
+     git fetch origin main && git checkout --detach {commit}
+     git bundle create repo.bundle HEAD
+     git clone -q repo.bundle /tmp/bundle-check && git -C /tmp/bundle-check rev-parse HEAD
+   The last line must print {commit}. Put repo.bundle in a lab folder on Windows
+   with run-lab.cmd, lab.ps1 and lab-inside.sh from scripts/lab/.
+3. Run the suites in a throwaway WSL2 distro (Windows interop disabled; the distro
+   is removed at the end; no model):
+     .\\run-lab.cmd -Only suites
+   Do not use this distro or the maintainer distro for it. See scripts/lab/README.md.
+4. Collect results\\<stamp>\\ (environment.txt, attack-suite.json, live-suite.json
+   and the logs). Both suites must pass with limits enforced.
+5. In a pull request of its own, from the maintainer's identity, add them as
+   results/wsl2/lab-<short commit>/ and the platforms entries for the claims above
+   (wsl2-<kernel>, commit, result). INV-1: an agent never writes these.
+6. Check it with: python3 tools/claims_check.py --strict
+"""
+
+
+def cmd_lab(args):
+    code, out, _err = git(["rev-parse", "origin/main"])
+    commit = out.strip() if code == 0 and out.strip() else "<origin/main: fetch it first>"
+    head_code, head, _err = git(["rev-parse", "HEAD"])
+    head = head.strip() if head_code == 0 else ""
+    note = "" if head == commit else (
+        f"\nThe stale list below was computed from this checkout's HEAD ({head[:12] or 'unknown'}), "
+        "not from that commit; run this on a checkout of origin/main to be sure.")
+    stale, problem = read_stale_lab_evidence()
+    sys.stdout.write(lab_plan_text(commit, stale, problem, note))
+    if problem:
+        print(f"vac: {problem}", file=sys.stderr)
+    return 1 if problem else 0
+
+
 def cmd_refuse(args):
     print(
         f"vac: refusing {args.command}: AGENTS.md INV-11 — the lab runs only in a "
@@ -446,6 +619,25 @@ def build_parser():
 
     status = sub.add_parser("status", help="print checkout, binary and toolchain status")
     status.set_defaults(func=cmd_status)
+
+    preflight = sub.add_parser(
+        "preflight",
+        help="before a root lab run: everything that needs no root (T0)",
+        description=(
+            "Run what needs no root before a root lab run: the check container when "
+            "available, else the host crate's tests and both release builds. Then name "
+            "the lab evidence it did not exercise. T0; records nothing."
+        ),
+    )
+    preflight.add_argument("--engine", choices=ENGINES, default="auto",
+                           help="auto (default), podman, docker, or host")
+    preflight.set_defaults(func=cmd_preflight)
+
+    lab = sub.add_parser("lab", help="print the steps for the maintainer's root lab run")
+    lab_sub = lab.add_subparsers(dest="lab_command", required=True)
+    plan = lab_sub.add_parser("plan", help="print the root lab run steps; runs nothing",
+                              description="Print the maintainer's root lab run (T2) as steps. Runs nothing.")
+    plan.set_defaults(func=cmd_lab)
 
     for name in REFUSED:
         refused = sub.add_parser(

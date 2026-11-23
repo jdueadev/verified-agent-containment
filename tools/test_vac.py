@@ -8,6 +8,7 @@ build, a test suite, or scripts/check.sh.
 import contextlib
 import importlib.util
 import io
+import json
 import subprocess
 import sys
 import unittest
@@ -24,6 +25,9 @@ HELP_ARGS = (
     ("run", "sim"),
     ("run", "servers"),
     ("status",),
+    ("preflight",),
+    ("lab",),
+    ("lab", "plan"),
 ) + tuple((name,) for name in ROOT_COMMANDS)
 
 
@@ -215,6 +219,114 @@ class Shape(unittest.TestCase):
         self.assertTrue(text.startswith("#!/usr/bin/env python3\n"))
         self.assertNotIn("\r", text)
         self.assertTrue(VAC_PATH.stat().st_mode & 0o111)
+
+
+CLAIMS = [
+    {"id": "L-ISO-02", "evidence": ["scenario:sandbox_escape", "sabotage:memfd_exec", "doc:x.md#y"],
+     "platforms": [{"name": "wsl2-6.18.58"}, {"name": "wsl2-6.18.58"}]},
+    {"id": "K-1", "evidence": ["law:a", "mutant:b"], "platforms": []},
+]
+
+
+class Preflight(unittest.TestCase):
+    """vac preflight and vac lab plan (#178 follow-up): no root, nothing recorded."""
+
+    def test_engine_choice(self):
+        has = lambda names: (lambda name: f"/usr/bin/{name}" if name in names else None)
+        self.assertEqual(vac.pick_engine("auto", has({"podman", "docker"}), True), "podman")
+        self.assertEqual(vac.pick_engine("auto", has({"docker"}), True), "docker")
+        self.assertEqual(vac.pick_engine("auto", has(set()), True), "host")
+        self.assertEqual(vac.pick_engine("auto", has({"podman"}), False), "host")
+        self.assertEqual(vac.pick_engine("host", has({"podman"}), True), "host")
+        self.assertIsNone(vac.pick_engine("podman", has(set()), True))
+        self.assertIsNone(vac.pick_engine("docker", has({"docker"}), False))
+
+    def test_steps_need_no_root_and_write_no_results(self):
+        for engine in ("podman", "docker", "host"):
+            for name, argv, env in vac.preflight_steps(engine):
+                text = " ".join(argv)
+                self.assertNotIn("sudo", text, name)
+                for refused in ROOT_COMMANDS:
+                    self.assertNotIn(f" {refused}", f" {text}", (name, refused))
+                self.assertNotIn("results", text, name)
+                self.assertNotIn("check.sh --strict", text, name)
+        container = vac.preflight_steps("podman")
+        self.assertEqual(container, [("container", ("scripts/check-in-container.sh", "--no-strict"), {"ENGINE": "podman"})])
+        names = [name for name, _argv, _env in vac.preflight_steps("host")]
+        self.assertEqual(names, ["host-tests", "host-tests-sabotage", "release-build", "release-build-sabotage"])
+
+    def test_stale_lab_evidence_names_only_lab_refs(self):
+        report = {"errors": ["CI-4 L-ISO-02: stale, crates/x.rs changed after its platform commit; rerun",
+                             "CI-3 K-1: something else", "CI-4 NOPE: stale"]}
+        self.assertEqual(vac.stale_lab_evidence(report, CLAIMS),
+                         [("L-ISO-02", ["scenario:sandbox_escape", "sabotage:memfd_exec"], ["wsl2-6.18.58"])])
+        self.assertEqual(vac.stale_lab_evidence({"errors": []}, CLAIMS), [])
+
+    def test_not_exercised_is_explicit(self):
+        for stale, problem in (([("L-ISO-02", ["scenario:sandbox_escape"], ["wsl2-6.18.58"])], None),
+                               ([], None), (None, "boom")):
+            text = vac.format_not_exercised(stale, problem)
+            # Scan finding: never "nothing"; a preflight exercises no lab evidence.
+            self.assertTrue(text.startswith("not exercised: any lab evidence"), text)
+            self.assertNotIn("not exercised: nothing", text)
+        self.assertIn("L-ISO-02: scenario:sandbox_escape", vac.format_not_exercised(
+            [("L-ISO-02", ["scenario:sandbox_escape"], ["wsl2-6.18.58"])]))
+        self.assertIn("unknown (boom)", vac.format_not_exercised(None, "boom"))
+
+    def test_preflight_summary_is_t0_whatever_passes(self):
+        summary = vac.format_summary([("container", "PASS", 1.0)])
+        self.assertIn("tier: T0", summary)
+        self.assertNotIn("T1", summary)
+        self.assertNotIn("T2", summary.replace("T0", ""))
+
+    def test_lab_plan_is_text_for_the_maintainer(self):
+        text = vac.lab_plan_text("0babf9e", [("L-ISO-02", ["scenario:sandbox_escape"], ["wsl2-6.18.58"])])
+        for needle in ("the maintainer runs this, never an agent", "INV-11", "git checkout --detach 0babf9e",
+                       "git bundle create repo.bundle HEAD", "rev-parse HEAD",
+                       "run-lab.cmd -Only suites", "throwaway WSL2 distro", "INV-1: an agent never writes these",
+                       "claims_check.py --strict", "L-ISO-02"):
+            self.assertIn(needle, text)
+        self.assertNotIn("\r", text)
+        # Scan finding: an unreadable strict check is "unknown", never "none".
+        unknown = vac.lab_plan_text("0babf9e", None, "the strict claims check failed")
+        self.assertIn("unknown: the strict claims check failed", unknown)
+        self.assertNotIn("none: the strict claims check reports no stale claim", unknown)
+
+    def test_other_strict_errors_make_the_stale_list_unknown(self):
+        class Done:
+            def __init__(self, code, out):
+                self.returncode, self.stdout = code, out
+        real = vac.subprocess.run
+        try:
+            for code, report in ((1, {"errors": ["CI-2 inventory: broken"]}),
+                                 (1, {"errors": ["CI-4 L-ISO-02: stale", "CI-3 K-1: missing"]}),
+                                 (1, {"errors": []})):
+                vac.subprocess.run = lambda *a, _c=code, _r=report, **k: Done(_c, json.dumps(_r))
+                stale, problem = vac.read_stale_lab_evidence()
+                self.assertIsNone(stale, report)
+                self.assertIn("other than staleness", problem)
+            vac.subprocess.run = lambda *a, **k: Done(1, json.dumps({"errors": ["CI-4 L-ISO-02: stale, x"]}))
+            stale, problem = vac.read_stale_lab_evidence()
+            self.assertIsNone(problem)
+            self.assertEqual([cid for cid, _r, _p in stale], ["L-ISO-02"])
+        finally:
+            vac.subprocess.run = real
+
+    def test_lab_plan_runs_nothing_but_the_read_only_check(self):
+        calls = []
+        real_run, real_git = vac.subprocess.run, vac.git
+        def spy(argv, *args, **kwargs):
+            calls.append(list(argv))
+            return real_run(argv, *args, **kwargs)
+        vac.subprocess.run = spy
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+                vac.cmd_lab(None)
+        finally:
+            vac.subprocess.run = real_run
+        ran = [argv for argv in calls if argv[:1] != ["git"]]
+        self.assertEqual(ran, [[sys.executable, "tools/claims_check.py", "--strict"]])
+        self.assertIn("Root lab run (T2)", out.getvalue())
 
 
 if __name__ == "__main__":
