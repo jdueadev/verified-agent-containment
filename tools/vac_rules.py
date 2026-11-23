@@ -10,6 +10,7 @@ vac_core = importlib.import_module("vac_core")
 policy_check = importlib.import_module("policy_check")
 workflow_lint = importlib.import_module("workflow_lint")
 pins_check = importlib.import_module("pins_check")
+vac_verify = importlib.import_module("vac_verify")
 
 Finding = vac_core.Finding
 Rule = vac_core.Rule
@@ -133,6 +134,11 @@ def lean_pinned(ctx):
     return []
 
 
+def formal_in_sync(ctx):
+    return [Finding("FV-SYNC", cid, 0, "covered files changed since the formal checks last confirmed it: " + ", ".join(files))
+            for cid, files in sorted(vac_verify.stale(ctx.root).items())]
+
+
 def tool_run(rule_id, argv, path, timeout=3600):
     def check(ctx):
         code, out, err = vac_core.run_tool(ctx, rule_id, argv, timeout)
@@ -212,6 +218,9 @@ RULES = (
          "python3 tools/generate_proof.py, then commit formal/PROOF.bend", (209,)),
     Rule("FV-PIN", "The Lean version that rechecks the proofs is pinned in ci/pins.env", T0, ("ci/pins.env",),
          lean_pinned, "add LEAN_VERSION=X.Y.Z to ci/pins.env", (209,)),
+    Rule("FV-SYNC", "Every formal claim was confirmed against the code it covers at its current files", RC,
+         ("claims.toml", "formal/**", "crates/**", "results/formal-sync.json"), formal_in_sync,
+         "rerun the formal checks (vac check --t1), then vac verify record", (209,)),
     Rule("TOOL-TESTS", "The tool unit tests pass", T0, ("tools/**", "ci/**", "claims.toml", "results/**", "formal/**"),
          tool_run("TOOL-TESTS", [sys.executable, "-m", "unittest", "discover", "-s", "tools", "-p", "test_*.py"], "tools"),
          "python3 -m unittest discover -s tools -p 'test_*.py'", (65,)),

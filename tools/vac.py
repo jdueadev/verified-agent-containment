@@ -189,6 +189,39 @@ def cmd_check(args):
     return core.exit_code(outcomes)
 
 
+def cmd_verify(args):
+    core, registry = load_registry()
+    import importlib
+    verify = importlib.import_module("vac_verify")
+    if args.action == "touched":
+        hits = verify.touched(ROOT, args.base)
+        for cid, files in sorted(hits.items()):
+            print(f"{cid}\t{', '.join(files)}")
+        print(f"vac: {len(hits)} formal claims touched since {args.base}")
+        return 0
+    if args.action == "status":
+        stale = verify.stale(ROOT)
+        for cid, files in sorted(stale.items()):
+            print(f"STALE {cid} {', '.join(files)} | fix: vac check --t1, then vac verify record")
+        print(f"vac: {len(stale)} formal claims stale")
+        return core.EXIT_FAIL if stale else 0
+    gate = ("CL-1", "CL-3", "LAW-KILL", "FV-PROOF-GEN", "FV-PIN")
+    outcomes = core.run(tuple(r for r in registry.RULES if r.id in gate), "t0", core.Ctx(root=ROOT))
+    core.render_text(outcomes, "t0")
+    if core.exit_code(outcomes) != 0:
+        print("vac: verify record refused: the formal checks are not green", file=sys.stderr)
+        return core.exit_code(outcomes)
+    dirty = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain", "--", "claims.toml", "formal", "crates", "results"],
+                           capture_output=True, text=True).stdout.strip()
+    if dirty:
+        print("vac: verify record refused: commit claims.toml, formal/, crates/ and results/ first", file=sys.stderr)
+        return core.EXIT_USAGE
+    head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    ids = verify.record(ROOT, head)
+    print(f"vac: recorded {len(ids)} formal claims as synced at {head[:12]}")
+    return 0
+
+
 def cmd_rules(args):
     core, registry = load_registry()
     for rule in registry.RULES:
@@ -575,6 +608,11 @@ def build_parser():
     check.add_argument("--rule", action="append", metavar="ID", help="run only this rule (repeatable)")
     check.add_argument("--json", action="store_true", help="JSON Lines with a final summary object")
     check.set_defaults(func=cmd_check)
+
+    verify = sub.add_parser("verify", help="formal claims: touched by a diff, stale, or record them as synced")
+    verify.add_argument("action", choices=("touched", "status", "record"))
+    verify.add_argument("--base", default="origin/main")
+    verify.set_defaults(func=cmd_verify)
 
     rules = sub.add_parser("rules", help="list every rule: id, stages, title")
     rules.set_defaults(func=cmd_rules)
