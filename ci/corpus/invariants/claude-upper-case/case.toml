@@ -1,0 +1,5 @@
+checker = "invariants"
+origin = "#169: a case variant of .claude/, which a case-insensitive checkout opens as .claude/"
+twin = "claude-allowed"
+expect = "reject"
+expect_error = "opens as '.claude' on a case-insensitive checkout"

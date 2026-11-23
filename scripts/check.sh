@@ -18,10 +18,10 @@ python3 tools/pins_check.py require cargo bend bun node java --file "${TLA2TOOLS
 # .github/CODEOWNERS is exactly lane C of ci/lanes.toml.
 python3 tools/policy_check.py invariants
 python3 tools/pins_check.py drift
+python3 tools/workflow_lint.py
 mkdir -p results target/generated
 (cd formal && bend PROOF.bend --check-only)
 bend formal/kernel.bend -o target/generated/kernel.mjs >/dev/null
-cargo test -q --locked -p containment-kernel
 cargo clippy -q --locked -p containment-kernel -p containment-host --all-targets -- -D warnings
 cargo test -q --locked -p containment-host
 # The sabotage build carries the deliberate defects; it must build, lint and test too.
@@ -37,5 +37,9 @@ python3 tools/mutation_check.py target/generated/kernel.mjs results/mutation-che
 # kernels and fails on its mutant (#105). Never run with --write here.
 python3 tools/cookbook_check.py
 if command -v java >/dev/null && [ -f "${TLA2TOOLS:-/opt/tla/tla2tools.jar}" ]; then tools/tla_check.sh; else echo "SKIPPED: TLC (java or tla2tools.jar missing)" >&2; fi
-python3 -m unittest discover -s tools -p 'test_*.py'
 python3 tools/claims_check.py $STRICT
+# The tests run last. New test files merge without the maintainer (#125, stage 2), and a
+# test runs with this user's rights in this checkout, so nothing that judges anything
+# may run after one. `spec` runs the base branch's tests apart from the head's new ones.
+cargo test -q --locked -p containment-kernel
+python3 -m unittest discover -s tools -p 'test_*.py'

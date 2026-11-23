@@ -1,0 +1,5 @@
+checker = "classify"
+origin = "#125 seed: the law ratchet"
+twin = "law-added"
+expect_lane = "C"
+expect_escalation = "law b was removed"

@@ -1,0 +1,5 @@
+checker = "invariants"
+origin = "#86 bypass 4: forbid moved into a nested module"
+twin = "pure-kernel"
+expect = "reject"
+expect_error = "forbid(unsafe_code)] is missing"

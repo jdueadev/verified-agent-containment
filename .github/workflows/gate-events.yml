@@ -1,0 +1,28 @@
+name: gate-events
+
+# Pull request events that change what the gate should say, without starting
+# check, spec or policy: a retarget (edited), a close and a reopen. When this
+# run finishes, `gate` (workflow_run) judges the head again. With no open pull
+# request into main it sets the gate's existing check runs on that head to
+# failure (#137, stage 2).
+#
+# pull_request_target takes this file from the pull request's base. A
+# retarget to main, or a close or reopen of a pull request into main, runs
+# main's copy. A retarget away from main runs the new base's copy, which may
+# not exist; the stale results are then updated the next time the gate runs
+# for that head. Nothing from the pull request is checked out or run.
+
+on:
+  pull_request_target:
+    types: [edited, closed, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Nothing to do; the gate runs when this finishes
+        run: echo "gate-events"

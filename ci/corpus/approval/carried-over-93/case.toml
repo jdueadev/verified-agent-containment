@@ -1,0 +1,8 @@
+checker = "approval"
+origin = "#149 seed: #93, approved at 0c6d77d, then rebased and merged with main"
+twin = "fresh-after-push-147"
+expect = "reject"
+# The inputs are #93's as the policy run of 2026-11-22T23:06:35Z saw them: the owner's
+# approval of 04:59:19 (commit_id already rewritten to the head by GitHub), and the push
+# of the head at 23:06:16. The later branch_deletion and closed entries are left out.
+# @HEAD@ stands for 143c6d1. The approval is older than the head's arrival.

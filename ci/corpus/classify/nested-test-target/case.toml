@@ -1,0 +1,5 @@
+checker = "classify"
+origin = "#125 stage 2 review: cargo builds tests/<dir>/main.rs as a target spec never runs alone"
+twin = "spec-file-added"
+expect_lane = "C"
+expect_escalation = "is not a direct crates/containment-kernel/tests/<name>.rs file"
