@@ -134,8 +134,9 @@ the maintainer.
 Approval gates the merge, not the checkout. Shared settings and hooks run when
 a Claude Code session starts, so review a branch that touches `.claude/` or any
 agent configuration by reading its diff, or start Claude Code there with
-`claude --bare` or `claude --setting-sources user`. Never open an ordinary
-session on it first.
+`claude --bare --setting-sources user` (both flags: `--bare` alone may still
+apply a project's `env` or credential helper). Never open an ordinary session on
+it first.
 
 ## When your change makes a claim stale
 

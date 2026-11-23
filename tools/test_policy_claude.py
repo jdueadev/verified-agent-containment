@@ -251,6 +251,18 @@ class InsideClaudeTests(unittest.TestCase):
             self.assertEqual(len(found), 1, path)
             self.assertIn("plain ASCII", found[0], path)
 
+    def test_windows_device_names_and_invalid_characters_fail(self):
+        for path in (".claude/hooks/NUL.txt", ".claude/hooks/a?.py", ".claude/hooks/con", ".claude/skills/CON.md",
+                     ".claude/hooks/com1.sh", ".claude/hooks/LPT9", ".claude/hooks/a<b", ".claude/hooks/a|b",
+                     '.claude/hooks/a"b', ".claude/hooks/a*b", ".claude/hooks/a\\b", ".claude/hooks/a\x01b",
+                     ".claude/aux/x.md"):
+            found = self.errors({path: ""})
+            self.assertEqual(len(found), 1, path)
+            self.assertIn("Windows device name", found[0], path)
+        for path in (".claude/hooks/guard.py", ".claude/hooks/run-tests.sh", ".claude/hooks/console.py",
+                     ".claude/hooks/nullable.py", ".claude/hooks/com10.sh", ".claude/hooks/auxiliary.py"):
+            self.assertEqual(self.errors({path: ""}), [], path)
+
     def test_format_characters_do_not_hide_names(self):
         found = self.errors({".cla\u200cude/settings.json": "{}"})
         self.assertTrue(any("case-insensitive" in e for e in found), found)
@@ -395,6 +407,23 @@ class RepositoryTests(unittest.TestCase):
         lower = ".claude/handover/handover-2026-01-01-0000.md"
         self.write(lower, "new words\n")
         self.flagged(self.commit("re-add"), f"handover {lower} existed before: a removed handover is not written again")
+
+    def test_handover_from_a_merged_side_branch_counts_as_earlier(self):
+        # Added and deleted on a side branch, merged with --no-ff: the merge leaves the
+        # handover tree unchanged, which git log's default simplification would skip.
+        side = ".claude/handover/HANDOVER-2026-01-03-0000.md"
+        self.git("checkout", "-q", "-b", "side")
+        self.write(side, "side notes\n")
+        self.commit("side add")
+        self.git("rm", "-q", side)
+        self.commit("side delete")
+        self.git("checkout", "-q", "-")
+        self.write("docs/x.md", "x\n")
+        self.commit("main moves on")
+        self.git("merge", "-q", "--no-ff", "side", "-m", "merge side")
+        self.base = self.git("rev-parse", "HEAD").strip()
+        self.write(side, "new words\n")
+        self.flagged(self.commit("re-add"), f"handover {side} existed before: a removed handover is not written again")
 
     def test_removed_handover_is_flagged(self):
         self.git("rm", "-q", ".claude/handover/HANDOVER-2026-01-01-0000.md")

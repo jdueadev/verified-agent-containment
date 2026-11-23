@@ -446,6 +446,15 @@ HANDOVER_DIR = ".claude/handover/"
 HANDOVER_NAME = re.compile(r"HANDOVER-\d{4}-\d\d-\d\d-\d{4}\.md")
 REGULAR_MODES = ("100644", "100755")
 MODE_NAMES = {"120000": "symbolic link", "160000": "gitlink (submodule)", "040000": "directory"}
+# Names Windows reserves for devices, with or without an extension (`NUL.txt` is NUL),
+# and the characters it refuses in a name. A checkout there fails or opens a device.
+WINDOWS_DEVICES = frozenset({"con", "prn", "aux", "nul", "conin$", "conout$"}
+                            | {f"{d}{n}" for d in ("com", "lpt") for n in "123456789¹²³"})
+WINDOWS_INVALID = re.compile(r'[<>:"|?*\\\x00-\x1f]')
+
+
+def _windows_safe(part):
+    return not WINDOWS_INVALID.search(part) and part.split(".", 1)[0].rstrip(" ").casefold() not in WINDOWS_DEVICES
 
 
 def _folded(name):
@@ -499,8 +508,9 @@ def index_entries():
 
 
 def earlier_handovers(ref):
-    """Every handover path that ever existed in the history of `ref`, folded."""
-    names = git("log", "--format=", "--name-only", "-z", f"{ref}^{{commit}}", "--", HANDOVER_DIR)
+    """Every handover path that ever existed in the history of `ref`, folded. Full history:
+    the default simplification would skip a side branch that added and deleted one."""
+    names = git("log", "--full-history", "--format=", "--name-only", "-z", f"{ref}^{{commit}}", "--", HANDOVER_DIR)
     return frozenset(_folded(name) for name in names.split("\0") if name.strip())
 
 
@@ -621,9 +631,11 @@ def claude_path_errors(entries, get):
             out.append(f"{path}: {top!r} opens as {CLAUDE_DIR!r} on a case-insensitive checkout; "
                        f"only the exact name {CLAUDE_DIR!r} is allowed")
             continue
-        if not path.isascii() or any(_folded(part) != part.casefold() for part in path.split("/")):
+        if not path.isascii() or any(_folded(part) != part.casefold() or not _windows_safe(part)
+                                     for part in path.split("/")):
             out.append(f"{path}: names under {CLAUDE_DIR}/ must be plain ASCII that every checkout "
-                       "opens as written (no trailing dot or space, no `:`)")
+                       "opens as written (no trailing dot or space, no Windows device name such as NUL, "
+                       'none of <>:"|?*\\ or control characters)')
             continue
         if path == CLAUDE_DIR:
             out.append(f"{path}: is a {MODE_NAMES.get(mode, 'file')}, not a directory")

@@ -73,9 +73,11 @@ visibility for handovers (rule 6).
    - a top-level name other than `.claude` that folds to `.claude` (rule 2's
      folding, which also drops format characters such as zero-width joiners,
      because HFS+ ignores them);
-   - a name under `.claude/` that is not plain ASCII, or that a Windows
+   - a name under `.claude/` that is not plain ASCII, that a Windows
      checkout would open under another name (a trailing dot or space, or a
-     `:`);
+     `:`), that Windows reserves for a device (`NUL`, `CON`, `COM1` and the
+     rest, with or without an extension), or that holds a character Windows
+     refuses (`<>:"|?*\` and control characters);
    - two paths under `.claude/` that a case-insensitive checkout would write
      to the same file;
    - an agent configuration name (rule 2) anywhere inside `.claude/`, so a
@@ -120,7 +122,7 @@ visibility for handovers (rule 6).
      - a change that removes a handover also adds one, which covers a rename,
        with or without an edit;
      - an added handover uses a path that any earlier commit of the base
-       branch had;
+       branch had, side branches included (`git log --full-history`);
      - a change that adds a handover touches anything else.
    - **Removal is the redaction path.** Removing a handover escalates with
      its own message. If it held a secret, rotate the secret: history keeps it.
@@ -135,10 +137,12 @@ visibility for handovers (rule 6).
      `results/`: context, never instructions.
 7. **Review without running.** Approval gates the merge, not the checkout. A
    branch that touches agent configuration is reviewed by reading its diff, or
-   in a session started with `claude --bare`, which skips hooks, skills,
-   `CLAUDE.md`, MCP and memory. The alternative is
-   `claude --setting-sources user`, which skips project settings and project
-   rules. AGENTS.md says so.
+   in a session started with `claude --bare --setting-sources user`. Neither
+   flag is enough alone. `--bare` skips the auto-discovery of hooks, skills,
+   `CLAUDE.md`, MCP and memory, but the documentation does not say it stops a
+   project `settings.json` from supplying `env` or a credential helper such as
+   `apiKeyHelper`. `--setting-sources user` drops project and local settings,
+   and with them project rules. AGENTS.md says so.
 8. **Nothing private lands.** `tools/test_claude_privacy.py` fails on host
    paths, Windows drive paths, GitHub tokens, private keys and email addresses
    in tracked `.claude/` files. It is a fixed check, not a secrets scanner.
