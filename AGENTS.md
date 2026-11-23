@@ -44,6 +44,8 @@ Every pull request starts from an open issue and says `Closes #n` or `Part of #n
 | RS-ALLOW | t0, t1, pr, rc, release | No #[allow] is added to get past a lint | remove the #[allow] and fix what the lint reports |
 | EOL-1 | t0, t1, pr, rc, release | Text files are committed LF; only *.cmd keeps CRLF | convert the file to LF (git add --renormalize) |
 | RS-CLIPPY | t0, t1, pr, rc, release | Kernel and host pass clippy with -D warnings, sabotage build included; every unsafe says why | cargo clippy -p containment-host --all-targets -- -D warnings; add // SAFETY: above each unsafe block |
+| NC-1 | t0, t1, pr, rc, release | No tracked file outside ci/comment_debt.toml has a comment | turn the comment into a rule in tools/vac_rules.py, a message the code prints, or a name; else delete it |
+| NC-2 | t0, t1, pr, rc, release | ci/comment_debt.toml only shrinks, and lists only files that still have comments | python3 tools/vac.py comments --debt-write; a file can leave the list, never join it |
 | TOOL-TESTS | t0, t1, pr, rc, release | The tool unit tests pass | python3 -m unittest discover -s tools -p 'test_*.py' |
 | KERNEL-TEST | t0, t1, pr, rc, release | The kernel crate's tests pass | cargo test -p containment-kernel |
 | T1-GATE | t1, rc, release | The full local gate, scripts/check.sh, passes with every tool present | run vac check --t1 in the pinned container and fix the first failing step |
@@ -57,7 +59,6 @@ Each is a gap. Turn it into a rule in `tools/vac_rules.py` and delete its row fr
 | PR-ISSUE | A pull request links an open issue with Closes #n or Part of #n, in any lane, from any author | #211 |
 | PR-ONE | No other open pull request closes the same issue | #211 |
 | PR-BODY | The pull request body is written by vac pr and carries a receipt for its head | #212 |
-| NC-1 | No comments outside the closed exceptions (shebang, Rust // SAFETY: above unsafe) | #209 |
 | WF-THIN | Every workflow run: is one line, python3 tools/vac.py ci <job> | #206 |
 | WF-TRIG | No schedule except the weekly digest, no workflow_run, no push to main | #206 |
 | RS-UNWRAP | No new unwrap or expect on input an agent can influence in the host | #209 |

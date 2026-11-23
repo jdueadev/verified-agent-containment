@@ -68,6 +68,7 @@ C = [
   "tools/vac_safety.py",
   "tools/vac_gen.py",
   "tools/results_ratchet.py",
+  "tools/vac_comments.py",
   # Writes lab evidence from a CI run (#53).
   "tools/lab_record.py",
   # Attests and verifies CI lab evidence (CI-10, #209): what makes lab output authentic.

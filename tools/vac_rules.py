@@ -15,6 +15,7 @@ vac_verify = importlib.import_module("vac_verify")
 vac_safety = importlib.import_module("vac_safety")
 vac_gen = importlib.import_module("vac_gen")
 results_ratchet = importlib.import_module("results_ratchet")
+vac_comments = importlib.import_module("vac_comments")
 
 Finding = vac_core.Finding
 Rule = vac_core.Rule
@@ -258,6 +259,24 @@ def line_endings(ctx):
         if len(fields) == 4 and fields[0] == "i/crlf" and not fields[3].endswith(".cmd"):
             out.append(Finding("EOL-1", fields[3], 0, "committed with CRLF; only *.cmd may be"))
     return out
+def comment_tree(ctx):
+    return ctx.once("comment-tree", lambda: vac_comments.Tree(ctx.root, ctx.base or vac_comments.MAIN))
+
+
+def no_new_comments(ctx):
+    try:
+        spans = vac_comments.new_comments(comment_tree(ctx), ctx.changed)
+    except ValueError as error:
+        return [Finding("NC-1", vac_comments.DEBT_FILE, 0, str(error))]
+    return [Finding("NC-1", s.path, s.line, vac_comments.describe(s)) for s in spans]
+
+
+def comment_debt_shrinks(ctx):
+    try:
+        errors = vac_comments.debt_errors(comment_tree(ctx))
+    except ValueError as error:
+        errors = [str(error)]
+    return findings("NC-2", errors, vac_comments.DEBT_FILE)
 
 
 def tool_run(rule_id, argv, path, timeout=3600):
@@ -382,6 +401,12 @@ RULES = (
                   "crates"),
          "cargo clippy -p containment-host --all-targets -- -D warnings; add // SAFETY: above each unsafe block", (209,),
          needs=("cargo",)),
+    Rule("NC-1", "No tracked file outside ci/comment_debt.toml has a comment", T0, EVERYWHERE, no_new_comments,
+         "turn the comment into a rule in tools/vac_rules.py, a message the code prints, or a name; else delete it",
+         (209,)),
+    Rule("NC-2", "ci/comment_debt.toml only shrinks, and lists only files that still have comments", T0, EVERYWHERE,
+         comment_debt_shrinks, "python3 tools/vac.py comments --debt-write; a file can leave the list, never join it",
+         (209,)),
     Rule("TOOL-TESTS", "The tool unit tests pass", T0, ("tools/**", "ci/**", "claims.toml", "results/**", "formal/**"),
          tool_run("TOOL-TESTS", [sys.executable, "-m", "unittest", "discover", "-s", "tools", "-p", "test_*.py"], "tools"),
          "python3 -m unittest discover -s tools -p 'test_*.py'", (65,)),
@@ -398,7 +423,6 @@ UNENFORCED = (
     ("PR-ISSUE", "A pull request links an open issue with Closes #n or Part of #n, in any lane, from any author", 211),
     ("PR-ONE", "No other open pull request closes the same issue", 211),
     ("PR-BODY", "The pull request body is written by vac pr and carries a receipt for its head", 212),
-    ("NC-1", "No comments outside the closed exceptions (shebang, Rust // SAFETY: above unsafe)", 209),
     ("WF-THIN", "Every workflow run: is one line, python3 tools/vac.py ci <job>", 206),
     ("WF-TRIG", "No schedule except the weekly digest, no workflow_run, no push to main", 206),
     ("RS-UNWRAP", "No new unwrap or expect on input an agent can influence in the host", 209),

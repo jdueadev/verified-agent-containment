@@ -271,6 +271,18 @@ def cmd_explain(args):
     return 0
 
 
+def cmd_comments(args):
+    sys.path.insert(0, str(ROOT / "tools"))
+    import importlib
+    comments = importlib.import_module("vac_comments")
+    if args.debt_write and args.paths:
+        print("vac: --debt-write regenerates the whole list and takes no PATH", file=sys.stderr)
+        return 2
+    if args.debt_write:
+        return comments.debt_write(ROOT)
+    return comments.listing(ROOT, args.paths, args.json)
+
+
 def node_too_old(node):
     """Return an error string when `node` is missing or older than 22, else None."""
     if not node:
@@ -658,6 +670,18 @@ def build_parser():
     explain = sub.add_parser("explain", help="explain a rule id, or the rules that watch a path")
     explain.add_argument("target")
     explain.set_defaults(func=cmd_explain)
+
+    comments = sub.add_parser(
+        "comments",
+        help="list the comments NC-1 counts, or shrink ci/comment_debt.toml",
+        description=("List every comment, docstring and unreadable construct the NC rules count, in each PATH or in "
+                     "every tracked file. --debt-write drops the files that are now clean from ci/comment_debt.toml "
+                     "(it creates the file when absent and never adds to it)."),
+    )
+    comments.add_argument("paths", nargs="*", metavar="PATH")
+    comments.add_argument("--json", action="store_true", help="one JSON object per span")
+    comments.add_argument("--debt-write", action="store_true", help="drop clean files from ci/comment_debt.toml")
+    comments.set_defaults(func=cmd_comments)
 
     run = sub.add_parser(
         "run",
