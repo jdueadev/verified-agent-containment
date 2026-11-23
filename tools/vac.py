@@ -299,14 +299,14 @@ def tool_line(name):
         return f"  {name}: missing"
     version = ""
     try:
-        # /tmp so a rustup proxy does not treat this status query as a build
-        # in the checkout (rust-toolchain.toml would otherwise select the pin).
+        # Run inside the checkout so a rustup proxy reports the toolchain
+        # rust-toolchain.toml selects, which is the cargo `vac build` will use.
         proc = subprocess.run(
             [path, "--version"],
             capture_output=True,
             text=True,
             timeout=60,
-            cwd="/tmp",
+            cwd=ROOT,
         )
         lines = (proc.stdout or proc.stderr).strip().splitlines()
         if lines:
