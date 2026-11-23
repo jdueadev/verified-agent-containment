@@ -70,16 +70,26 @@ case "$root$common" in *,*) die "a path with a comma cannot be mounted: $root or
 # context hash) names the image, so a change to any of them builds a new
 # image, and anyone can recompute it from a commit: the sha256 of the sorted
 # `sha256sum ./<path>` lines of these files.
+#
+# The files come from the committed tree (HEAD), never from the disk: a branch
+# can commit a symbolic link such as crates/x/Cargo.toml -> ~/.ssh/id_ed25519,
+# and copying through it would put a host file into a build whose RUN steps
+# have the network. Anything that is not a regular file in HEAD is refused. The
+# entrypoint refuses uncommitted changes to these inputs, so the committed copy
+# is also the one the run checks.
 ctx="$(mktemp -d)"
 trap 'rm -rf "$ctx"' EXIT
-shopt -s nullglob
-manifests=(crates/*/Cargo.toml)
-shopt -u nullglob
-[ ${#manifests[@]} -gt 0 ] || die "no crates/*/Cargo.toml"
+mapfile -t manifests < <(git ls-tree -r --name-only HEAD -- crates | grep -E '^crates/[^/]+/Cargo\.toml$' || true)
+[ ${#manifests[@]} -gt 0 ] || die "no crates/*/Cargo.toml in HEAD"
 for f in ci/check.Dockerfile ci/check-entrypoint.sh ci/pins.env rust-toolchain.toml Cargo.toml Cargo.lock "${manifests[@]}"; do
-  [ -f "$f" ] || die "missing $f"
+  mode="$(git ls-tree HEAD -- "$f" | cut -d' ' -f1)"
+  case "$mode" in
+    100644|100755) ;;
+    '') die "missing $f in HEAD" ;;
+    *) die "$f is not a regular file in HEAD (mode $mode); refusing to build from it" ;;
+  esac
   mkdir -p "$ctx/$(dirname "$f")"
-  cp "$f" "$ctx/$f"
+  git show "HEAD:$f" > "$ctx/$f" || die "cannot read $f from HEAD"
 done
 context_hash="$(cd "$ctx" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
 [[ "$context_hash" =~ ^[0-9a-f]{64}$ ]] || die "could not hash the build context"
@@ -92,7 +102,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in ''|'#'*) continue ;; esac
   [[ "$line" =~ ^[A-Z0-9_]+=[^[:space:]]+$ ]] || die "ci/pins.env: cannot read line: $line"
   build_args+=(--build-arg "$line")
-done < ci/pins.env
+done < "$ctx/ci/pins.env"
 
 # Podman builds OCI images by default, and the OCI format drops the Dockerfile's
 # SHELL line, so every RUN would run under /bin/sh instead of bash -euo pipefail.
