@@ -48,34 +48,65 @@ jobs:
           AFTER: ${{ github.sha }}
           FORCED: ${{ github.event.forced }}
           OWNER: ${{ github.repository_owner }}
+        # Any failure in this step, an alert or a crash, fails the job, and the
+        # next step then opens the issue. A crash is never a silent pass.
         run: |
+          report="$RUNNER_TEMP/report.md"
+          : > "$report"
+          if [ "$FORCED" = "true" ]; then
+            printf '**main was force-pushed** (%s to %s).\n\n' "$BEFORE" "$AFTER" >> "$report"
+          fi
+          if ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            # An all-zero BEFORE (main created or recreated), or an old head that a
+            # force-push made unreachable: there is no trusted judge to run.
+            printf 'The commit before this push (%s) is not in the history, so nothing could judge %s.\n' \
+              "$BEFORE" "$AFTER" >> "$report"
+            exit 1
+          fi
           judge="$RUNNER_TEMP/judge"
           git worktree add -q --detach "$judge" "$BEFORE"
           if [ ! -f "$judge/tools/merge_digest.py" ]; then
-            echo "The commit before this push has no merge_digest.py; nothing to judge with."
-            exit 0
+            if [ -z "$(git log -1 --format=%H "$BEFORE" -- tools/merge_digest.py)" ]; then
+              echo "The commit before this push predates merge_digest.py; nothing to judge with."
+              [ "$FORCED" = "true" ] && exit 1
+              exit 0
+            fi
+            printf 'tools/merge_digest.py was deleted before %s, so nothing could judge %s.\n' \
+              "$BEFORE" "$AFTER" >> "$report"
+            exit 1
           fi
-          python3 "$judge/tools/merge_digest.py" collect --repo "$REPO" \
+          python3 -I "$judge/tools/merge_digest.py" collect --repo "$REPO" \
             --range "$BEFORE..$AFTER" > "$RUNNER_TEMP/merges.json"
           code=0
-          python3 "$judge/tools/merge_digest.py" report "$RUNNER_TEMP/merges.json" \
+          python3 -I "$judge/tools/merge_digest.py" report "$RUNNER_TEMP/merges.json" \
             --fail-on-unapproved --title "Merge check for ${AFTER:0:7}" \
-            > "$RUNNER_TEMP/report.md" || code=$?
-          if [ "$FORCED" = "true" ]; then
-            printf '\n**main was force-pushed** (%s to %s).\n' "$BEFORE" "$AFTER" \
-              >> "$RUNNER_TEMP/report.md"
-            code=1
-          fi
-          cat "$RUNNER_TEMP/report.md" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$code" -ne 0 ]; then
-            {
-              echo "@$OWNER: the merge check on \`main\` found an alert."
-              echo
-              cat "$RUNNER_TEMP/report.md"
-            } > "$RUNNER_TEMP/alert.md"
-            gh issue create --repo "$REPO" --title "Merge alert: ${AFTER:0:7}" \
-              --body-file "$RUNNER_TEMP/alert.md"
+            >> "$report" || code=$?
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$code" -ne 0 ] || [ "$FORCED" = "true" ]; then
             exit 1
+          fi
+      - name: Open an alert issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          AFTER: ${{ github.sha }}
+          OWNER: ${{ github.repository_owner }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          report="$RUNNER_TEMP/report.md"
+          {
+            echo "@$OWNER: the merge check on \`main\` failed for \`${AFTER:0:7}\`. Run: $RUN"
+            echo
+            if [ -s "$report" ]; then
+              head -c 60000 "$report"
+              [ "$(wc -c < "$report")" -gt 60000 ] && printf '\n\n(Truncated; the run summary has the rest.)\n'
+            else
+              echo "The check crashed before it wrote a report. Treat this as an alert until the run log says otherwise."
+            fi
+          } > "$RUNNER_TEMP/alert.md"
+          gh issue create --repo "$REPO" --title "Merge alert: ${AFTER:0:7}" \
+            --body-file "$RUNNER_TEMP/alert.md"
           fi
 
   weekly:
@@ -98,10 +129,18 @@ jobs:
         run: |
           week="$(date -u +%G-W%V)"
           title="Merge digest $week"
-          python3 tools/merge_digest.py collect --repo "$REPO" \
+          python3 -I tools/merge_digest.py collect --repo "$REPO" \
             --since "8 days ago" > "$RUNNER_TEMP/merges.json"
-          python3 tools/merge_digest.py report "$RUNNER_TEMP/merges.json" \
-            --title "$title" > "$RUNNER_TEMP/digest.md" || true
+          code=0
+          python3 -I tools/merge_digest.py report "$RUNNER_TEMP/merges.json" \
+            --title "$title" > "$RUNNER_TEMP/digest.md" || code=$?
+          if [ "$code" -ne 0 ]; then
+            # Without --fail-on-unapproved a non-zero exit is a crash: say so in the digest.
+            printf '\n**The digest crashed (exit %s); this report may be incomplete.** Run: %s/%s/actions/runs/%s\n' \
+              "$code" "$GITHUB_SERVER_URL" "$REPO" "$GITHUB_RUN_ID" >> "$RUNNER_TEMP/digest.md"
+          fi
+          head -c 60000 "$RUNNER_TEMP/digest.md" > "$RUNNER_TEMP/digest.post.md"
+          mv "$RUNNER_TEMP/digest.post.md" "$RUNNER_TEMP/digest.md"
           cat "$RUNNER_TEMP/digest.md" >> "$GITHUB_STEP_SUMMARY"
           gh label create merge-digest --repo "$REPO" --force \
             --description "Weekly audit of merges to main" >/dev/null
