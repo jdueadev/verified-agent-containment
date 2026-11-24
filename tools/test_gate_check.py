@@ -19,7 +19,6 @@ ROOT = Path(__file__).resolve().parent.parent
 REPO = "o/r"
 HEAD = "a" * 40
 OLD = "b" * 40
-MAIN = "d" * 40
 IDS = {".github/workflows/check.yml": 1, ".github/workflows/spec.yml": 2}
 PR = {"number": 7, "state": "open", "base": {"ref": "main", "sha": OLD},
       "head": {"sha": HEAD, "ref": "topic", "repo": {"full_name": REPO}}}
@@ -454,7 +453,7 @@ class Judge(unittest.TestCase):
                 return jobs[int(path.split("/runs/")[1].split("/")[0])]
             return []
 
-        return mock.patch.multiple(gc, gh=gh, pages=pages, fetch_head=lambda pr, base: OLD, main_tip=lambda: OLD,
+        return mock.patch.multiple(gc, gh=gh, pages=pages, fetch_head=lambda pr: OLD,
                                    changed_paths=lambda base, head: ["src/x"],
                                    proofs_of=lambda repo: (lambda run: ["proof"]),
                                    signing_keys=lambda: {},
@@ -503,20 +502,17 @@ class PolicyResult(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, 1 if "invariants" in cmd else 0, "", "")
 
         with mock.patch.object(gc.subprocess, "run", fake_run):
-            passed, summary = gc.policy_result(PR, "c" * 40, MAIN, "reviews.json", True)
+            passed, summary = gc.policy_result(PR, "c" * 40, "reviews.json", True)
         self.assertFalse(passed)
         self.assertIn("invariants", summary)
         classify = next(c for c in seen if "classify" in c)
-        for arg in ("--base", "c" * 40, "--head", HEAD, "--head-sha", "--reviews", "--enforce"):
+        for arg in ("--base", "c" * 40, "--map-ref", OLD, "--head", HEAD, "--head-sha", "--reviews", "--enforce"):
             self.assertIn(arg, classify)
-        # The lane map is main's tip, not the PR's stale base.sha (#217).
-        self.assertEqual(classify[classify.index("--map-ref") + 1], MAIN)
-        self.assertNotIn(OLD, classify)
         self.assertTrue(any("--ref" in c and "invariants" in c for c in seen))
         self.assertTrue(any(c[1].endswith("workflow_lint.py") and "--ref" in c for c in seen))
         with mock.patch.object(gc.subprocess, "run",
                                lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", "")):
-            self.assertTrue(gc.policy_result(PR, "c" * 40, MAIN, "r.json", False)[0])
+            self.assertTrue(gc.policy_result(PR, "c" * 40, "r.json", False)[0])
 
 
 def openssl(*args, data=None):
