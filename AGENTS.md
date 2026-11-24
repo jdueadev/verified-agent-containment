@@ -129,9 +129,10 @@ in the pull request can change it. A push after an approval needs a new one,
 and only an approval submitted after the head arrived counts.
 
 For a trusted author, lane C and the ratchets report and do not block. The
-invariants still bind you. A change that weakens evidence (INV-2) or the
-trusted base (INV-3) is caught at the release candidate, not at merge, so
-write it as a deliberate change in its own pull request.
+invariants still bind you. Until the release-candidate workflow lands (#206,
+part 2), nothing blocks a change that weakens evidence (INV-2) or the trusted
+base (INV-3) at merge, and review is the only check. Write such a change as a
+deliberate change in its own pull request.
 
 Agents push under their own identity (`docs/decisions/0003-lane-c-friction.md`).
 They have no administration rights. They may change `.github/workflows/`.

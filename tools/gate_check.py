@@ -435,6 +435,13 @@ def policy_result(pr, merge_base, reviews_file, enforce):
     head, base_sha = pr["head"]["sha"], pr["base"]["sha"]
     classify = ["classify", "--base", merge_base, "--map-ref", base_sha, "--head", head,
                 "--reviews", str(reviews_file), "--head-sha", head] + (["--enforce"] if enforce else [])
+    head_repo = ((pr.get("head") or {}).get("repo") or {}).get("full_name")
+    base_repo = ((pr.get("base") or {}).get("repo") or {}).get("full_name")
+    if not head_repo or head_repo != base_repo:
+        classify.append("--fork")
+    author = (pr.get("user") or {}).get("login")
+    if author:
+        classify += ["--author", author]
     steps = [("classify", [sys.executable, str(ROOT / "tools/policy_check.py"), *classify]),
              ("invariants", [sys.executable, str(ROOT / "tools/policy_check.py"), "invariants", "--ref", head]),
              ("workflow lint", [sys.executable, str(ROOT / "tools/workflow_lint.py"), "--ref", head])]
