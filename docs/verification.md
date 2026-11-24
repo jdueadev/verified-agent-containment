@@ -30,7 +30,7 @@ python3 tools/claims_check.py --affected origin/main  # entire branch vs origin/
 
 `python3 tools/vac.py` runs the builds and checks that need no root. `python3 tools/vac.py --help` lists the commands, and every command takes `--help`. `attack-suite`, `live`, `live-suite`, `redteam`, `ctl` and `hud` exit 2 and cite AGENTS.md INV-11. There is no override. Run those as `containment-lab`, as root, in a throwaway machine ([Linux or WSL2 attack suite](#linux-or-wsl2-attack-suite), [`scripts/lab/README.md`](../scripts/lab/README.md)).
 
-After every command, vac compares `git status --porcelain -- results/` with a snapshot from the start. A change under `results/` prints a warning on stderr. The warning leaves the exit status as it was.
+After every command, vac compares `git status --porcelain -- results/` with a snapshot from the start. It warns on stderr when that command cannot be run, or when the status text differs. A path whose line is already ` M` or `??` can be edited again without a new line, and then there is no second warning. The warning leaves the exit status as it was.
 
 `build` runs `cargo build -q --locked -p containment-host`.
 
