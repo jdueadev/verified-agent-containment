@@ -1,0 +1,116 @@
+name: container
+
+on:
+  pull_request:
+    paths:
+      - ci/factory.Dockerfile
+      - ci/factory.Dockerfile.dockerignore
+      - ci/pins.env
+      - rust-toolchain.toml
+      - Cargo.lock
+      - scripts/factory.sh
+      - scripts/factory-lab.sh
+      - .github/workflows/container.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Build the check and dev images
+        run: scripts/factory.sh build
+
+      - name: Tool versions in the image
+        run: docker run --rm vac-factory:check bash -euo pipefail -c 'cargo --version; rustup target list --installed; bun --version; node --version; java -version; lean --version; command -v bend'
+
+      - name: Run the checks in the image
+        run: docker run --rm -v "$PWD:/work" vac-factory:check scripts/check.sh --no-strict
+
+      - name: Lean recheck in the image
+        run: docker run --rm -v "$PWD:/work" vac-factory:check scripts/verdict.sh
+
+  lab:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Root lab in a privileged container
+        env:
+          FACTORY_LAB_DISPOSABLE: "1"
+        run: scripts/factory.sh lab
+
+  publish:
+    if: github.repository_owner == 'vac-dev-team' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: build
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      REGISTRY_IMAGE: ghcr.io/vac-dev-team/vac-factory
+      ARCH: ${{ matrix.arch }}
+      GHCR_TOKEN: ${{ github.token }}
+      GHCR_USER: ${{ github.actor }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Build the check and dev images
+        run: scripts/factory.sh build
+
+      - name: Push the images for this architecture
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
+          for stage in check dev; do
+            docker tag "vac-factory:$stage" "$REGISTRY_IMAGE:$stage-$ARCH"
+            docker push "$REGISTRY_IMAGE:$stage-$ARCH"
+          done
+
+  manifest:
+    needs: publish
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      REGISTRY_IMAGE: ghcr.io/vac-dev-team/vac-factory
+      GHCR_TOKEN: ${{ github.token }}
+      GHCR_USER: ${{ github.actor }}
+    steps:
+      - name: Publish the multi-architecture images and print their digests
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
+          for stage in check dev; do
+            docker buildx imagetools create -t "$REGISTRY_IMAGE:$stage" "$REGISTRY_IMAGE:$stage-amd64" "$REGISTRY_IMAGE:$stage-arm64"
+            docker buildx imagetools inspect "$REGISTRY_IMAGE:$stage" --format '{{.Name}}@{{.Manifest.Digest}}'
+          done

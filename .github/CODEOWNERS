@@ -8,6 +8,7 @@
 /.gitattributes @jdueadev
 /.coderabbit.yaml @jdueadev
 /.claude/ @jdueadev
+/.devcontainer/ @jdueadev
 /AGENTS.md @jdueadev
 /CLAUDE.md @jdueadev
 /docs/decisions/ @jdueadev
