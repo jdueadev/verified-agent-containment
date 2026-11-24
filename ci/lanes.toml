@@ -16,6 +16,12 @@
 
 owner = "@jdueadev"
 
+# Authors whose lane C changes merge without the owner's approval (#206). The
+# owner and the agents the project runs are trusted; outside collaborators are
+# not. `policy` reads this list from the target branch, so a change cannot add
+# its own author. A fork always needs the owner, whoever opened it.
+trusted = ["@jdueadev", "@jdueadev-agent", "@vac-agent-app[bot]", "@vac-lab-runner[bot]"]
+
 [lanes]
 C = [
   # The rules and the machinery that enforces them.
