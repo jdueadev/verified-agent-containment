@@ -181,17 +181,24 @@ def waivers_cover(ctx):
     out += [Finding("WAIVE-1", vac_safety.WAIVERS_FILE, 0, f"{r}: no waiver; run vac waive") for r in waivable if r not in covered]
     latest = {row["reason"]: row for row in head_rows[len(base_rows):]}
     for row in latest.values():
-        receipt_path = ctx.root / "ci/waiver-receipts" / f"{row['receipt']}.json"
-        if not receipt_path.exists():
-            out.append(Finding("WAIVE-1", str(receipt_path.relative_to(ctx.root)), 0, f"{row['reason']}: receipt missing"))
+        receipt_name = f"ci/waiver-receipts/{row['receipt']}.json"
+        raw = head_get(receipt_name)
+        if raw is None:
+            out.append(Finding("WAIVE-1", receipt_name, 0, f"{row['reason']}: receipt missing from the commit"))
             continue
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        try:
+            receipt = json.loads(raw)
+        except ValueError:
+            receipt = None
+        if not isinstance(receipt, dict):
+            out.append(Finding("WAIVE-1", receipt_name, 0, f"{row['reason']}: receipt is not a JSON object; run vac waive again"))
+            continue
         body = {k: v for k, v in receipt.items() if k != "digest"}
         digest = __import__("hashlib").sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
         if digest != row["receipt"] or receipt.get("digest") != digest:
-            out.append(Finding("WAIVE-1", str(receipt_path.relative_to(ctx.root)), 0, f"{row['reason']}: receipt digest does not match"))
+            out.append(Finding("WAIVE-1", receipt_name, 0, f"{row['reason']}: receipt digest does not match"))
         elif not receipt.get("ok") or row["reason"] not in receipt.get("waivable", []):
-            out.append(Finding("WAIVE-1", str(receipt_path.relative_to(ctx.root)), 0, f"{row['reason']}: the safety loop did not pass for it"))
+            out.append(Finding("WAIVE-1", receipt_name, 0, f"{row['reason']}: the safety loop did not pass for it"))
         elif receipt.get("base") != base_ref(ctx):
             out.append(Finding("WAIVE-1", vac_safety.WAIVERS_FILE, 0, f"{row['reason']}: its receipt judged from base {str(receipt.get('base'))[:12]}, the gate judges from {base_ref(ctx)[:12]}; run vac waive again"))
         elif row["head"] != receipt.get("head"):

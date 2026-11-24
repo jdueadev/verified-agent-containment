@@ -141,12 +141,12 @@ def cmd_verify(args):
             print(f"STALE {cid} {', '.join(files)} | fix: vac check --t1, then vac verify record")
         print(f"vac: {len(stale)} formal claims stale")
         return core.EXIT_FAIL if stale else 0
-    code, dirty, err = git(["status", "--porcelain", "--", "claims.toml", "formal", "crates", "results"])
+    code, dirty, err = git(["status", "--porcelain", "--untracked-files=no"])
     if code != 0:
         print(f"vac: verify record refused: git status failed: {err.strip()}", file=sys.stderr)
         return core.EXIT_USAGE
     if dirty.strip():
-        print("vac: verify record refused: commit claims.toml, formal/, crates/ and results/ first", file=sys.stderr)
+        print("vac: verify record refused: commit every change first, so T1 judges exactly the commit it records", file=sys.stderr)
         return core.EXIT_USAGE
     code, before, err = git(["rev-parse", "HEAD"])
     if code != 0:

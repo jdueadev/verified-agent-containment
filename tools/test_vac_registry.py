@@ -283,7 +283,12 @@ class WaiverRowTests(unittest.TestCase):
     def check(self, root, rows, waivable=("r",)):
         text = __import__("vac_safety").waiver_toml(rows)
         ctx = core.Ctx(root=root, base="b" * 40)
-        ctx.memo["escalations"] = ([], list(waivable), lambda p: None, lambda p: text if p == "ci/waivers.toml" else None)
+        def head_get(path):
+            if path == "ci/waivers.toml":
+                return text
+            found = root / path
+            return found.read_text(encoding="utf-8") if found.exists() else None
+        ctx.memo["escalations"] = ([], list(waivable), lambda p: None, head_get)
         return [f.message for f in registry.waivers_cover(ctx)]
 
     def test_a_row_naming_another_head_than_its_receipt_is_refused(self):
@@ -292,6 +297,15 @@ class WaiverRowTests(unittest.TestCase):
         found = self.check(root, [{"reason": "r", "issue": 1, "receipt": digest, "head": head}])
         self.assertEqual(len(found), 1)
         self.assertIn("its receipt ran at", found[0])
+
+    def test_a_receipt_that_is_not_a_json_object_is_a_finding_not_a_crash(self):
+        root, head = self.repo()
+        (root / "ci/waiver-receipts").mkdir(parents=True, exist_ok=True)
+        for name, body in (("a" * 64, "{truncated"), ("b" * 64, "[]")):
+            (root / f"ci/waiver-receipts/{name}.json").write_text(body, encoding="utf-8")
+            found = self.check(root, [{"reason": "r", "issue": 1, "receipt": name, "head": head}])
+            self.assertEqual(len(found), 1, found)
+            self.assertIn("not a JSON object", found[0])
 
     def test_a_receipt_judged_from_another_base_is_refused(self):
         root, head = self.repo()
@@ -345,6 +359,17 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(child.stdout, "")
         ran = self.vac("check", "--stage", "rc", "--rule", "FV-SYNC", "--json")
         self.assertEqual(json.loads(ran.stdout.splitlines()[-1])["summary"]["ran"], 1)
+
+    def test_verify_record_refuses_any_uncommitted_change(self):
+        target = ROOT / "Cargo.toml"
+        original = target.read_bytes()
+        try:
+            target.write_bytes(original + b"\n")
+            child = self.vac("verify", "record")
+        finally:
+            target.write_bytes(original)
+        self.assertEqual(child.returncode, core.EXIT_USAGE, child.stdout + child.stderr)
+        self.assertIn("commit every change first", child.stderr)
 
     def test_one_rule_runs_and_passes(self):
         child = self.vac("check", "--rule", "POL-SAB", "--json")
