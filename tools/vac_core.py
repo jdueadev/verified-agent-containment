@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -9,6 +10,9 @@ from typing import Callable
 ROOT = Path(__file__).resolve().parent.parent
 STAGES = ("t0", "t1", "pr", "rc", "release")
 EXIT_PASS, EXIT_FAIL, EXIT_USAGE, EXIT_MISSING = 0, 1, 2, 3
+EXIT_TIMEOUT, EXIT_NO_TOOL = 124, 127
+GIT_LOCATION_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_PREFIX", "GIT_NAMESPACE")
 
 
 @dataclass(frozen=True)
@@ -130,15 +134,25 @@ def render_json(outcomes, stage, out=sys.stdout, complete=True):
 
 def run_tool(ctx, key, argv, timeout=1800):
     def compute():
-        child = subprocess.run(argv, cwd=ctx.root, capture_output=True, text=True, timeout=timeout)
+        try:
+            child = subprocess.run(argv, cwd=ctx.root, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return EXIT_TIMEOUT, "", f"{argv[0]} did not finish within {timeout} seconds"
+        except OSError as error:
+            return EXIT_NO_TOOL, "", f"could not run {argv[0]}: {error}"
         return child.returncode, child.stdout, child.stderr
     return ctx.once(key, compute)
 
 
+def git_env():
+    return {name: value for name, value in os.environ.items() if name not in GIT_LOCATION_VARS}
+
+
 def git(ctx, *args):
-    return subprocess.run(["git", "-C", str(ctx.root), *args], capture_output=True, text=True, check=True).stdout
+    return subprocess.run(["git", "-C", str(ctx.root), *args], capture_output=True, text=True, check=True,
+                          env=git_env()).stdout
 
 
 def changed_paths(ctx, base):
-    return tuple(p for p in git(ctx, "diff", "--name-only", "--no-renames", f"{base}...HEAD").splitlines() if p) + tuple(
-        p for p in git(ctx, "diff", "--name-only", "--no-renames", "HEAD").splitlines() if p)
+    return tuple(p for p in git(ctx, "diff", "--name-only", "-z", "--no-renames", f"{base}...HEAD").split("\0") if p) + tuple(
+        p for p in git(ctx, "diff", "--name-only", "-z", "--no-renames", "HEAD").split("\0") if p)

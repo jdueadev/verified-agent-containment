@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import importlib
 
 policy_check = importlib.import_module("policy_check")
+vac_core = importlib.import_module("vac_core")
 
 CORE_STATUSES = ("proved", "checked-bounded", "tested")
 SUITE_KINDS = {"crates/containment-host/src/harness.rs": ("scenario", "sabotage"),
@@ -76,7 +77,8 @@ def mutation_regressions(base_report, head_report):
 
 
 def git(root, *args, check=True):
-    return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=check).stdout
+    return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=check,
+                          env=vac_core.git_env()).stdout
 
 
 def step(name, argv, cwd, timeout=7200):

@@ -42,6 +42,9 @@ from collections import namedtuple
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tools"))
+import vac_core
+
 BUILD_ARGV = ("cargo", "build", "-q", "--locked", "-p", "containment-host")
 DRIVER_REL = Path(".claude/skills/run-verified-agent-containment/driver.mjs")
 LAB_REL = Path("target/debug/containment-lab")
@@ -81,6 +84,7 @@ def git(args, cwd=None):
             cwd=cwd,
             capture_output=True,
             text=True,
+            env=vac_core.git_env(),
         )
     except OSError as exc:
         return None, "", str(exc)

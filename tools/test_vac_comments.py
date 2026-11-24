@@ -214,7 +214,7 @@ CORPUS = {
 def git(root, *args):
     return subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t.invalid",
                            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *args],
-                          check=True, capture_output=True, text=True).stdout.strip()
+                          check=True, capture_output=True, text=True, env=core.git_env()).stdout.strip()
 
 
 class Repo:

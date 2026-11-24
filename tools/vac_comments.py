@@ -16,6 +16,7 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 rust_tokens = importlib.import_module("rust_tokens")
 policy_check = importlib.import_module("policy_check")
+vac_core = importlib.import_module("vac_core")
 
 DEBT_FILE = "ci/comment_debt.toml"
 MAIN = "origin/main"
@@ -860,7 +861,7 @@ def counted(path, data, frozen):
 
 
 def git(root, *args, data=None):
-    return subprocess.run(["git", "-C", str(root), *args], input=data, capture_output=True)
+    return subprocess.run(["git", "-C", str(root), *args], input=data, capture_output=True, env=vac_core.git_env())
 
 
 def blobs(root, ref, paths):

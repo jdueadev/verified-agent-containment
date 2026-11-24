@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -63,6 +64,18 @@ class RunnerTests(unittest.TestCase):
                                cwd=ROOT, capture_output=True, text=True, timeout=300)
         self.assertEqual(json.loads(child.stdout.splitlines()[-1])["summary"]["tier"], "T0")
 
+    def test_a_tool_that_cannot_start_is_a_finding_and_the_run_goes_on(self):
+        check = registry.tool_run("X-2", ["./no-such-tool-vac"], "tools")
+        out = core.run((rule("X-2", check), rule("X-3")), "t0", core.Ctx())
+        self.assertEqual([o.status for o in out], ["FAIL", "PASS"])
+        self.assertIn("could not run", out[0].findings[0].message)
+
+    def test_a_tool_that_overruns_its_timeout_is_a_finding(self):
+        check = registry.tool_run("X-2", [sys.executable, "-c", "import time; time.sleep(30)"], "tools", 1)
+        found = check(core.Ctx())
+        self.assertEqual([f.rule for f in found], ["X-2"])
+        self.assertIn("did not finish within 1 seconds", found[0].message)
+
     def test_text_names_the_rule_the_place_and_the_fix(self):
         out = io.StringIO()
         core.render_text(core.run((rule("X-2", failing("X-2"), fix="vac gen"),), "t0", core.Ctx()), "t0", out)
@@ -77,6 +90,36 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(lines[0]["rule"], "X-2")
         self.assertEqual(lines[0]["fix"], "run x")
         self.assertEqual(lines[-1]["summary"]["failed"], 1)
+
+
+class GitWrapperTests(unittest.TestCase):
+    def repo(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, tmp)
+        run = lambda *a: subprocess.run(["git", "-C", str(tmp), *a], check=True, capture_output=True, text=True,
+                                        env=core.git_env()).stdout
+        run("init", "-q", "-b", "work")
+        (tmp / "a.py").write_text("x = 1\n", encoding="utf-8")
+        run("add", "-A")
+        run("-c", "user.name=t", "-c", "user.email=t@t.invalid", "commit", "-q", "-m", "c")
+        return tmp, run
+
+    def test_changed_paths_names_a_non_ascii_path_unquoted(self):
+        tmp, run = self.repo()
+        (tmp / "tools").mkdir()
+        (tmp / "tools/café.py").write_text("x = 1\n", encoding="utf-8")
+        run("add", "-A")
+        self.assertEqual(core.changed_paths(core.Ctx(root=tmp), "HEAD"), ("tools/café.py",))
+
+    def test_an_inherited_git_dir_never_redirects_the_wrapper(self):
+        tmp, _run = self.repo()
+        other, _other_run = self.repo()
+        with __import__("unittest.mock").mock.patch.dict(
+                os.environ, {"GIT_DIR": str(other / ".git"), "GIT_WORK_TREE": str(other)}):
+            self.assertEqual(core.git(core.Ctx(root=tmp), "rev-parse", "--show-toplevel").strip(),
+                             subprocess.run(["git", "-C", str(tmp), "rev-parse", "--show-toplevel"],
+                                            capture_output=True, text=True, env=core.git_env()).stdout.strip())
+            self.assertNotIn("GIT_DIR", core.git_env())
 
 
 class RegistryTests(unittest.TestCase):
@@ -170,7 +213,8 @@ class WaiverRowTests(unittest.TestCase):
     def repo(self):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(__import__("shutil").rmtree, tmp)
-        run = lambda *a: subprocess.run(["git", "-C", str(tmp), *a], check=True, capture_output=True, text=True).stdout
+        run = lambda *a: subprocess.run(["git", "-C", str(tmp), *a], check=True, capture_output=True, text=True,
+                                        env=core.git_env()).stdout
         run("init", "-q")
         (tmp / "f").write_text("x", encoding="utf-8")
         run("add", "f")
