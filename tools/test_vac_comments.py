@@ -497,6 +497,20 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(outside.read_text(encoding="utf-8"), "files = []\n")
         self.assertIn("symbolic link", out.getvalue())
 
+    def test_debt_write_never_follows_a_symlink_that_appears_after_the_check(self):
+        repo = Repo(self)
+        repo.commit({"a.py": "# a\n"})
+        outside = repo.root / "outside.toml"
+        outside.write_text("files = []\n", encoding="utf-8")
+        link = repo.root / DEBT
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(outside)
+        out = io.StringIO()
+        with __import__("unittest.mock").mock.patch.object(type(link), "is_symlink", return_value=False):
+            self.assertEqual(comments.debt_write(repo.root, out=out), 1)
+        self.assertEqual(outside.read_text(encoding="utf-8"), "files = []\n")
+        self.assertIn("not written", out.getvalue())
+
     def test_debt_write_refuses_while_a_listed_file_cannot_be_read(self):
         repo = Repo(self)
         repo.commit({"a.py": "# a\n", "b.py": "# b\n", DEBT: comments.debt_text(["a.py", "b.py"])})

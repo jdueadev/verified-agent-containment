@@ -3,6 +3,7 @@ import bisect
 import importlib
 import io
 import json
+import os
 import re
 import subprocess
 import sys
@@ -1020,7 +1021,13 @@ def debt_write(root, out=sys.stdout):
         return 1
     keep = [p for p in candidates if tree.spans(p)]
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(debt_text(keep), encoding="utf-8")
+    try:
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    except OSError as error:
+        print(f"vac: {DEBT_FILE} was not written ({error.strerror}); replace it with a regular file", file=out)
+        return 1
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(debt_text(keep))
     removed = sorted(set(old) - set(keep))
     print(f"vac: {DEBT_FILE} lists {len(set(keep))} files" + (f"; removed {', '.join(removed)}" if removed else ""),
           file=out)
