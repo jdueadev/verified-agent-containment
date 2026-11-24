@@ -15,33 +15,3 @@ reason = "spec tools/test_vac.py was edited"
 issue = 209
 receipt = "041693c52ec604180ea70a1d533ae7c21a702414c2371f9dd3542608c12aea99"
 head = "68209a52746ed45288ca690c011219f36ff84ed1"
-
-[[waiver]]
-reason = "spec tools/test_gate_check.py was edited"
-issue = 235
-receipt = "54955640a17133e752246c6543a2fc40e9b23eea8cd1a51a4f476d71da707b9f"
-head = "c95c0644c3440fd3ec17aebce3da25c7989f0992"
-
-[[waiver]]
-reason = "spec tools/test_gate_current_base.py was edited"
-issue = 235
-receipt = "8cafcba24a829f4c55b3479c49c07f737111730a5fa742ea7bf145e424329fe3"
-head = "8ba325f81e9fa0c32be62be58a799348ca52c875"
-
-[[waiver]]
-reason = "spec tools/test_merge_digest.py was edited"
-issue = 235
-receipt = "3204a719ae8c0a3936bb5316bab26ab4e2fef9900ec7e6e4a8f3cec2a78c3e65"
-head = "a9dbe58ec5f0f2166278c799b70466f05a09b6c7"
-
-[[waiver]]
-reason = "spec tools/test_policy_trusted.py was edited"
-issue = 235
-receipt = "a54d87667b7deb6597d17de8368fd007250f637f254ba59be2f3145c7b1f0906"
-head = "e409c234e0fa75f2b7bf72e176c39e4dfcd5ea55"
-
-[[waiver]]
-reason = "spec tools/test_gate_approval_freshness.py was edited"
-issue = 235
-receipt = "3828a2c57ba8ecf00b89c5e4fa7a2001f3510dcc006fe968afab6625cf530f1d"
-head = "14f09b05f870d34c0bd0398074ecd81b7fcb1d9b"
