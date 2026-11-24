@@ -20,6 +20,7 @@ dbg_macro = "deny"
 todo = "deny"
 unimplemented = "deny"
 mem_forget = "deny"
+undocumented_unsafe_blocks = "deny"
 
 [profile.release]
 lto = true

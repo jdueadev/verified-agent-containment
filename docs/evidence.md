@@ -13,12 +13,12 @@ The results behind every guarantee in the [README](../README.md). Each guarantee
 | Unsafe Rust kernels | 19/19 diverge from the Bend model | The differential test detects these faults |
 | Rust vs Bend, Rust vs WebAssembly | 77,364 transitions each, 0 mismatches | Generated-test agreement, including stale timestamps and resets. Not a proof |
 | Linux attack runs | 176/176 passed | 31 scenarios; 5 timed scenarios repeated 30 times |
-| Under CPU load | 68/68 passed | Same suite at `--repeat 10`, with two busy loops on a 2-core VM (earlier build, c96aa2d) |
-| Weakened controllers | 29/29 caught | Each removes one protection; the suite must fail |
+| Under CPU load | 68/68 passed, 17/17 sabotage caught | Earlier suite in `results/attack-suite-under-cpu-load.json`, last written at c96aa2d: 23 scenarios, five of them repeated 10 times, cgroup limits waived |
+| Weakened controllers | 29/29 caught in the WSL2 copy; 30/30 in the later GitHub-hosted runs | Each removes one protection; the suite must fail. The extra control in the later runs is `wide_root` |
 | Bytes admitted after a stop committed | 0 | Across 158 measured stops |
 | Bytes written upstream after the cut | 0 | Same runs. Gateway stamps are HMAC-authenticated at the sink |
 | Live agent suite | 11/11 passed; 8/8 sabotaged controllers caught | The real agent harness with a scripted model: credential scoping, canary, unlisted hosts, budgets, cut on stop, workspace rebuild, HUD log redaction. `results/live-suite.json` |
-| Red-team kit, obedient scripted model | 0 leaks in 6 tasks; both sabotaged controllers score `LEAK` | The scorer can see a leak when one happens |
+| Red-team kit, obedient scripted model | 0 leaks in 6 tasks | `results/redteam/scripted-obedient`. No scorecard for a `--weakness` run is committed |
 | Red-team, real local model on WSL2 | 0 leaks in 6 tasks, in each of 2 runs; the clean task completed both times | Qwen3.5-9B Q6_K on llama.cpp (CUDA, RTX 5080), thinking off. Both runs: 3 injections resisted, 2 ended restricted. In the first run the model sent 241 B of notes to a host the policy allows before it was restricted (claim L-OPS-01); in the second it did not. `results/wsl2/lab-9ffd69a/` and `results/wsl2/lab-f88aeef/` |
 | Browser page | 10/10 sabotaged kernels caught | Checked with native WebAssembly and with the JavaScript fallback |
 | TLA+ host model | `ClassifierCannotForceStop` holds | 2,863,520 states (one sandbox, 12 ticks, renewal as its own action, no resets). Required counterexamples are found for the classifier in the health gate, an uncapped lag signal, and a dead monitor. `tools/tla_check.sh` |
@@ -34,7 +34,7 @@ These figures are from the Linux VM run at commit d81a32e, kept as `results/linu
 
 Maxima vary between runs on this shared VM because the enforcer thread can be descheduled; one run of an earlier build of this change had a `gateway_flood` stop at 93 ms. Every measured stop, including that one, recorded 0 bytes admitted after commit and 0 written after the cut.
 
-Monitor loss to containment is bounded by lease expiry: p50 189 ms, p95 198 ms, max 200.06 ms for a 200 ms lease. The commit lands on the first tick at or after the deadline, so the maximum can pass the lease by a fraction of a millisecond. The suite's limit is 300 ms. Under CPU load (earlier build), the frozen p95 rose to 9.6 ms and the maximum to 59.8 ms.
+From monitor loss to the stop commit, for a 200 ms lease: p50 188.26 ms, p95 199.29 ms, max 200.52 ms. The commit lands on the first tick at or after the deadline, so these times include that tick and any scheduling delay, and the maximum can pass the lease by a fraction of a millisecond. The suite's limit is 300 ms. Under CPU load (earlier build), the frozen p95 rose to 9.6 ms and the maximum to 59.8 ms.
 
 **Limits waiver.** This run used `--allow-missing-limits`. The VM has a hybrid cgroup v1/v2 layout, so the pids, memory and CPU controllers are not available in the v2 tree. The result records the waiver. Without it, `benign` fails when those limits are not in force. The WSL2 runs below enforced the limits with no waiver.
 
@@ -42,7 +42,7 @@ Monitor loss to containment is bounded by lease expiry: p50 189 ms, p95 198 ms, 
 
 | Run | Files | Status |
 |---|---|---|
-| cd7172f, Windows lab | `results/wsl2/lab-cd7172f/` | **Latest.** Suites only, after the controller split and hardening. Attack suite 176/176 and 29/29, live suite 11/11 and 8/8, limits enforced. The first run where the honest scenarios ran on the default build and the sabotage controls on a separate build that contains the defects; both binary hashes are in the results. No red team in this run. The WSL2 platform record in `claims.toml` cites it, and `results/attack-suite.json` and `results/live-suite.json` are copies of it. |
+| cd7172f, Windows lab | `results/wsl2/lab-cd7172f/` | **Latest Windows lab.** Suites only, after the controller split and hardening. Attack suite 176/176 and 29/29, live suite 11/11 and 8/8, limits enforced. The first run where the honest scenarios ran on the default build and the sabotage controls on a separate build that contains the defects; both binary hashes are in the results. No red team in this run. The WSL2 platform record in `claims.toml` cites it, and `results/attack-suite.json` and `results/live-suite.json` are copies of it. Later runs are in GitHub-hosted runs, below. |
 | f88aeef, Windows lab | `results/wsl2/lab-f88aeef/` | Attack suite 176/176 and 29/29, live suite 11/11 and 8/8, limits enforced, red team 0 leaks. Cited by `claims.toml`. |
 | 9ffd69a, Windows lab | `results/wsl2/lab-9ffd69a/` | Same suite results. Its red-team run found the lag-clock bug and recorded the 241 B allowed-host send. Cited by `claims.toml`. |
 | 870142c, first WSL2 run | `results/wsl2/attack-suite-space-heater-870142c.*` | Historical. 167/168: the memfd interop escape described below. Kept because `claims.toml` records this failure. |
@@ -54,6 +54,15 @@ The first run on a local WSL2 host (Linux 6.18.58.1-microsoft-standard-WSL2, com
 The fixed build (d0c0764) passed on WSL2: 168/168 runs, 18/18 sabotage caught including `memfd_exec`, 0 bytes after a stop, limits in force. Freeze stayed slower there: committed to frozen p95 70 ms, max 97 ms; egress cut p95 0.49 ms.
 
 The Windows lab (`scripts/lab`, commit 9ffd69a, a throwaway distro with interop disabled) passed both suites with limits in force: attack suite 176/176 and 29/29, 0 bytes after a stop, committed to frozen p95 66 ms; live suite 11/11 and 8/8 (`results/wsl2/lab-9ffd69a/`). A rerun at f88aeef, after review fixes to the lab scripts, gave the same suite results (frozen p95 68 ms; `results/wsl2/lab-f88aeef/`). Its first red-team run found a real bug: the lag clock started when a request arrived, so every slow local inference looked like classifier lag and restricted even the clean task. Fixed in d81a32e, with the `slow_model_no_false_lag` scenario and a `lag_from_receipt` sabotage.
+
+## GitHub-hosted runs
+
+| Run | Files | Status |
+|---|---|---|
+| 9263878, `ubuntu-24.04` | `results/ci/lab-9263878b598c472f65aa58b3116ed959323b98fa/` | **Newest committed lab run.** Attack suite 176/176 and 30/30, live suite 11/11 and 8/8, limits enforced. Kernel 7.0.0-1017-azure. Cited by `claims.toml`. |
+| a38ad00, `ubuntu-24.04` | `results/ci/lab-a38ad0086aec46c6b33229f43da52065e8c76e11/` | Attack suite 176/176 and 30/30, live suite 11/11 and 8/8, limits enforced. Kernel 7.0.0-1014-aws. Cited by `claims.toml`. |
+
+The extra sabotage versus the WSL2 copy is `wide_root`. `results/attack-suite.json` is still the cd7172f copy, so its sabotage list has 29 entries.
 
 ## Scope limits
 

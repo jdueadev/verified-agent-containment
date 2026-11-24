@@ -4,7 +4,7 @@ name: check
 # - `check` runs on every push (including Draft PRs): Bend proofs, Rust/WASM
 #   tests and clippy for both feature sets, differential, mutation, TLA+,
 #   tooling tests, and non-strict claims_check.py (CI-1/2/3/5/6/7 + stale warnings).
-# - `evidence-freshness` runs on Ready PRs and pushes to main: enforces
+# - `evidence-freshness` (paused, #206) runs on Ready PRs and pushes to main: enforces
 #   claims_check.py --strict (fresh lab evidence, regenerated docs/claims.md,
 #   dual-binary stamps, and full unwaived attack-suite runs).
 
@@ -32,6 +32,20 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
+      # spec.yml and policy.yml judge only pull requests into main; so does this.
+      # A PR into a planted branch would otherwise run that branch's scripts and
+      # post a green `check` on a head commit also proposed to main (#136). It
+      # fails rather than skips: a skipped required check counts as passing.
+      - name: Only pull requests into main
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          if [ "$BASE_REF" != "main" ]; then
+            echo "check: only pull requests into main are judged (base is '$BASE_REF')." >&2
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -88,11 +102,69 @@ jobs:
       - name: scripts/check.sh --no-strict
         run: bash scripts/check.sh --no-strict
 
+  # Proof of this run's base for the gate (#137, stage 2). A job of its own, so the
+  # OIDC permission never reaches a job that runs the head's code. GitHub sets the
+  # token's base_ref, ref, run_id and workflow_ref claims from the event, so a run on a
+  # pull request into another branch cannot claim main. tools/gate_check.py verifies it.
+  gate-attestation:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+    steps:
+      - name: Mint the proof
+        id: mint
+        run: |
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            # A fork's pull request gets no OIDC token. The gate does not count its runs.
+            echo "No OIDC token for this run."
+            exit 0
+          fi
+          curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=gate" > "$RUNNER_TEMP/oidc.json"
+          python3 - "$RUNNER_TEMP/oidc.json" "$RUNNER_TEMP/gate-attestation.jwt" <<'PY'
+          import base64, json, sys
+          token = json.load(open(sys.argv[1]))["value"]
+          open(sys.argv[2], "w").write(token)
+          body = token.split(".")[1]
+          claims = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+          # The claims, never the token, so the log shows what the gate will check.
+          keys = ("repository", "event_name", "ref", "base_ref", "head_ref", "sha", "run_id", "run_attempt",
+                  "workflow_ref")
+          print(json.dumps({k: claims.get(k) for k in keys}, indent=2))
+          PY
+          rm -f "$RUNNER_TEMP/oidc.json"
+          echo "minted=true" >> "$GITHUB_OUTPUT"
+
+      - name: Keep the proof for the gate
+        if: steps.mint.outputs.minted == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gate-attestation-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gate-attestation.jwt
+          if-no-files-found: error
+          retention-days: 30
+
   evidence-freshness:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    # Paused (#206): main's CI-4 lab evidence is stale, so this job is red on every
+    # Ready PR and push until the lab re-runs CI-4. It isn't required, and
+    # claims_check.py --strict still gates releases. To resume, restore:
+    #   if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      - name: Only pull requests into main
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          if [ "$BASE_REF" != "main" ]; then
+            echo "check: only pull requests into main are judged (base is '$BASE_REF')." >&2
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

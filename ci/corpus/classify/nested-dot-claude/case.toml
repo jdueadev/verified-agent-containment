@@ -1,0 +1,5 @@
+checker = "classify"
+origin = "#169: a nested .claude/ skill in a lane A directory"
+twin = "handover-added"
+expect_lane = "C"
+expect_escalation = "agent config web/.claude/skills/x/SKILL.md"

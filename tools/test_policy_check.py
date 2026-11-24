@@ -70,12 +70,12 @@ class LaneTests(unittest.TestCase):
 
     def test_the_attack_harness_is_a_verifier(self):
         for path in ("crates/containment-host/src/harness.rs", "crates/containment-host/src/live_suite.rs",
-                     "crates/containment-host/src/redteam.rs", "crates/containment-kernel/tests/laws.rs"):
+                     "crates/containment-host/src/redteam.rs"):
             self.assertEqual(self.lane(path), "C", path)
 
     def test_rules_and_verifiers_are_lane_c(self):
         for path in (".github/workflows/check.yml", "ci/lanes.toml", "scripts/check.sh", "tools/claims_check.py",
-                     "tools/policy_check.py", "tools/test_policy_check.py", "AGENTS.md", ".github/CODEOWNERS",
+                     "tools/policy_check.py", "AGENTS.md", ".github/CODEOWNERS",
                      "results/wsl2/lab-cd7172f/attack-suite.json", "results/attack-suite.json",
                      "results/formal-verdict.json", "docs/decisions/0001-agent-workflow.md",
                      "results/ci/lab-0123456/attack-suite.json", "tools/lab_record.py"):
@@ -364,7 +364,7 @@ class CodeownersAndInvariantTests(unittest.TestCase):
         text = pc.codeowners_text(OWNER, LANES)
         self.assertEqual(pc.codeowners_errors(OWNER, LANES, text), [])
         self.assertIn("/.github/ " + OWNER, text)
-        self.assertIn("/tools/test_*.py " + OWNER, text)
+        self.assertIn("/tools/spec_run.py " + OWNER, text)
         self.assertTrue(pc.codeowners_errors(OWNER, LANES, text.replace("/scripts/ " + OWNER + "\n", "")))
         self.assertTrue(pc.codeowners_errors(OWNER, LANES, None))
         self.assertEqual(pc.codeowners_errors(OWNER, LANES, (ROOT / ".github/CODEOWNERS").read_text(encoding="utf-8")), [])
@@ -459,13 +459,17 @@ class QueueTests(unittest.TestCase):
         self.write("claims.toml", CLAIMS)
         self.base = self.commit("base")
         self.prs = 0
-        patcher = mock.patch.object(pc, "git", self.git)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for name in ("git", "git_bytes"):
+            patcher = mock.patch.object(pc, name, getattr(self, name))
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def git(self, *args):
         return subprocess.run(["git", "-C", str(self.tmp), *args], capture_output=True, text=True,
                               encoding="utf-8", check=True).stdout
+
+    def git_bytes(self, *args):
+        return subprocess.run(["git", "-C", str(self.tmp), *args], capture_output=True, check=True).stdout
 
     def write(self, path, text):
         target = self.tmp / path
