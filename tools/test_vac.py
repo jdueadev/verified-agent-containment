@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""Unit tests for the no-root driver, tools/vac.py.
-
-No network and no cargo: the root-command refusals and --help are subprocesses
-of vac itself, and the summary is rendered in-process. Nothing here starts a
-build, a test suite, or scripts/check.sh.
-"""
 import argparse
 import contextlib
 import importlib
@@ -187,8 +181,6 @@ CLAIMS = [
 
 
 class Preflight(unittest.TestCase):
-    """vac preflight and vac lab plan (#178 follow-up): no root, nothing recorded."""
-
     def test_engine_choice(self):
         has = lambda names: (lambda name: f"/usr/bin/{name}" if name in names else None)
         self.assertEqual(vac.pick_engine("auto", has({"podman", "docker"}), True), "podman")
@@ -224,7 +216,6 @@ class Preflight(unittest.TestCase):
         for stale, problem in (([("L-ISO-02", ["scenario:sandbox_escape"], ["wsl2-6.18.58"])], None),
                                ([], None), (None, "boom")):
             text = vac.format_not_exercised(stale, problem)
-            # Scan finding: never "nothing"; a preflight exercises no lab evidence.
             self.assertTrue(text.startswith("not exercised: any lab evidence"), text)
             self.assertNotIn("not exercised: nothing", text)
         self.assertIn("L-ISO-02: scenario:sandbox_escape", vac.format_not_exercised(
@@ -246,7 +237,6 @@ class Preflight(unittest.TestCase):
             self.assertIn(needle, text)
         self.assertNotIn("INV-", text)
         self.assertNotIn("\r", text)
-        # Scan finding: an unreadable strict check is "unknown", never "none".
         unknown = vac.lab_plan_text("0babf9e", None, "the strict claims check failed")
         self.assertIn("unknown: the strict claims check failed", unknown)
         self.assertNotIn("none: the strict claims check reports no stale claim", unknown)
@@ -273,10 +263,17 @@ class Preflight(unittest.TestCase):
 
     def test_lab_plan_runs_nothing_but_the_read_only_check(self):
         calls = []
+        strict = [sys.executable, "tools/claims_check.py", "--strict"]
         real_run, real_git = vac.subprocess.run, vac.git
+
+        class Done:
+            returncode, stdout = 0, json.dumps({"errors": []})
+
         def spy(argv, *args, **kwargs):
             calls.append(list(argv))
-            return real_run(argv, *args, **kwargs)
+            if list(argv) != strict:
+                raise AssertionError(f"vac lab plan started {argv}")
+            return Done()
         vac.subprocess.run = spy
         vac.git = lambda argv: (0, "f" * 40 + "\n", "")
         try:
@@ -284,8 +281,7 @@ class Preflight(unittest.TestCase):
                 vac.cmd_lab(None)
         finally:
             vac.subprocess.run, vac.git = real_run, real_git
-        ran = [argv for argv in calls if argv[:1] != ["git"]]
-        self.assertEqual(ran, [[sys.executable, "tools/claims_check.py", "--strict"]])
+        self.assertEqual(calls, [strict])
         self.assertIn("Root lab run (T2)", out.getvalue())
 
 

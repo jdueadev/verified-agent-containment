@@ -1,35 +1,4 @@
 #!/usr/bin/env python3
-"""No-root driver for this repository.
-
-One command surface for the paths that do not need root:
-
-  vac build
-      cargo build -q --locked -p containment-host
-  vac check [--only NAME]
-      The T0 checks, one by one, streaming, continuing after a failure.
-      Does not run scripts/check.sh (that rewrites results/).
-  vac run sim [driver args...]
-  vac run servers
-      Pass through to the local node driver.
-  vac status
-      Checkout, binary freshness, toolchain.
-  vac preflight [--engine auto|podman|docker|host]
-      Before a root lab run: everything that needs no root. In the check
-      container (scripts/check-in-container.sh) when it and an engine are
-      present, otherwise the host crate's tests and both release builds on the
-      host. Then it names the lab evidence it did NOT exercise. Always T0, and
-      it records nothing.
-  vac lab plan
-      Print the steps for the maintainer's root lab run (T2) on main, and the
-      stale claims it would refresh. It runs only the read-only strict claims
-      check and git rev-parse.
-  vac attack-suite|live|live-suite|redteam|ctl|hud
-      Refused with exit 2. AGENTS.md INV-11: throwaway machine only.
-
-After every command, `git status --porcelain -- results/` is compared with
-the snapshot from the start. A change under results/ is a loud warning.
-The tier line is always T0, and it names only checks that passed.
-"""
 import argparse
 import json
 import os
@@ -49,15 +18,13 @@ BUILD_ARGV = ("cargo", "build", "-q", "--locked", "-p", "containment-host")
 DRIVER_REL = Path(".claude/skills/run-verified-agent-containment/driver.mjs")
 LAB_REL = Path("target/debug/containment-lab")
 REFUSED = ("attack-suite", "live", "live-suite", "redteam", "ctl", "hud")
-# Same relative paths the node driver searches under ~/.cache/ms-playwright.
-CHROMIUM_REL = (
+PLAYWRIGHT_CHROMIUM_REL = (
     "chrome-linux/headless_shell",
     "chrome-headless-shell-linux64/chrome-headless-shell",
     "chrome-linux/chrome",
     "chrome-linux64/chrome",
 )
 STATUSES = ("PASS", "FAIL", "SKIPPED")
-# Evidence only the root lab produces. A preflight never exercises these.
 LAB_KINDS = ("scenario", "sabotage", "live", "live-sabotage")
 CONTAINER_WRAPPER = Path("scripts/check-in-container.sh")
 ENGINES = ("auto", "podman", "docker", "host")
@@ -77,7 +44,6 @@ def quote_cmd(argv):
 
 
 def git(args, cwd=None):
-    """Run git. Returns (returncode, stdout, stderr). None if git cannot start."""
     try:
         proc = subprocess.run(
             ["git", "-C", str(ROOT), *args],
@@ -97,7 +63,6 @@ def git_ref_exists(ref):
 
 
 def run_streaming(argv, env=None):
-    """Run argv with inherited stdio. Returns the exit code, or 127 if it cannot start."""
     shown = "".join(f"{key}={shlex.quote(value)} " for key, value in sorted((env or {}).items()))
     print("+ " + shown + quote_cmd(argv), flush=True)
     try:
@@ -109,10 +74,6 @@ def run_streaming(argv, env=None):
 
 
 def format_summary(rows):
-    """Render the check table and the tier line.
-
-    The tier is always T0. The parenthetical names only checks that passed.
-    """
     name_w = max([len("check")] + [len(name) for name, _status, _seconds in rows])
     lines = [
         f"{'check':<{name_w}}  {'result':<7}  seconds",
@@ -307,7 +268,6 @@ def cmd_comments(args):
 
 
 def node_too_old(node):
-    """Return an error string when `node` is missing or older than 22, else None."""
     if not node:
         return "vac: node is not on PATH. The driver needs Node 22 or newer."
     try:
@@ -351,7 +311,6 @@ def iso(timestamp):
 
 
 def newest_crates_source():
-    """(mtime, path) of the newest regular file under crates/, or None."""
     root = ROOT / "crates"
     newest = None
     if not root.is_dir():
@@ -374,10 +333,6 @@ def newest_crates_source():
 
 
 def find_chromium():
-    """Chromium the node driver would use: $CHROMIUM, else the Playwright cache.
-
-    Returns (path or None, detail). detail explains a miss.
-    """
     env = os.environ.get("CHROMIUM")
     if env:
         if Path(env).is_file():
@@ -388,7 +343,7 @@ def find_chromium():
         return None, "CHROMIUM is unset and ~/.cache/ms-playwright is absent"
     dirs = sorted((path for path in cache.iterdir() if path.is_dir()), key=lambda path: path.name, reverse=True)
     for directory in dirs:
-        for rel in CHROMIUM_REL:
+        for rel in PLAYWRIGHT_CHROMIUM_REL:
             candidate = directory / rel
             if candidate.is_file():
                 return str(candidate), "playwright cache"
@@ -401,8 +356,6 @@ def tool_line(name):
         return f"  {name}: missing"
     version = ""
     try:
-        # Run inside the checkout so a rustup proxy reports the toolchain
-        # rust-toolchain.toml selects, which is the cargo `vac build` will use.
         proc = subprocess.run(
             [path, "--version"],
             capture_output=True,
@@ -474,8 +427,6 @@ def cmd_status(_args):
 
 
 def pick_engine(requested, which=shutil.which, wrapper_present=None):
-    """The engine a preflight uses: podman, docker, or host. `auto` takes the check
-    container when its wrapper is in this checkout and an engine is on PATH."""
     if wrapper_present is None:
         wrapper_present = (ROOT / CONTAINER_WRAPPER).is_file()
     if requested == "host":
@@ -490,18 +441,12 @@ def pick_engine(requested, which=shutil.which, wrapper_present=None):
 
 
 def preflight_steps(engine):
-    """(name, argv, env) for each preflight step. None of them needs root, and none
-    writes results/: the container judges a copy of the checkout, and the host
-    steps only test and build into target/ and target-sabotage/."""
     if engine in ("podman", "docker"):
         return [("container", (str(CONTAINER_WRAPPER), "--no-strict"), {"ENGINE": engine})]
     return [(name, argv, None) for name, argv in HOST_PREFLIGHT]
 
 
 def stale_lab_evidence(report, claims):
-    """For each claim the strict claims check calls stale (CI-4), the lab-only
-    evidence it cites and the platforms it was recorded on: what a preflight does
-    not exercise and only a root lab run refreshes."""
     by_id = {claim["id"]: claim for claim in claims}
     out = []
     for error in report.get("errors", []):
@@ -518,7 +463,6 @@ def stale_lab_evidence(report, claims):
 
 
 def read_stale_lab_evidence():
-    """Run the strict claims check (it only reads) and map its CI-4 errors."""
     import json
     import tomllib
     try:
@@ -528,8 +472,6 @@ def read_stale_lab_evidence():
         claims = tomllib.loads((ROOT / "claims.toml").read_text(encoding="utf-8"))["claim"]
     except (OSError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
         return None, f"could not read the strict claims check: {exc}"
-    # Only staleness is something a lab run fixes. Any other strict error means the
-    # list of what the lab would refresh cannot be trusted, so it is unknown.
     other = [e for e in report.get("errors", []) if not e.startswith("CI-4 ")]
     if other or (proc.returncode != 0 and not report.get("errors")):
         shown = "; ".join(other[:3]) or f"exit {proc.returncode} with no errors listed"
@@ -538,8 +480,6 @@ def read_stale_lab_evidence():
 
 
 def format_not_exercised(stale, problem=None):
-    """A preflight exercises no lab evidence at all; say so every time, then name
-    the stale claims that only a root lab run refreshes."""
     lines = ["not exercised: any lab evidence (scenario, sabotage, live, live-sabotage); "
              "a preflight runs none of it and records nothing"]
     if problem:
@@ -574,8 +514,6 @@ def cmd_preflight(args):
 
 
 def lab_plan_text(commit, stale, problem=None, head_note=""):
-    """The maintainer's root lab run, as steps. Text only. `stale` is None when the
-    strict claims check could not say."""
     if stale is None:
         claims = f"  - unknown: {problem or 'the strict claims check could not be read'}. Fix that first."
     else:
@@ -658,7 +596,10 @@ def build_parser():
     check = sub.add_parser(
         "check",
         help="run every registered rule for a stage (default t0)",
-        description="Run the rules in tools/vac_rules.py. Exit 0 pass, 1 a rule failed, 2 usage, 3 a tool is missing.",
+        description=("Run the rules in tools/vac_rules.py whose stages name the stage asked for. Exit 0 pass, 1 a "
+                     "rule failed, 2 usage, 3 a tool is missing. At t0 nothing here runs scripts/check.sh or writes "
+                     "results/; --t1 adds T1-GATE, which does run it, and reports tier T1 only when every rule of "
+                     "that stage ran and passed."),
     )
     check.add_argument("--t1", action="store_true", help="run stage t1, the full gate; tier T1 only if every rule ran and passed")
     check.add_argument("--stage", choices=("t0", "t1", "pr", "rc", "release"), default="t0")
@@ -778,7 +719,6 @@ def wants_help(argv):
 
 
 def dispatch_run(rest):
-    """Handle `vac run ...`, passing driver arguments through argparse."""
     parser = build_parser()
     if not rest or rest[0] not in ("sim", "servers"):
         parser.parse_args(["run", *rest])
@@ -787,9 +727,6 @@ def dispatch_run(rest):
 
 
 def dispatch(argv):
-    # `run sim` and `run servers` take the driver's own flags. Argparse would
-    # reject those, so pass them through unless this invocation is asking us
-    # for help.
     if argv[:1] == ["run"] and not wants_help(argv):
         return dispatch_run(argv[1:])
     args = build_parser().parse_args(argv)
