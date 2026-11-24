@@ -154,6 +154,11 @@ class VerifyRecord(unittest.TestCase):
         code, err, recorded = self.record([(0, "", ""), head, head])
         self.assertEqual((code, err, recorded), (0, "", ["a" * 40]))
 
+    def test_any_uncommitted_change_refuses_the_record(self):
+        code, err, recorded = self.record([(0, " M Cargo.toml\n", "")])
+        self.assertEqual((code, recorded), (2, []))
+        self.assertIn("commit every change first", err)
+
     def test_a_failed_git_status_is_no_clean_checkout(self):
         code, err, recorded = self.record([(1, "", "fatal: not a git repository\n")])
         self.assertEqual((code, recorded), (2, []))

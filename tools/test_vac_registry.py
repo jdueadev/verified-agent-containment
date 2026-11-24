@@ -360,17 +360,6 @@ class CommandTests(unittest.TestCase):
         ran = self.vac("check", "--stage", "rc", "--rule", "FV-SYNC", "--json")
         self.assertEqual(json.loads(ran.stdout.splitlines()[-1])["summary"]["ran"], 1)
 
-    def test_verify_record_refuses_any_uncommitted_change(self):
-        target = ROOT / "Cargo.toml"
-        original = target.read_bytes()
-        try:
-            target.write_bytes(original + b"\n")
-            child = self.vac("verify", "record")
-        finally:
-            target.write_bytes(original)
-        self.assertEqual(child.returncode, core.EXIT_USAGE, child.stdout + child.stderr)
-        self.assertIn("commit every change first", child.stderr)
-
     def test_one_rule_runs_and_passes(self):
         child = self.vac("check", "--rule", "POL-SAB", "--json")
         self.assertEqual(child.returncode, 0, child.stdout + child.stderr)
