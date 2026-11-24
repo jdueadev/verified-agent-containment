@@ -421,30 +421,43 @@ class DebtTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertTrue(found[0].message.startswith("c.py had no comments at"), found[0].message)
 
-    def test_the_first_list_may_name_a_file_the_base_lacks(self):
+    def test_the_first_list_may_not_name_a_file_new_on_the_branch(self):
         repo = Repo(self)
         repo.commit({"a.py": "# a\n"})
         repo.main_here()
         repo.commit({"d.py": "# d\n", DEBT: comments.debt_text(["a.py", "d.py"])})
+        found = repo.check("NC-2")
+        self.assertEqual(len(found), 1)
+        self.assertTrue(found[0].message.startswith("d.py had no comments at"), found[0].message)
+
+    def test_the_first_list_may_name_a_file_that_had_comments_at_the_start(self):
+        repo = Repo(self)
+        repo.commit({"a.py": "# a\n", "d.py": "# d\n"})
+        repo.main_here()
+        repo.commit({DEBT: comments.debt_text(["a.py", "d.py"])})
         self.assertEqual(repo.check("NC-2"), [])
 
     def test_once_committed_the_list_never_grows_even_before_main_has_it(self):
         repo = Repo(self)
-        repo.commit({"a.py": "# a\n"})
+        start = repo.commit({"a.py": "# a\n"})
         repo.main_here()
         first = repo.commit({DEBT: comments.debt_text(["a.py"])})
         repo.commit({"e.py": "# e\n", DEBT: comments.debt_text(["a.py", "e.py"])})
         found = repo.check("NC-2")
-        self.assertEqual([f.message.split(";")[0] for f in found], [f"e.py is not in {DEBT} at {first[:12]}"])
+        self.assertEqual([f.message.split(";")[0] for f in found],
+                         [f"e.py is not in {DEBT} at {first[:12]}",
+                          f"e.py had no comments at {start[:12]}, where the list started"])
 
     def test_a_list_deleted_and_added_again_keeps_its_first_ceiling(self):
         repo = Repo(self)
-        repo.commit({"a.py": "# a\n"})
+        start = repo.commit({"a.py": "# a\n"})
         repo.main_here()
-        repo.commit({DEBT: comments.debt_text(["a.py"])})
+        first = repo.commit({DEBT: comments.debt_text(["a.py"])})
         repo.commit({DEBT: None})
         repo.commit({"e.py": "# e\n", DEBT: comments.debt_text(["a.py", "e.py"])})
-        self.assertEqual(len(repo.check("NC-2")), 1)
+        self.assertEqual([f.message.split(";")[0] for f in repo.check("NC-2")],
+                         [f"e.py is not in {DEBT} at {first[:12]}",
+                          f"e.py had no comments at {start[:12]}, where the list started"])
 
     def test_a_list_deleted_on_main_leaves_no_debt_at_all(self):
         repo = Repo(self)

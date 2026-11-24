@@ -985,7 +985,8 @@ def debt_errors(tree):
     if start is not None:
         before = blobs(tree.root, start, entries)
         errors += [f"{p} had no comments at {start[:12]}, where the list started; only a file that had comments "
-                   "then can be listed" for p in entries if p in before and not counted(p, before[p], tree.frozen)]
+                   "then can be listed" for p in entries
+                   if p not in before or not counted(p, before[p], tree.frozen)]
     errors += [f"{p} has no comments left; remove it with vac comments --debt-write"
                for p in entries if not tree.spans(p)]
     return errors
