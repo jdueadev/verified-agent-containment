@@ -84,5 +84,10 @@ for (let i = 0; i < Number(count); i++) {
   if (allowed && !live(m2)) fail("stopped_denies", aex);
   if (allowed && m2 === 1 && k === 1) fail("restrict_denies_secrets", aex);
   if (allowed && m2 === 1 && k === 0 && !b) fail("restrict_egress_needs_baseline", aex);
+  const k2 = int(5), now2 = int(800), lvl2 = tag(LEVELS[int(4)]);
+  const e2 = k2 === 0 ? tag("ClockTick", { now: now2 }) : k2 === 1 ? tag("Renew", { now: now2, ttl: int(600) })
+    : k2 === 2 ? tag("Classifier", { now: now2, level: lvl2 }) : k2 === 3 ? tag("HardRule", { now: now2, level: lvl2 })
+    : tag("AgentRequest", { now: now2 });
+  if (!(kind === 5 && e.signed) && rank(step(cfg, r.control, e2).control.mode) < m) fail("no_sequence_lowers_containment", { ...ex, then: e2.$ });
 }
 console.log(JSON.stringify({ checked: Number(count), violated }));

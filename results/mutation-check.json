@@ -155,6 +155,7 @@
       "first_failure": "tight_classifier",
       "laws_violated": [
         "hard_rule_reaches_level",
+        "no_sequence_lowers_containment",
         "tighten_only"
       ],
       "witness": true
@@ -165,6 +166,7 @@
       "first_failure": "unsigned_not_accepted",
       "laws_violated": [
         "hold_cannot_self_escalate",
+        "no_sequence_lowers_containment",
         "reset_cannot_replay",
         "reset_is_bound_to_mode",
         "reset_must_be_unexpired",
@@ -204,7 +206,7 @@
     {
       "mutant": "reset_renews_run",
       "rejected": true,
-      "first_failure": "ok_reset_requires_fresh_counter",
+      "first_failure": "",
       "laws_violated": [
         "reset_cannot_renew_run"
       ],
@@ -427,6 +429,20 @@
         "counter_needs_accepted_reset"
       ],
       "witness": true
+    },
+    {
+      "mutant": "kill_lowers_to_freeze",
+      "rejected": true,
+      "first_failure": "tight_classifier",
+      "laws_violated": [
+        "freeze_deadline_is_fixed",
+        "freeze_escalates",
+        "hard_rule_reaches_level",
+        "kill_needs_accepted_reset",
+        "no_sequence_lowers_containment",
+        "tighten_only"
+      ],
+      "witness": true
     }
   ],
   "rust": [
@@ -507,10 +523,10 @@
       "rejected": true
     }
   ],
-  "bend_rejected": 46,
-  "bend_witnessed": 46,
+  "bend_rejected": 47,
+  "bend_witnessed": 47,
   "original_violations": {},
   "rust_rejected": 19,
-  "bend_total": 46,
+  "bend_total": 47,
   "rust_total": 19
 }
