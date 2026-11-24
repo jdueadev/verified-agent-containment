@@ -27,3 +27,9 @@ reason = "spec tools/test_gate_check.py was edited"
 issue = 235
 receipt = "1551a4e21896fc6856ae067e88bdc620dadb42864fbda55f8978d3d38ebe8e16"
 head = "0f6c62111deb8e75652f13799e4a0d1d63dbe708"
+
+[[waiver]]
+reason = "spec tools/test_gate_current_base.py was edited"
+issue = 235
+receipt = "f0c136ba7feaf2292c92893881dd30c8c88a62c681a052c7d2cd5d36b17908b7"
+head = "e7e276f343361506658337010aa15dd29c979b91"
