@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import policy_check as pc
@@ -46,12 +47,18 @@ class TrustedEnforceTests(unittest.TestCase):
     LANES_TEXT = LANES_TEXT
     run_classify = tpc.EnforceExitTests.run_classify
 
-    def classify_with_commits(self, commits, author="jdueadev-agent"):
+    def classify_with_commits(self, commits, author="jdueadev-agent", pinned=None):
+        if pinned is None:
+            pinned = {c["sha"] for c in pc.flat_commits(commits)}
+        seen = []
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "commits.json"
             path.write_text(json.dumps(commits), encoding="utf-8")
-            return self.run_classify(["AGENTS.md"], "--head-sha", "h1", "--author", author,
-                                     "--commits", str(path), "--enforce", reviews=[])
+            with mock.patch.object(pc, "pinned_commits", lambda base, head: seen.append((base, head)) or pinned):
+                result = self.run_classify(["AGENTS.md"], "--head-sha", "h1", "--author", author,
+                                           "--commits", str(path), "--enforce", reviews=[])
+        self.assertEqual(seen, [("b", "h")])
+        return result
 
     def test_a_trusted_authors_lane_c_change_passes_without_approval(self):
         code, result = self.classify_with_commits([[commit("claude"), commit("jdueadev-agent")]])
@@ -62,6 +69,14 @@ class TrustedEnforceTests(unittest.TestCase):
                                          "--enforce", reviews=[])
         self.assertEqual((code, result["trusted"], result["needs_maintainer"], result["not_trusted_because"]),
                          (1, False, True, "its commits were not given"))
+
+    def test_a_commit_list_that_is_not_the_pinned_heads_needs_approval(self):
+        listed = [[commit("claude", sha="a" * 40)]]
+        for pinned in ({"b" * 40}, {"a" * 40, "b" * 40}, set()):
+            with self.subTest(pinned=pinned):
+                code, result = self.classify_with_commits(listed, pinned=pinned)
+                self.assertEqual((code, result["trusted"], result["needs_maintainer"]), (1, False, True))
+                self.assertIn("not the commits of the head", result["not_trusted_because"])
 
     def test_a_trusted_authors_change_with_an_untrusted_commit_needs_approval(self):
         code, result = self.classify_with_commits([[commit("claude"), commit("outside-person")]])
@@ -131,6 +146,20 @@ class TrustedCommitsTests(unittest.TestCase):
         for name, commits in cases.items():
             with self.subTest(name=name):
                 self.assertIsNotNone(pc.untrusted_commits(commits, self.TRUSTED))
+
+    def test_the_commit_list_must_be_exactly_the_expected_commits(self):
+        listed = [commit("claude", sha="a" * 40), commit("jdueadev", sha="b" * 40)]
+        self.assertIsNone(pc.untrusted_commits(listed, self.TRUSTED, {"b" * 40, "a" * 40}))
+        for expected in ({"a" * 40}, {"a" * 40, "b" * 40, "d" * 40}, {"d" * 40, "e" * 40}):
+            with self.subTest(expected=expected):
+                self.assertIsNotNone(pc.untrusted_commits(listed, self.TRUSTED, expected))
+        self.assertFalse(pc.approval_exempt("jdueadev", listed, self.TRUSTED, False, {"a" * 40})[0])
+
+    def test_pinned_commits_are_git_rev_list_from_base_to_head(self):
+        calls = []
+        with mock.patch.object(pc, "git", lambda *a: calls.append(a) or "a" * 40 + "\n" + "b" * 40 + "\n"):
+            self.assertEqual(pc.pinned_commits("base1", "head1"), {"a" * 40, "b" * 40})
+        self.assertEqual(calls, [("rev-list", "base1..head1")])
 
     def test_a_trusted_change_needs_a_trusted_author_trusted_commits_and_no_fork(self):
         good = [commit("claude")]

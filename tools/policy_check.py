@@ -117,11 +117,18 @@ def flat_commits(commits):
     return [c for page in commits for c in (page if isinstance(page, list) else [page])]
 
 
-def untrusted_commits(commits, trusted):
+def pinned_commits(base, head):
+    """The commit ids from base to the pinned head, as git sees them in this checkout."""
+    return set(git("rev-list", f"{base}..{head}").split())
+
+
+def untrusted_commits(commits, trusted, expected=None):
     """Why the pull request's commits cannot be shown to come from trusted logins only,
     or None. Every commit needs a trusted author and committer and a signature GitHub
     verified. `web-flow` signs whatever author the API caller names, so it proves nothing.
-    The API lists at most 250 commits, so a list that long may be missing some."""
+    The API lists at most 250 commits, so a list that long may be missing some. The API
+    lists the pull request's commits as they are when it is asked, so with `expected`
+    (pinned_commits) the list must be exactly the pinned head's commits."""
     if commits is None:
         return "its commits were not given"
     if not isinstance(commits, list):
@@ -146,10 +153,12 @@ def untrusted_commits(commits, trusted):
             return f"commit {sha} is committed by {committer or 'no GitHub account'}, which is not trusted"
         if not verified:
             return f"commit {sha} has no signature GitHub verified"
+    if expected is not None and {str(c.get("sha")) for c in flat} != set(expected):
+        return "its commit list is not the commits of the head being judged"
     return None
 
 
-def approval_exempt(author, commits, trusted, fork):
+def approval_exempt(author, commits, trusted, fork, expected=None):
     """(True, None) when a lane C change needs no approval: it is not from a fork, its
     author is trusted, and so is every commit (untrusted_commits). Otherwise (False, why).
     `policy`, the gate and the merge digest all decide with this one rule (#235)."""
@@ -157,7 +166,7 @@ def approval_exempt(author, commits, trusted, fork):
         return False, "it comes from a fork"
     if not is_trusted(author, trusted):
         return False, f"its author {author or '(none)'} is not trusted"
-    why = untrusted_commits(commits, trusted)
+    why = untrusted_commits(commits, trusted, expected)
     return (False, why) if why else (True, None)
 
 
@@ -1199,7 +1208,8 @@ def run(parser, args):
                      earlier_handovers(args.base))
         result = classify(paths, base_get, head_get, lanes, spec_links(args.head, paths), handovers)
         commits = json.loads(Path(args.commits).read_text(encoding="utf-8")) if args.commits else None
-        exempt, exempt_why = approval_exempt(args.author, commits, trusted, args.fork)
+        expected = pinned_commits(args.base, args.head) if commits is not None else None
+        exempt, exempt_why = approval_exempt(args.author, commits, trusted, args.fork, expected)
         needs_owner = (result["lane"] == "C" and not exempt) or args.fork
         reviews = json.loads(Path(args.reviews).read_text(encoding="utf-8")) if args.reviews else []
         result["fork"] = args.fork
