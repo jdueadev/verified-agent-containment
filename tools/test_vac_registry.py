@@ -59,10 +59,13 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(core.tier(failed, "t1"), "T0")
         self.assertEqual(core.tier(passed, "t1", complete=False), "T0")
 
-    def test_a_filtered_t1_run_never_reports_t1(self):
+    def test_a_filtered_t1_run_runs_its_rule_and_never_reports_t1(self):
         child = subprocess.run([sys.executable, str(ROOT / "tools/vac.py"), "check", "--t1", "--rule", "FV-PIN", "--json"],
                                cwd=ROOT, capture_output=True, text=True, timeout=300)
-        self.assertEqual(json.loads(child.stdout.splitlines()[-1])["summary"]["tier"], "T0")
+        self.assertEqual(child.returncode, 0, child.stdout + child.stderr)
+        summary = json.loads(child.stdout.splitlines()[-1])["summary"]
+        self.assertEqual((summary["ran"], summary["failed"]), (1, 0))
+        self.assertEqual(summary["tier"], "T0")
 
     def test_a_tool_that_cannot_start_is_a_finding_and_the_run_goes_on(self):
         check = registry.tool_run("X-2", ["./no-such-tool-vac"], "tools")
@@ -334,6 +337,15 @@ class CommandTests(unittest.TestCase):
         child = self.vac("check", "--rule", "NO-SUCH-RULE")
         self.assertEqual(child.returncode, core.EXIT_USAGE)
 
+    def test_a_rule_that_cannot_run_at_this_stage_is_a_usage_error(self):
+        child = self.vac("check", "--rule", "FV-SYNC", "--json")
+        self.assertEqual(child.returncode, core.EXIT_USAGE, child.stdout + child.stderr)
+        self.assertIn("FV-SYNC does not run at stage t0", child.stderr)
+        self.assertIn("rc, release", child.stderr)
+        self.assertEqual(child.stdout, "")
+        ran = self.vac("check", "--stage", "rc", "--rule", "FV-SYNC", "--json")
+        self.assertEqual(json.loads(ran.stdout.splitlines()[-1])["summary"]["ran"], 1)
+
     def test_one_rule_runs_and_passes(self):
         child = self.vac("check", "--rule", "POL-SAB", "--json")
         self.assertEqual(child.returncode, 0, child.stdout + child.stderr)
@@ -356,6 +368,22 @@ class GenTests(unittest.TestCase):
 
     def test_generated_files_in_the_tree_match(self):
         self.assertEqual(registry.generated_files_match(core.Ctx()), [])
+
+    def test_a_crlf_copy_of_a_generated_file_is_drift(self):
+        gen = importlib.import_module("vac_gen")
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, tmp)
+        for path, text in gen.generated(registry.RULES, registry.UNENFORCED).items():
+            (tmp / path).write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
+        found = registry.generated_files_match(core.Ctx(root=tmp))
+        self.assertEqual(sorted(f.path for f in found), ["AGENTS.md", "CLAUDE.md"])
+
+    def test_the_generated_guide_says_which_stage_the_default_runs(self):
+        gen = importlib.import_module("vac_gen")
+        intro = gen.render_agents(registry.RULES, registry.UNENFORCED).split("## ")[0]
+        self.assertIn("`t0`", intro)
+        self.assertIn("--t1", intro)
+        self.assertIn("--stage", intro)
 
     def test_a_decision_record_is_refused(self):
         tmp = Path(tempfile.mkdtemp())

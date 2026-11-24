@@ -5,7 +5,9 @@ No network and no cargo: the root-command refusals and --help are subprocesses
 of vac itself, and the summary is rendered in-process. Nothing here starts a
 build, a test suite, or scripts/check.sh.
 """
+import argparse
 import contextlib
+import importlib
 import importlib.util
 import io
 import json
@@ -55,13 +57,14 @@ class Refusals(unittest.TestCase):
     def test_refused_commands_are_exactly_the_root_set(self):
         self.assertEqual(vac.REFUSED, ROOT_COMMANDS)
 
-    def test_root_commands_exit_2_citing_inv_11(self):
+    def test_root_commands_exit_2_citing_the_lab_restriction(self):
         for name in ROOT_COMMANDS:
             with self.subTest(name=name):
                 child = run_vac(name)
                 self.assertEqual(child.returncode, 2, child.stdout + child.stderr)
                 self.assertEqual(child.stdout, "")
-                self.assertIn("INV-11", child.stderr)
+                self.assertIn("LAB-THROWAWAY", child.stderr)
+                self.assertNotIn("INV-", child.stderr)
                 self.assertIn("AGENTS.md", child.stderr)
                 self.assertIn("throwaway", child.stderr)
                 self.assertNotIn("Traceback", child.stderr)
@@ -134,6 +137,40 @@ class Checks(unittest.TestCase):
         self.assertNotIn("Traceback", message)
 
 
+class VerifyRecord(unittest.TestCase):
+    def record(self, answers):
+        core, registry = vac.load_registry()
+        verify = importlib.import_module("vac_verify")
+        queued, recorded = list(answers), []
+        saved = (vac.git, core.run, core.render_text, verify.record)
+        vac.git = lambda args, cwd=None: queued.pop(0)
+        core.run = lambda rules, stage, ctx: [core.Outcome(registry.RULES[0], "PASS", (), ())]
+        core.render_text = lambda *args, **kwargs: None
+        verify.record = lambda root, head: recorded.append(head) or ["C-1"]
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                code = vac.cmd_verify(argparse.Namespace(action="record", base="origin/main"))
+        finally:
+            vac.git, core.run, core.render_text, verify.record = saved
+        return code, err.getvalue(), recorded
+
+    def test_a_stable_head_is_recorded(self):
+        head = (0, "a" * 40 + "\n", "")
+        code, err, recorded = self.record([(0, "", ""), head, head])
+        self.assertEqual((code, err, recorded), (0, "", ["a" * 40]))
+
+    def test_a_failed_git_status_is_no_clean_checkout(self):
+        code, err, recorded = self.record([(1, "", "fatal: not a git repository\n")])
+        self.assertEqual((code, recorded), (2, []))
+        self.assertIn("git status failed", err)
+
+    def test_a_head_that_moves_during_the_run_is_never_recorded(self):
+        code, err, recorded = self.record([(0, "", ""), (0, "a" * 40 + "\n", ""), (0, "b" * 40 + "\n", "")])
+        self.assertEqual((code, recorded), (2, []))
+        self.assertIn("HEAD moved from aaaaaaaaaaaa to bbbbbbbbbbbb", err)
+
+
 class Shape(unittest.TestCase):
     def test_shebang_and_executable_bit(self):
         raw = VAC_PATH.read_bytes()
@@ -202,11 +239,12 @@ class Preflight(unittest.TestCase):
 
     def test_lab_plan_is_text_for_the_maintainer(self):
         text = vac.lab_plan_text("0babf9e", [("L-ISO-02", ["scenario:sandbox_escape"], ["wsl2-6.18.58"])])
-        for needle in ("the maintainer runs this, never an agent", "INV-11", "git checkout --detach 0babf9e",
+        for needle in ("the maintainer runs this, never an agent", "LAB-THROWAWAY", "git checkout --detach 0babf9e",
                        "git bundle create repo.bundle HEAD", "rev-parse HEAD",
-                       "run-lab.cmd -Only suites", "throwaway WSL2 distro", "INV-1: an agent never writes these",
+                       "run-lab.cmd -Only suites", "throwaway WSL2 distro", "An agent never writes these",
                        "claims_check.py --strict", "L-ISO-02"):
             self.assertIn(needle, text)
+        self.assertNotIn("INV-", text)
         self.assertNotIn("\r", text)
         # Scan finding: an unreadable strict check is "unknown", never "none".
         unknown = vac.lab_plan_text("0babf9e", None, "the strict claims check failed")

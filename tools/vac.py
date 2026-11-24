@@ -153,6 +153,12 @@ def cmd_check(args):
         if unknown:
             print(f"vac: unknown rule {', '.join(unknown)}; vac rules lists them", file=sys.stderr)
             return core.EXIT_USAGE
+        elsewhere = [r for r in rules if stage not in r.stages]
+        if elsewhere:
+            for r in elsewhere:
+                print(f"vac: {r.id} does not run at stage {stage}; it runs at "
+                      f"{', '.join(s for s in core.STAGES if s in r.stages)}", file=sys.stderr)
+            return core.EXIT_USAGE
     outcomes = core.run(rules, stage, ctx)
     (core.render_json if args.json else core.render_text)(outcomes, stage, complete=not (args.rule or args.changed))
     return core.exit_code(outcomes)
@@ -174,17 +180,31 @@ def cmd_verify(args):
             print(f"STALE {cid} {', '.join(files)} | fix: vac check --t1, then vac verify record")
         print(f"vac: {len(stale)} formal claims stale")
         return core.EXIT_FAIL if stale else 0
-    dirty = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain", "--", "claims.toml", "formal", "crates", "results"],
-                           capture_output=True, text=True).stdout.strip()
-    if dirty:
+    code, dirty, err = git(["status", "--porcelain", "--", "claims.toml", "formal", "crates", "results"])
+    if code != 0:
+        print(f"vac: verify record refused: git status failed: {err.strip()}", file=sys.stderr)
+        return core.EXIT_USAGE
+    if dirty.strip():
         print("vac: verify record refused: commit claims.toml, formal/, crates/ and results/ first", file=sys.stderr)
+        return core.EXIT_USAGE
+    code, before, err = git(["rev-parse", "HEAD"])
+    if code != 0:
+        print(f"vac: verify record refused: git rev-parse HEAD failed: {err.strip()}", file=sys.stderr)
         return core.EXIT_USAGE
     outcomes = core.run(registry.RULES, "t1", core.Ctx(root=ROOT))
     core.render_text(outcomes, "t1")
     if core.tier(outcomes, "t1") != "T1":
         print("vac: verify record refused: vac check --t1 must pass in full at this commit first", file=sys.stderr)
         return core.exit_code(outcomes) or core.EXIT_FAIL
-    head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    code, head, err = git(["rev-parse", "HEAD"])
+    if code != 0:
+        print(f"vac: verify record refused: git rev-parse HEAD failed: {err.strip()}", file=sys.stderr)
+        return core.EXIT_USAGE
+    head, before = head.strip(), before.strip()
+    if head != before:
+        print(f"vac: verify record refused: HEAD moved from {before[:12]} to {head[:12]} during the T1 run, "
+              "so the rules did not judge this commit", file=sys.stderr)
+        return core.EXIT_USAGE
     ids = verify.record(ROOT, head)
     print(f"vac: recorded {len(ids)} formal claims as synced at {head[:12]}")
     return 0
@@ -238,7 +258,7 @@ def cmd_gen(args):
     drift = 0
     for path, text in gen.generated(registry.RULES, registry.UNENFORCED).items():
         target = ROOT / path
-        same = target.exists() and target.read_text(encoding="utf-8") == text
+        same = target.exists() and target.read_bytes() == text.encode("utf-8")
         if args.write and not same:
             target.write_text(text, encoding="utf-8", newline="\n")
             print(f"wrote {path}")
@@ -561,7 +581,7 @@ def lab_plan_text(commit, stale, problem=None, head_note=""):
     else:
         claims = "\n".join(f"  - {cid}: {', '.join(refs) or '(no lab refs)'} (platforms: {', '.join(platforms) or 'none'})"
                            for cid, refs, platforms in stale) or "  - none: the strict claims check reports no stale claim"
-    return f"""Root lab run (T2): the maintainer runs this, never an agent (AGENTS.md INV-11, T2).
+    return f"""Root lab run (T2): the maintainer runs this, never an agent (AGENTS.md LAB-THROWAWAY, T2).
 
 Claims it would refresh (stale under --strict):
 {claims}
@@ -585,7 +605,7 @@ Commit: {commit} (main). Lab evidence counts only for a commit on main (AGENTS.m
    and the logs). Both suites must pass with limits enforced.
 5. In a pull request of its own, from the maintainer's identity, add them as
    results/wsl2/lab-<short commit>/ and the platforms entries for the claims above
-   (wsl2-<kernel>, commit, result). INV-1: an agent never writes these.
+   (wsl2-<kernel>, commit, result). An agent never writes these.
 6. Check it with: python3 tools/claims_check.py --strict
 """
 
@@ -611,7 +631,7 @@ def cmd_lab(args):
 
 def cmd_refuse(args):
     print(
-        f"vac: refusing {args.command}: AGENTS.md INV-11 — the lab runs only in a "
+        f"vac: refusing {args.command}: AGENTS.md LAB-THROWAWAY — the lab runs only in a "
         f"throwaway machine. {args.command} is not run from this driver "
         f"(attack-suite, live, live-suite, redteam, ctl and hud). "
         f"There is no override.",
@@ -627,7 +647,7 @@ def build_parser():
             "No-root driver for verified-agent-containment. "
             "build, check, run and status do not invoke the root lab. "
             "attack-suite, live, live-suite, redteam, ctl and hud are refused "
-            "(AGENTS.md INV-11, throwaway machine only)."
+            "(AGENTS.md LAB-THROWAWAY, throwaway machine only)."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -742,10 +762,10 @@ def build_parser():
     for name in REFUSED:
         refused = sub.add_parser(
             name,
-            help="refused (AGENTS.md INV-11, throwaway machine only)",
+            help="refused (AGENTS.md LAB-THROWAWAY, throwaway machine only)",
             description=(
                 f"{name} is refused with exit 2. "
-                "AGENTS.md INV-11: the lab runs only in a throwaway machine. "
+                "AGENTS.md LAB-THROWAWAY: the lab runs only in a throwaway machine. "
                 "This driver has no override."
             ),
         )

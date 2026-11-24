@@ -223,7 +223,7 @@ def generated_files_match(ctx):
     out = []
     for path, text in vac_gen.generated(RULES, UNENFORCED).items():
         target = ctx.root / path
-        if not target.exists() or target.read_text(encoding="utf-8") != text:
+        if not target.exists() or target.read_bytes() != text.encode("utf-8"):
             out.append(Finding("GEN-1", path, 0, "differs from what vac gen writes; generated files are never edited by hand"))
     return out
 
