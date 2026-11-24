@@ -59,7 +59,8 @@ The Windows lab (`scripts/lab`, commit 9ffd69a, a throwaway distro with interop 
 
 | Run | Files | Status |
 |---|---|---|
-| 9263878, `ubuntu-24.04` | `results/ci/lab-9263878b598c472f65aa58b3116ed959323b98fa/` | **Newest committed lab run.** Attack suite 176/176 and 30/30, live suite 11/11 and 8/8, limits enforced. Kernel 7.0.0-1017-azure. Cited by `claims.toml`. |
+| 2c44afb, `ubuntu-24.04` | `results/ci/lab-2c44afb37a3e3252a201424ee8997ee9212e465e/` | **Newest committed lab run.** Attack suite 176/176 and 30/30, live suite 11/11 and 8/8, limits enforced. Kernel 7.0.0-1017-azure. Cited by `claims.toml`. |
+| 9263878, `ubuntu-24.04` | `results/ci/lab-9263878b598c472f65aa58b3116ed959323b98fa/` | Attack suite 176/176 and 30/30, live suite 11/11 and 8/8, limits enforced. Kernel 7.0.0-1017-azure. Cited by `claims.toml`. |
 | a38ad00, `ubuntu-24.04` | `results/ci/lab-a38ad0086aec46c6b33229f43da52065e8c76e11/` | Attack suite 176/176 and 30/30, live suite 11/11 and 8/8, limits enforced. Kernel 7.0.0-1014-aws. Cited by `claims.toml`. |
 
 The extra sabotage versus the WSL2 copy is `wide_root`. `results/attack-suite.json` is still the cd7172f copy, so its sabotage list has 29 entries.
