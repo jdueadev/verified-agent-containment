@@ -39,3 +39,9 @@ reason = "spec tools/test_policy_trusted.py was edited"
 issue = 235
 receipt = "a54d87667b7deb6597d17de8368fd007250f637f254ba59be2f3145c7b1f0906"
 head = "e409c234e0fa75f2b7bf72e176c39e4dfcd5ea55"
+
+[[waiver]]
+reason = "spec tools/test_gate_approval_freshness.py was edited"
+issue = 235
+receipt = "3828a2c57ba8ecf00b89c5e4fa7a2001f3510dcc006fe968afab6625cf530f1d"
+head = "14f09b05f870d34c0bd0398074ecd81b7fcb1d9b"
