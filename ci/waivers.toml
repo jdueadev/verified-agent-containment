@@ -33,3 +33,9 @@ reason = "spec tools/test_gate_current_base.py was edited"
 issue = 235
 receipt = "ad0bd190cfe95a65f82bf91d5957b0deda95a67dd0a05d7ade614b729c5433db"
 head = "2bfa5138d0eb6f9cd7e4f1c2da9879da473a67c5"
+
+[[waiver]]
+reason = "spec tools/test_merge_digest.py was edited"
+issue = 235
+receipt = "5299623488c12407796891ba71e3c61fbbfa1487c364bff14687f9a1a2e64034"
+head = "c600c187687e80b340c39c0b5e230cdd98a65130"
