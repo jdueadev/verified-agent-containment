@@ -198,6 +198,20 @@ class TreeTests(unittest.TestCase):
         root, tracked = self.tree({WHERE: files})
         self.assertTrue(la.tree_errors(root, tracked, POLICY, TEST_KEYS))
 
+    def test_a_lab_path_that_is_not_a_directory_is_refused_even_under_a_legacy_name(self):
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, outside)
+        for name, data in recorded().items():
+            (outside / name).write_bytes(data)
+        for where in (WHERE, sorted(la.FROZEN_LEGACY)[0]):
+            with self.subTest(where=where):
+                root, tracked = self.tree({})
+                (root / where).parent.mkdir(parents=True, exist_ok=True)
+                (root / where).symlink_to(outside, target_is_directory=True)
+                found = la.tree_errors(root, [where], POLICY, TEST_KEYS)
+                self.assertEqual(len(found), 1, found)
+                self.assertIn("not a directory", found[0])
+
     def test_the_legacy_list_cannot_grow(self):
         text = (ROOT / la.POLICY_FILE).read_text(encoding="utf-8").replace(
             "legacy = [", f'legacy = [\n  "{WHERE}",', 1)

@@ -48,6 +48,8 @@ POLICY_FILE = "ci/lab-attestation.toml"
 KEYS_FILE = "ci/github-oidc-jwks.json"
 PROVENANCE = "provenance.json"
 LAB_DIR = re.compile(r"^results/ci/lab-([0-9a-f]{40})/")
+LAB_ENTRY = re.compile(r"^results/ci/lab-[0-9a-f]{40}$")
+NOT_A_DIRECTORY = "\0not-a-directory"
 # Committed name -> name in the lab job's artifact (scripts/lab/ci-lab.sh). The same
 # mapping as tools/lab_record.py's SUITES, plus the environment file.
 # The directories recorded before attestation existed. A legacy list in POLICY_FILE may
@@ -165,6 +167,9 @@ def tracked_lab_files(root, tracked=None):
                                  capture_output=True, check=True).stdout.decode("utf-8").split("\0")
     out = {}
     for path in tracked:
+        if LAB_ENTRY.match(path):
+            out.setdefault(path, {})[NOT_A_DIRECTORY] = b""
+            continue
         match = LAB_DIR.match(path)
         if not match:
             continue
@@ -192,6 +197,10 @@ def tree_errors(root=ROOT, tracked=None, policy=None, keys=None):
         return [f"CI-10 git could not list results/ci/, so lab provenance was not checked ({error})"]
     errors = []
     for where, files in sorted(dirs.items()):
+        if NOT_A_DIRECTORY in files:
+            errors.append(f"CI-10 {where}: tracked as a symlink or other non-directory, not a directory of evidence; "
+                          f"commit the run's files under {where}/ instead")
+            continue
         if where in policy["legacy"]:
             continue
         errors += verify_dir(where, files, LAB_DIR.match(where + "/").group(1), policy, keys)
