@@ -39,3 +39,9 @@ reason = "spec tools/test_merge_digest.py was edited"
 issue = 235
 receipt = "5299623488c12407796891ba71e3c61fbbfa1487c364bff14687f9a1a2e64034"
 head = "c600c187687e80b340c39c0b5e230cdd98a65130"
+
+[[waiver]]
+reason = "spec tools/test_policy_trusted.py was edited"
+issue = 235
+receipt = "11d3f21b8bb235a7e83349d47e82236fd1672ec15419625ac2190d2d51a3a94e"
+head = "b44ab92a7f9b4fdaabf6b23e467a2520194349d6"
