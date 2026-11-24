@@ -105,6 +105,14 @@ CORPUS = {
          [(5, "comment", "# c")]),
         ("a here-string is not a heredoc", "a.sh", 'grep -q x <<<"$v" # c\n', [(1, "comment", "# c")]),
         ("arithmetic shift is not a heredoc", "a.sh", "echo $((1 << 2)) # c\n", [(1, "comment", "# c")]),
+        ("an arithmetic command is not a heredoc", "a.sh", "(( mask = 1 << 2 )) # c\n", [(1, "comment", "# c")]),
+        ("an arithmetic command in a condition", "a.sh", "if (( x << 1 )); then echo hi; fi # c\n",
+         [(1, "comment", "# c")]),
+        ("an unclosed arithmetic command fails closed", "a.sh", "(( x << 1 \n", UNREADABLE),
+        ("a heredoc delimiter split by a line continuation", "a.sh", "cat <<EOF\n# data\nEO\\\nF\n# c\n",
+         [(5, "comment", "# c")]),
+        ("a quoted heredoc delimiter is never continued", "a.sh", "cat <<'EOF'\n# data\nEO\\\nF\n# c\n", UNREADABLE),
+        ("an escaped backslash closes no heredoc", "a.sh", "cat <<EOF\nEOF\\\\\nEOF\n# c\n", [(4, "comment", "# c")]),
         ("a comment inside $( )", "a.sh", "x=$(echo a # c\n)\n", [(1, "comment", "# c")]),
         ("shebang is exempt", "a.sh", "#!/bin/sh\necho hi # c\n", [(2, "comment", "# c")]),
         ("case inside $( ) fails closed", "a.sh", "x=$(case a in a) echo;; esac)\n", UNREADABLE),
@@ -142,7 +150,12 @@ CORPUS = {
         ("a member named like a keyword divides", "a.js", "const v = object.in / 2;\n", []),
         ("an optional-chained member named like a keyword divides", "a.js", "const v = object?.in / 2;\n", []),
         ("division then a comment", "a.mjs", "const v = a / b; // c\n", [(1, "comment", "// c")]),
-        ("an ambiguous slash fails closed", "a.mjs", "const v = (a) / b; // c\n", UNREADABLE),
+        ("division after a paren then a trailing comment", "a.mjs", "const ratio = (a + b) / c; // units\n",
+         [(1, "comment", "// units")]),
+        ("division after a paren then a block comment", "a.mjs", "const v = (a) / b; /* c */\n",
+         [(1, "comment", "/* c */")]),
+        ("an ambiguous slash fails closed", "a.mjs", 'const v = (a) / b.at("x");\n', UNREADABLE),
+        ("a regex after a paren still fails closed", "a.mjs", "if (x) /\\//.test(s); // c\n", UNREADABLE),
         ("a plain ambiguous slash is division", "a.mjs", "const v = (a) / 2;\n", []),
         ("hashbang is exempt", "a.mjs", "#!/usr/bin/env -S node --name=it's\nf(); // c\n", [(2, "comment", "// c")]),
         ("private field", "a.mjs", "class A { #x = 1; f() { return this.#x; } }\n", []),
@@ -201,7 +214,7 @@ CORPUS = {
 def git(root, *args):
     return subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t.invalid",
                            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *args],
-                          check=True, capture_output=True, text=True).stdout.strip()
+                          check=True, capture_output=True, text=True, env=core.git_env()).stdout.strip()
 
 
 class Repo:
@@ -408,30 +421,43 @@ class DebtTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertTrue(found[0].message.startswith("c.py had no comments at"), found[0].message)
 
-    def test_the_first_list_may_name_a_file_the_base_lacks(self):
+    def test_the_first_list_may_not_name_a_file_new_on_the_branch(self):
         repo = Repo(self)
         repo.commit({"a.py": "# a\n"})
         repo.main_here()
         repo.commit({"d.py": "# d\n", DEBT: comments.debt_text(["a.py", "d.py"])})
+        found = repo.check("NC-2")
+        self.assertEqual(len(found), 1)
+        self.assertTrue(found[0].message.startswith("d.py had no comments at"), found[0].message)
+
+    def test_the_first_list_may_name_a_file_that_had_comments_at_the_start(self):
+        repo = Repo(self)
+        repo.commit({"a.py": "# a\n", "d.py": "# d\n"})
+        repo.main_here()
+        repo.commit({DEBT: comments.debt_text(["a.py", "d.py"])})
         self.assertEqual(repo.check("NC-2"), [])
 
     def test_once_committed_the_list_never_grows_even_before_main_has_it(self):
         repo = Repo(self)
-        repo.commit({"a.py": "# a\n"})
+        start = repo.commit({"a.py": "# a\n"})
         repo.main_here()
         first = repo.commit({DEBT: comments.debt_text(["a.py"])})
         repo.commit({"e.py": "# e\n", DEBT: comments.debt_text(["a.py", "e.py"])})
         found = repo.check("NC-2")
-        self.assertEqual([f.message.split(";")[0] for f in found], [f"e.py is not in {DEBT} at {first[:12]}"])
+        self.assertEqual([f.message.split(";")[0] for f in found],
+                         [f"e.py is not in {DEBT} at {first[:12]}",
+                          f"e.py had no comments at {start[:12]}, where the list started"])
 
     def test_a_list_deleted_and_added_again_keeps_its_first_ceiling(self):
         repo = Repo(self)
-        repo.commit({"a.py": "# a\n"})
+        start = repo.commit({"a.py": "# a\n"})
         repo.main_here()
-        repo.commit({DEBT: comments.debt_text(["a.py"])})
+        first = repo.commit({DEBT: comments.debt_text(["a.py"])})
         repo.commit({DEBT: None})
         repo.commit({"e.py": "# e\n", DEBT: comments.debt_text(["a.py", "e.py"])})
-        self.assertEqual(len(repo.check("NC-2")), 1)
+        self.assertEqual([f.message.split(";")[0] for f in repo.check("NC-2")],
+                         [f"e.py is not in {DEBT} at {first[:12]}",
+                          f"e.py had no comments at {start[:12]}, where the list started"])
 
     def test_a_list_deleted_on_main_leaves_no_debt_at_all(self):
         repo = Repo(self)
@@ -483,6 +509,44 @@ class CommandTests(unittest.TestCase):
         repo.commit({"b.py": "x = 1\n", "c.py": "# c\n"})
         comments.debt_write(repo.root, out=io.StringIO())
         self.assertEqual(comments.load_debt((repo.root / DEBT).read_text()), ["a.py"])
+
+    def test_debt_write_lists_nothing_after_the_list_was_deleted_upstream(self):
+        repo = Repo(self)
+        repo.commit({"a.py": "# a\n", DEBT: comments.debt_text(["a.py"])})
+        repo.commit({DEBT: None})
+        repo.main_here()
+        out = io.StringIO()
+        self.assertEqual(comments.debt_write(repo.root, out=out), 0)
+        self.assertEqual(comments.load_debt((repo.root / DEBT).read_text(encoding="utf-8")), [])
+        self.assertIn("which deleted it", out.getvalue())
+        self.assertEqual(repo.check("NC-2"), [])
+
+    def test_debt_write_rebuilds_an_absent_list_from_the_upstream_ceiling(self):
+        repo = Repo(self)
+        repo.commit({"a.py": "# a\n", "b.py": "# b\n", DEBT: comments.debt_text(["a.py"])})
+        repo.main_here()
+        (repo.root / DEBT).unlink()
+        comments.debt_write(repo.root, out=io.StringIO())
+        self.assertEqual(comments.load_debt((repo.root / DEBT).read_text(encoding="utf-8")), ["a.py"])
+
+    def test_a_file_that_cannot_be_read_is_an_unreadable_span(self):
+        repo = Repo(self)
+        repo.commit({"a.py": "# a\n"})
+        repo.main_here()
+        real = Path.read_bytes
+
+        def refuse(target, *args, **kwargs):
+            if target.name == "a.py":
+                raise PermissionError(13, "Permission denied")
+            return real(target, *args, **kwargs)
+
+        with __import__("unittest.mock").mock.patch.object(Path, "read_bytes", refuse):
+            found = repo.check("NC-1")
+            out = io.StringIO()
+            self.assertEqual(comments.debt_write(repo.root, out=out), 1)
+        self.assertEqual(where(found), [("a.py", 1)])
+        self.assertIn("unreadable: cannot be read", found[0].message)
+        self.assertIn("cannot be read", out.getvalue())
 
     def test_debt_write_refuses_a_symlink_in_place_of_the_list(self):
         repo = Repo(self)

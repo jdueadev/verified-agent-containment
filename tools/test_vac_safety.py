@@ -89,10 +89,21 @@ class WaiverFileTests(unittest.TestCase):
         text = safety.waiver_toml([self.ROW])
         self.assertEqual(safety.load_waivers(text), [self.ROW])
 
+    def test_a_reason_outside_the_bmp_round_trips(self):
+        row = dict(self.ROW, reason="spec \U0001f600 tools/test_x.py was edited")
+        text = safety.waiver_toml([row])
+        self.assertEqual(safety.load_waivers(text), [row])
+
+    def test_a_reason_with_a_control_character_is_refused_before_it_is_written(self):
+        for reason in ("spec\x7fx was edited", "spec\nx was edited"):
+            with self.subTest(reason=reason):
+                with self.assertRaises(ValueError):
+                    safety.waiver_toml([dict(self.ROW, reason=reason)])
+
     def test_each_malformed_field_is_refused(self):
-        bad = {"reason": 5, "issue": "7", "receipt": "short", "head": "short"}
-        for field, value in bad.items():
-            with self.subTest(field=field):
+        bad = [("reason", 5), ("issue", "7"), ("issue", True), ("receipt", "short"), ("head", "short")]
+        for field, value in bad:
+            with self.subTest(field=field, value=value):
                 text = "[[waiver]]\n" + "".join(f"{k} = {json.dumps(value if k == field else v)}\n" for k, v in self.ROW.items())
                 with self.assertRaises(ValueError):
                     safety.load_waivers(text)

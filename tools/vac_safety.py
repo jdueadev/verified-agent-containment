@@ -11,12 +11,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import importlib
 
 policy_check = importlib.import_module("policy_check")
+vac_core = importlib.import_module("vac_core")
 
 CORE_STATUSES = ("proved", "checked-bounded", "tested")
 SUITE_KINDS = {"crates/containment-host/src/harness.rs": ("scenario", "sabotage"),
                "crates/containment-host/src/live_suite.rs": ("live", "live-sabotage")}
 KERNEL_SPEC = "crates/containment-kernel/tests/"
 WAIVERS_FILE = "ci/waivers.toml"
+CONTROL_CHAR = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def core(get):
@@ -76,7 +78,8 @@ def mutation_regressions(base_report, head_report):
 
 
 def git(root, *args, check=True):
-    return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=check).stdout
+    return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=check,
+                          env=vac_core.git_env()).stdout
 
 
 def step(name, argv, cwd, timeout=7200):
@@ -145,7 +148,7 @@ def load_waivers(text):
     data = tomllib.loads(text or "")
     rows = data.get("waiver", [])
     for row in rows:
-        if not (isinstance(row.get("reason"), str) and isinstance(row.get("issue"), int)
+        if not (isinstance(row.get("reason"), str) and type(row.get("issue")) is int
                 and re.fullmatch(r"[0-9a-f]{64}", str(row.get("receipt", ""))) and re.fullmatch(r"[0-9a-f]{40}", str(row.get("head", "")))):
             raise ValueError(f"{WAIVERS_FILE}: each waiver needs reason (text), issue (number), receipt (sha256), head (commit)")
     return rows
@@ -154,5 +157,8 @@ def load_waivers(text):
 def waiver_toml(rows):
     out = []
     for row in rows:
-        out.append("[[waiver]]\n" + "".join(f"{k} = {json.dumps(row[k])}\n" for k in ("reason", "issue", "receipt", "head")))
+        if CONTROL_CHAR.search(row["reason"]):
+            raise ValueError(f"{WAIVERS_FILE}: a reason may hold no control character, which no TOML string carries")
+        out.append("[[waiver]]\n" + "".join(f"{k} = {json.dumps(row[k], ensure_ascii=False)}\n"
+                                            for k in ("reason", "issue", "receipt", "head")))
     return "\n".join(out)

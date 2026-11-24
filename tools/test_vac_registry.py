@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -58,10 +59,25 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(core.tier(failed, "t1"), "T0")
         self.assertEqual(core.tier(passed, "t1", complete=False), "T0")
 
-    def test_a_filtered_t1_run_never_reports_t1(self):
+    def test_a_filtered_t1_run_runs_its_rule_and_never_reports_t1(self):
         child = subprocess.run([sys.executable, str(ROOT / "tools/vac.py"), "check", "--t1", "--rule", "FV-PIN", "--json"],
                                cwd=ROOT, capture_output=True, text=True, timeout=300)
-        self.assertEqual(json.loads(child.stdout.splitlines()[-1])["summary"]["tier"], "T0")
+        self.assertEqual(child.returncode, 0, child.stdout + child.stderr)
+        summary = json.loads(child.stdout.splitlines()[-1])["summary"]
+        self.assertEqual((summary["ran"], summary["failed"]), (1, 0))
+        self.assertEqual(summary["tier"], "T0")
+
+    def test_a_tool_that_cannot_start_is_a_finding_and_the_run_goes_on(self):
+        check = registry.tool_run("X-2", ["./no-such-tool-vac"], "tools")
+        out = core.run((rule("X-2", check), rule("X-3")), "t0", core.Ctx())
+        self.assertEqual([o.status for o in out], ["FAIL", "PASS"])
+        self.assertIn("could not run", out[0].findings[0].message)
+
+    def test_a_tool_that_overruns_its_timeout_is_a_finding(self):
+        check = registry.tool_run("X-2", [sys.executable, "-c", "import time; time.sleep(30)"], "tools", 1)
+        found = check(core.Ctx())
+        self.assertEqual([f.rule for f in found], ["X-2"])
+        self.assertIn("did not finish within 1 seconds", found[0].message)
 
     def test_text_names_the_rule_the_place_and_the_fix(self):
         out = io.StringIO()
@@ -77,6 +93,44 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(lines[0]["rule"], "X-2")
         self.assertEqual(lines[0]["fix"], "run x")
         self.assertEqual(lines[-1]["summary"]["failed"], 1)
+
+
+def temp_repo(test):
+    tmp = Path(tempfile.mkdtemp())
+    test.addCleanup(__import__("shutil").rmtree, tmp)
+
+    def run(*args):
+        return subprocess.run(["git", "-C", str(tmp), "-c", "user.name=t", "-c", "user.email=t@t.invalid",
+                               "-c", "commit.gpgsign=false", *args],
+                              check=True, capture_output=True, text=True, env=core.git_env()).stdout
+    run("init", "-q", "-b", "work")
+    return tmp, run
+
+
+class GitWrapperTests(unittest.TestCase):
+    def repo(self):
+        tmp, run = temp_repo(self)
+        (tmp / "a.py").write_text("x = 1\n", encoding="utf-8")
+        run("add", "-A")
+        run("commit", "-q", "-m", "c")
+        return tmp, run
+
+    def test_changed_paths_names_a_non_ascii_path_unquoted(self):
+        tmp, run = self.repo()
+        (tmp / "tools").mkdir()
+        (tmp / "tools/café.py").write_text("x = 1\n", encoding="utf-8")
+        run("add", "-A")
+        self.assertEqual(core.changed_paths(core.Ctx(root=tmp), "HEAD"), ("tools/café.py",))
+
+    def test_an_inherited_git_dir_never_redirects_the_wrapper(self):
+        tmp, _run = self.repo()
+        other, _other_run = self.repo()
+        with __import__("unittest.mock").mock.patch.dict(
+                os.environ, {"GIT_DIR": str(other / ".git"), "GIT_WORK_TREE": str(other)}):
+            self.assertEqual(core.git(core.Ctx(root=tmp), "rev-parse", "--show-toplevel").strip(),
+                             subprocess.run(["git", "-C", str(tmp), "rev-parse", "--show-toplevel"],
+                                            capture_output=True, text=True, env=core.git_env()).stdout.strip())
+            self.assertNotIn("GIT_DIR", core.git_env())
 
 
 class RegistryTests(unittest.TestCase):
@@ -164,13 +218,55 @@ class RustRuleTests(unittest.TestCase):
     def test_allow_attributes_are_counted_inner_and_outer(self):
         files = {"a.rs": "#[allow(x)]\n#![allow(y)]\n# [ allow (z)]\n", "b.rs": "#[deny(x)]\nallow\n"}
         self.assertEqual(registry.allow_count(files.get, ["a.rs", "b.rs", "gone.rs"]), 3)
+        self.assertEqual(registry.allow_lints("#[allow(a, b)]\n#[allow(clippy::c)]\n"), ["a", "b", "clippy::c"])
+
+    def added(self, base, head):
+        paths = sorted(set(base) | set(head))
+        return registry.allow_added(registry.allow_places(base.get, paths),
+                                    registry.allow_places(head.get, paths))
+
+    def test_an_allow_that_moves_file_or_lint_is_still_an_addition(self):
+        base = {"crates/a.rs": "#[allow(dead_code)]\nfn a() {}\n", "crates/b.rs": "fn b() {}\n"}
+        self.assertEqual(self.added(base, base), [])
+        self.assertEqual(self.added(base, {"crates/a.rs": "fn a() {}\n",
+                                           "crates/b.rs": "#[allow(dead_code)]\nfn b() {}\n"}),
+                         [("crates/b.rs", "dead_code")])
+        self.assertEqual(self.added(base, {"crates/a.rs": "#[allow(unused)]\nfn a() {}\n",
+                                           "crates/b.rs": "fn b() {}\n"}),
+                         [("crates/a.rs", "unused")])
+        self.assertEqual(self.added(base, {"crates/a.rs": "#[allow(dead_code)]\n#[allow(dead_code)]\nfn a() {}\n",
+                                           "crates/b.rs": "fn b() {}\n"}),
+                         [("crates/a.rs", "dead_code")])
+
+    def test_removing_an_allow_is_accepted(self):
+        base = {"crates/a.rs": "#[allow(dead_code)]\nfn a() {}\n"}
+        self.assertEqual(self.added(base, {"crates/a.rs": "fn a() {}\n"}), [])
+        self.assertEqual(self.added(base, {}), [])
+
+
+class LineEndingTests(unittest.TestCase):
+    def test_a_mixed_or_crlf_file_is_refused_unless_it_is_a_cmd(self):
+        tmp, run = temp_repo(self)
+        run("config", "core.autocrlf", "false")
+        (tmp / ".gitattributes").write_text("* -text\n", encoding="utf-8")
+        (tmp / "mixed.sh").write_bytes(b"a\r\nb\n")
+        (tmp / "crlf.sh").write_bytes(b"a\r\nb\r\n")
+        (tmp / "ok.cmd").write_bytes(b"a\r\nb\r\n")
+        (tmp / "lf.sh").write_bytes(b"a\nb\n")
+        run("add", "-A")
+        run("commit", "-q", "-m", "c")
+        found = registry.line_endings(core.Ctx(root=tmp))
+        self.assertEqual(sorted((f.path, f.message.split(";")[0]) for f in found),
+                         [("crlf.sh", "committed with crlf line endings"),
+                          ("mixed.sh", "committed with mixed line endings")])
 
 
 class WaiverRowTests(unittest.TestCase):
     def repo(self):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(__import__("shutil").rmtree, tmp)
-        run = lambda *a: subprocess.run(["git", "-C", str(tmp), *a], check=True, capture_output=True, text=True).stdout
+        run = lambda *a: subprocess.run(["git", "-C", str(tmp), *a], check=True, capture_output=True, text=True,
+                                        env=core.git_env()).stdout
         run("init", "-q")
         (tmp / "f").write_text("x", encoding="utf-8")
         run("add", "f")
@@ -241,6 +337,15 @@ class CommandTests(unittest.TestCase):
         child = self.vac("check", "--rule", "NO-SUCH-RULE")
         self.assertEqual(child.returncode, core.EXIT_USAGE)
 
+    def test_a_rule_that_cannot_run_at_this_stage_is_a_usage_error(self):
+        child = self.vac("check", "--rule", "FV-SYNC", "--json")
+        self.assertEqual(child.returncode, core.EXIT_USAGE, child.stdout + child.stderr)
+        self.assertIn("FV-SYNC does not run at stage t0", child.stderr)
+        self.assertIn("rc, release", child.stderr)
+        self.assertEqual(child.stdout, "")
+        ran = self.vac("check", "--stage", "rc", "--rule", "FV-SYNC", "--json")
+        self.assertEqual(json.loads(ran.stdout.splitlines()[-1])["summary"]["ran"], 1)
+
     def test_one_rule_runs_and_passes(self):
         child = self.vac("check", "--rule", "POL-SAB", "--json")
         self.assertEqual(child.returncode, 0, child.stdout + child.stderr)
@@ -263,6 +368,22 @@ class GenTests(unittest.TestCase):
 
     def test_generated_files_in_the_tree_match(self):
         self.assertEqual(registry.generated_files_match(core.Ctx()), [])
+
+    def test_a_crlf_copy_of_a_generated_file_is_drift(self):
+        gen = importlib.import_module("vac_gen")
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, tmp)
+        for path, text in gen.generated(registry.RULES, registry.UNENFORCED).items():
+            (tmp / path).write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
+        found = registry.generated_files_match(core.Ctx(root=tmp))
+        self.assertEqual(sorted(f.path for f in found), ["AGENTS.md", "CLAUDE.md"])
+
+    def test_the_generated_guide_says_which_stage_the_default_runs(self):
+        gen = importlib.import_module("vac_gen")
+        intro = gen.render_agents(registry.RULES, registry.UNENFORCED).split("## ")[0]
+        self.assertIn("`t0`", intro)
+        self.assertIn("--t1", intro)
+        self.assertIn("--stage", intro)
 
     def test_a_decision_record_is_refused(self):
         tmp = Path(tempfile.mkdtemp())

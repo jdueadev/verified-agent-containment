@@ -16,6 +16,7 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 rust_tokens = importlib.import_module("rust_tokens")
 policy_check = importlib.import_module("policy_check")
+vac_core = importlib.import_module("vac_core")
 
 DEBT_FILE = "ci/comment_debt.toml"
 MAIN = "origin/main"
@@ -228,6 +229,10 @@ class Shell(Scanner):
                 if close == "`":
                     self.fail("a comment inside backticks")
                 self.take(self.eol(self.i))
+            elif at_word and s.startswith("((", self.i):
+                self.i += 2
+                self.arith()
+                at_word = False
             elif s.startswith("<<", self.i):
                 self.heredoc()
                 at_word = False
@@ -335,7 +340,7 @@ class Shell(Scanner):
             else:
                 depth += (ch == "(") - (ch == ")")
                 self.i += 1
-        self.fail("a $(( is never closed", opened)
+        self.fail("an arithmetic (( is never closed", opened)
 
     def heredoc(self):
         s = self.s
@@ -369,6 +374,14 @@ class Shell(Scanner):
             self.fail("a heredoc has no delimiter")
         self.pending.append(("".join(word), strip, quoted, opened))
 
+    def joined(self, at, quoted):
+        s, end = self.s, self.eol(at)
+        line = s[at:end]
+        while not quoted and (len(line) - len(line.rstrip("\\"))) % 2 and end < len(s):
+            nxt = self.eol(end + 1)
+            line, end = line[:-1] + s[end + 1:nxt], nxt
+        return end, line
+
     def bodies(self):
         s = self.s
         pending, self.pending = self.pending, []
@@ -377,8 +390,7 @@ class Shell(Scanner):
             while True:
                 if self.i >= len(s):
                     self.fail(f"the heredoc {delimiter!r} is never closed", opened)
-                end = self.eol(self.i)
-                line = s[self.i:end]
+                end, line = self.joined(self.i, quoted)
                 if (line.lstrip("\t") if strip else line) == delimiter:
                     body_end, self.i = self.i, min(end + 1, len(s))
                     break
@@ -463,6 +475,9 @@ class Script(Scanner):
 
     def ambiguous_slash(self, close):
         rest = self.s[self.i + 1:self.eol(self.i)]
+        cut = min((at for at in (rest.find("//"), rest.find("/*")) if at >= 0), default=-1)
+        if cut >= 0 and not set(rest[:cut]) & set("/\\'\"`{}"):
+            rest = rest[:cut]
         if any(mark in rest for mark in ("'", '"', "`", "//", "/*")) or (close and any(b in rest for b in "{}")):
             self.fail("a / after ) or } that could start a regular expression or divide")
 
@@ -846,7 +861,7 @@ def counted(path, data, frozen):
 
 
 def git(root, *args, data=None):
-    return subprocess.run(["git", "-C", str(root), *args], input=data, capture_output=True)
+    return subprocess.run(["git", "-C", str(root), *args], input=data, capture_output=True, env=vac_core.git_env())
 
 
 def blobs(root, ref, paths):
@@ -902,8 +917,15 @@ class Tree:
     def spans(self, path):
         if path not in self.cache:
             target = self.root / path
-            data = target.read_bytes() if target.is_file() and not target.is_symlink() else None
-            self.cache[path] = [] if data is None else counted(path, data, self.frozen)
+            if not target.is_file() or target.is_symlink():
+                self.cache[path] = []
+            else:
+                try:
+                    data = target.read_bytes()
+                except OSError as error:
+                    self.cache[path] = [Span(path, 1, UNREADABLE, f"cannot be read ({error})")]
+                else:
+                    self.cache[path] = counted(path, data, self.frozen)
         return self.cache[path]
 
     def debt(self):
@@ -963,7 +985,8 @@ def debt_errors(tree):
     if start is not None:
         before = blobs(tree.root, start, entries)
         errors += [f"{p} had no comments at {start[:12]}, where the list started; only a file that had comments "
-                   "then can be listed" for p in entries if p in before and not counted(p, before[p], tree.frozen)]
+                   "then can be listed" for p in entries
+                   if p not in before or not counted(p, before[p], tree.frozen)]
     errors += [f"{p} has no comments left; remove it with vac comments --debt-write"
                for p in entries if not tree.spans(p)]
     return errors
@@ -1013,7 +1036,16 @@ def debt_write(root, out=sys.stdout):
             return 1
         candidates = old
     else:
-        old, candidates = [], tree.checked()
+        try:
+            where, ceiling, start = tree.debt_ceiling()
+        except ValueError as error:
+            print(f"vac: {error}", file=out)
+            return 1
+        old = []
+        candidates = tree.checked() if start is not None else ceiling
+        if start is None:
+            print(f"vac: {DEBT_FILE} is absent; the ceiling is {where}, so only the files it lists can be listed again",
+                  file=out)
     blocked = [s for p in candidates for s in tree.spans(p) if s.kind == UNREADABLE]
     if blocked:
         for span in blocked:
