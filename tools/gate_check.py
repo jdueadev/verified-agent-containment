@@ -417,6 +417,19 @@ def sweep_heads(repo):
     return into_main, away
 
 
+def main_tip():
+    """The commit of this checkout: main, since gate.yml runs only on workflow_run and
+    schedule."""
+    return git("rev-parse", "HEAD").strip()
+
+
+def on_main_tip(pr):
+    """The pull request with its base.sha moved to main's tip. The API's base.sha stays at
+    the main of the PR's last push, so the merge base and lane map taken from it would
+    judge with that day's rules and trusted list (#217)."""
+    return dict(pr, base=dict(pr["base"], sha=main_tip()))
+
+
 def fetch_head(pr):
     git("fetch", "--quiet", "--no-tags", "origin", pr["base"]["sha"])
     git("fetch", "--quiet", "--no-tags", "origin", f"pull/{pr['number']}/head")
@@ -474,7 +487,8 @@ def judge(head_sha):
     reviews, void = policy_check.review_freshness(reviews, activity, pr, timeline, head_sha)
     if void:
         print(f"gate_check: no review of {head_sha} counts, because {void}.", file=sys.stderr)
-    merge_base = fetch_head(pr)
+    now = on_main_tip(pr)
+    merge_base = fetch_head(now)
     changed = changed_paths(merge_base, head_sha)
     workflows_approved = any(touches_workflows(p) for p in changed) and policy_check.approved(reviews, owner, head_sha)
     by_path, ignored = proven(by_path, pr, repo, proofs_of(repo), signing_keys(),
@@ -484,7 +498,7 @@ def judge(head_sha):
     reviews_file = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / f"gate-reviews-{head_sha}.json"
     reviews_file.write_text(json.dumps(reviews), encoding="utf-8")
     # Always enforcing: gate/policy is the authority, whatever POLICY_ENFORCE says.
-    policy = policy_result(pr, merge_base, reviews_file, True)
+    policy = policy_result(now, merge_base, reviews_file, True)
     return pr["number"], verdicts(pr, by_path, jobs, changed, reviews, owner, policy, ignored)
 
 
