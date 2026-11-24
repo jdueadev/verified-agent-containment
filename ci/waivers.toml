@@ -1,0 +1,5 @@
+[[waiver]]
+reason = "spec tools/test_vac.py was edited"
+issue = 209
+receipt = "d1dc65da40810818f08afddefefd8df1eef49c9fbee501a2b9172dec80b26e0c"
+head = "bfb7e8607a1c855f6e8d8bf37b2f23b302c770ea"
