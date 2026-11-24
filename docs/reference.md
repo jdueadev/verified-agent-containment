@@ -9,6 +9,8 @@ Details for `containment-lab live`, the HUD, `ctl` and the red-team kit. For a g
 - `1`: the command failed, or for `redteam`, a task leaked;
 - `2`: invalid usage.
 
+`python3 tools/vac.py` is a separate driver for the no-root paths. It refuses `attack-suite`, `live`, `live-suite`, `redteam`, `ctl` and `hud` with exit 2. The commands and exit codes above are `containment-lab`. The driver is described in [No-root driver](verification.md#no-root-driver).
+
 A results file is only replaced once its run has finished. Model, agent and upstream text printed to the terminal has its control characters shown escaped, so they never act as terminal sequences.
 
 ## Run a local agent

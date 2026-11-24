@@ -1,6 +1,6 @@
 # Verification
 
-How to rerun the proofs, the test suites and the browser showcase. The results they produce are summarised in [`evidence.md`](evidence.md).
+How to rerun the proofs, the test suites, the no-root driver and the browser showcase. The results they produce are summarised in [`evidence.md`](evidence.md).
 
 ## Requirements
 
@@ -26,6 +26,41 @@ python3 tools/claims_check.py --affected              # uncommitted edits vs HEA
 python3 tools/claims_check.py --affected origin/main  # entire branch vs origin/main
 ```
 
+## No-root driver
+
+`python3 tools/vac.py` runs the builds and checks that need no root. `python3 tools/vac.py --help` lists the commands, and every command takes `--help`. `attack-suite`, `live`, `live-suite`, `redteam`, `ctl` and `hud` exit 2 and cite AGENTS.md INV-11. There is no override. Run those as `containment-lab`, as root, in a throwaway machine ([Linux or WSL2 attack suite](#linux-or-wsl2-attack-suite), [`scripts/lab/README.md`](../scripts/lab/README.md)).
+
+After every command, vac compares `git status --porcelain -- results/` with a snapshot from the start. A change under `results/` prints a warning on stderr. The warning leaves the exit status as it was.
+
+`build` runs `cargo build -q --locked -p containment-host`.
+
+`check` runs the checks below, one by one, and keeps going after a failure. It does not run [`scripts/check.sh`](../scripts/check.sh). `--only NAME` runs one of them. Any other name exits 2. It ends with a summary table and the line `tier: T0 (checks run: ...)`, naming only the checks that passed. With no pass the line is `tier: T0 (checks run: none)`. Exit status is 0 when every selected check passed or was skipped, and 1 when any selected check failed.
+
+| Name | What it runs |
+|---|---|
+| `policy` | `python3 tools/policy_check.py invariants` |
+| `claims` | `python3 tools/claims_check.py --affected origin/main`. When `origin/main` is missing it prints `SKIPPED claims: origin/main is missing`. A skip is not a failure. |
+| `kernel` | `cargo test -q --locked -p containment-kernel` |
+| `differential` | `target/debug/containment-lab differential-cases 3 24301`. When that binary is missing, `check` runs the `build` command first. [`scripts/check.sh`](../scripts/check.sh) generates 5000 traces from the same seed. |
+| `unittest` | `python3 -m unittest discover -s tools -p 'test_*.py'` |
+
+`run sim` and `run servers` pass any further arguments through to `node .claude/skills/run-verified-agent-containment/driver.mjs`. `sim` drives the browser simulator and needs Chromium. `status` reports Chromium: `$CHROMIUM` when that variable names a file, otherwise a binary under `~/.cache/ms-playwright`. With Chromium missing, `run sim` exits 1 and the driver prints `driver: no Chromium found: set CHROMIUM=/path/to/chrome`. `servers` smoke-tests `containment-lab mock-model` and `containment-lab fixture-server`. If the driver file is missing, or `node` is missing or older than 22, the command exits 1.
+
+`status` prints HEAD, the branch, `git status --porcelain`, whether `target/debug/containment-lab` is present and older than the newest regular file under `crates/`, and whether `cargo`, `node`, `python3` and Chromium are present. It also prints the `channel` in `rust-toolchain.toml`. Exit status is 0.
+
+`preflight` is the no-root work before a root lab run. `--engine` is `auto` (the default), `podman`, `docker` or `host`. `auto` runs `scripts/check-in-container.sh --no-strict` when that file is in the checkout and `podman` or `docker` is on `PATH` (`podman` first), with `ENGINE` set to the engine it chose. This repository has no `scripts/check-in-container.sh`, so `auto` runs these host steps:
+
+```bash
+cargo test -q --locked -p containment-host
+cargo test -q --locked -p containment-host --features sabotage
+cargo build -q --locked --release -p containment-host
+cargo build -q --locked --release -p containment-host --features sabotage --target-dir target-sabotage
+```
+
+`--engine host` runs the same steps. `--engine podman` or `--engine docker` exits 2 when the script or that engine is missing. The command then prints the lab evidence it did not exercise (`scenario`, `sabotage`, `live`, `live-sabotage`) and the claims `python3 tools/claims_check.py --strict` reports as stale. It records nothing. The summary tier line is T0. Exit status is 1 when a step fails, and 0 when every step passes.
+
+`lab plan` prints the maintainer's root-lab steps for the commit `origin/main` names. Those steps say to run `preflight`, to bundle that commit (`git bundle create repo.bundle HEAD` from a detached checkout, then check the clone's HEAD), to run `.\run-lab.cmd -Only suites` from [`scripts/lab/`](../scripts/lab/README.md), and to check with `python3 tools/claims_check.py --strict`. The command itself runs only that strict claims check and `git rev-parse`. It does not run the lab. If `origin/main` is missing it exits 1 and asks for `git fetch origin main`. If the strict check fails for a reason other than staleness, it exits 1. Otherwise it exits 0.
+
 ## Pull request workflow
 
 `main` is squash-only with linear history, and `evidence-freshness` is not a required check (`docs/decisions/0002-repository-settings.md`). Freshness is enforced where the guarantees are made: on release tags.
@@ -37,7 +72,7 @@ python3 tools/claims_check.py --affected origin/main  # entire branch vs origin/
    * If `formal/*.bend` changed, commit the regenerated `results/formal-verdict.json` (from `scripts/verdict.sh`) in the same PR. `CI-1` fails `check` until the verdict matches, so this one cannot wait for the merge; it needs the maintainer, since the agent environment has no Lean.
    * Regenerate `docs/claims.md` with `python3 tools/claims_check.py --write`.
 4. **Merge with honestly stale claims.** List the ids `--affected origin/main` prints in the PR. On Ready PRs and on `main`, the `evidence-freshness` job runs `python3 tools/claims_check.py --strict` and reports what is stale; it does not block the merge.
-5. **Refresh lab evidence on `main`, after the merge.** The maintainer runs the root lab on the squashed commit, which is on `main`, so `CI-4` can resolve the commit recorded in `claims.toml` from any clean clone. The results and the `platforms` update land in a follow-up PR. A lab run on a PR branch commit cannot be used: squashing means that commit never reaches `main`.
+5. **Refresh lab evidence on `main`, after the merge.** The maintainer runs the root lab on the squashed commit, which is on `main`, so `CI-4` can resolve the commit recorded in `claims.toml` from any clean clone. `python3 tools/vac.py lab plan` prints those steps for `origin/main`. The results and the `platforms` update land in a follow-up PR. A lab run on a PR branch commit cannot be used: squashing means that commit never reaches `main`.
 6. **Release.** The `release` workflow requires every claim to be fresh under `--strict` on the tagged commit.
 
 ## What the laws cover
