@@ -228,6 +228,10 @@ class Shell(Scanner):
                 if close == "`":
                     self.fail("a comment inside backticks")
                 self.take(self.eol(self.i))
+            elif at_word and s.startswith("((", self.i):
+                self.i += 2
+                self.arith()
+                at_word = False
             elif s.startswith("<<", self.i):
                 self.heredoc()
                 at_word = False
@@ -335,7 +339,7 @@ class Shell(Scanner):
             else:
                 depth += (ch == "(") - (ch == ")")
                 self.i += 1
-        self.fail("a $(( is never closed", opened)
+        self.fail("an arithmetic (( is never closed", opened)
 
     def heredoc(self):
         s = self.s
@@ -369,6 +373,14 @@ class Shell(Scanner):
             self.fail("a heredoc has no delimiter")
         self.pending.append(("".join(word), strip, quoted, opened))
 
+    def joined(self, at, quoted):
+        s, end = self.s, self.eol(at)
+        line = s[at:end]
+        while not quoted and (len(line) - len(line.rstrip("\\"))) % 2 and end < len(s):
+            nxt = self.eol(end + 1)
+            line, end = line[:-1] + s[end + 1:nxt], nxt
+        return end, line
+
     def bodies(self):
         s = self.s
         pending, self.pending = self.pending, []
@@ -377,8 +389,7 @@ class Shell(Scanner):
             while True:
                 if self.i >= len(s):
                     self.fail(f"the heredoc {delimiter!r} is never closed", opened)
-                end = self.eol(self.i)
-                line = s[self.i:end]
+                end, line = self.joined(self.i, quoted)
                 if (line.lstrip("\t") if strip else line) == delimiter:
                     body_end, self.i = self.i, min(end + 1, len(s))
                     break
@@ -463,6 +474,9 @@ class Script(Scanner):
 
     def ambiguous_slash(self, close):
         rest = self.s[self.i + 1:self.eol(self.i)]
+        cut = min((at for at in (rest.find("//"), rest.find("/*")) if at >= 0), default=-1)
+        if cut >= 0 and not set(rest[:cut]) & set("/\\'\"`{}"):
+            rest = rest[:cut]
         if any(mark in rest for mark in ("'", '"', "`", "//", "/*")) or (close and any(b in rest for b in "{}")):
             self.fail("a / after ) or } that could start a regular expression or divide")
 
