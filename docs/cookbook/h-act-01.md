@@ -16,9 +16,8 @@ a host recipe: nothing on this page runs in your browser or without root.
 
 The kernel decides *what* should happen (for example: revoke secrets, block
 egress, freeze the processes). The host has to make it happen, and an actuator
-can fail: a write to the cgroup can fail, or a freeze may not take. The rule is
-INV-7 in [`AGENTS.md`](../../AGENTS.md): enforcement that cannot be read back
-ends in fail-stop, never in "assume it worked".
+can fail: a write to the cgroup can fail, or a freeze may not take. The claim
+above is the rule: enforcement that cannot be confirmed ends in fail-stop.
 
 ## Where it is enforced
 
@@ -83,11 +82,13 @@ records both controls as `"detected": true`, each with the failed checks
 ## Reproduce
 
 The scenarios need root and change cgroups, so they run only in a throwaway
-Linux or WSL2 machine (INV-11). There are no commands on this page on purpose;
+Linux or WSL2 machine (LAB-THROWAWAY in [`AGENTS.md`](../../AGENTS.md)). There are
+no commands on this page on purpose;
 [`docs/verification.md`](../verification.md) has the lab instructions, and
 [`scripts/lab/README.md`](../../scripts/lab/README.md) the one-click Windows
-route. The maintainer runs the lab; its output lands under `results/` in a
-follow-up pull request.
+route. A push to `main` records the CI run through
+`.github/workflows/lab.yaml`. A Windows lab run is still committed by the
+maintainer.
 
 ## What this does not prove
 
@@ -106,5 +107,5 @@ follow-up pull request.
 - **Host code can fool the lab.** That is why host code is lane C
   ([#83](https://github.com/jdueadev/verified-agent-containment/issues/83)).
   The maintainer's approval is required for an author who is not on the
-  `trusted` list in `ci/lanes.toml`, and for every pull request from a fork
-  ([AGENTS.md](../../AGENTS.md)).
+  `trusted` list in [`ci/lanes.toml`](../../ci/lanes.toml), and for every
+  pull request from a fork (`tools/policy_check.py`).

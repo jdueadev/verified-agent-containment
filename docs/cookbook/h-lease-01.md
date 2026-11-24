@@ -65,22 +65,28 @@ at the commit you are looking at.
 ## Where the evidence lands
 
 - A root lab run writes `results/attack-suite.json` and
-  `results/live-suite.json`. The maintainer commits a run as evidence under
-  `results/<platform>/lab-<commit>/` in a follow-up pull request, and adds the
-  platform to the claim's `platforms` list. Agents never write either
-  (INV-1).
+  `results/live-suite.json`. On a push to `main`,
+  [`.github/workflows/lab.yaml`](../../.github/workflows/lab.yaml) records a
+  CI run under `results/ci/lab-<sha>/` with `provenance.json`. A Windows lab
+  run is committed by the maintainer under `results/wsl2/`. An agent does not
+  write these.
 - [`tools/claims_check.py`](../../tools/claims_check.py) then checks that the
   cited scenarios passed and the cited controls were caught in the recorded
   results it reads: the top-level `results/attack-suite.json` and
-  `results/live-suite.json`, and the newest CI lab run. It marks the claim stale when a file the claim lists changes after the
-  recorded commit. `--strict` also requires the honest runs and the controls
-  to come from two different builds, and a full unwaived timed run.
+  `results/live-suite.json`, and the newest CI lab run. It marks the claim
+  stale when a file the claim lists changes after the recorded commit.
+  `--strict` also requires the honest runs and the controls to come from two
+  different builds, and a full unwaived timed run. CI-10, in either mode,
+  requires every tracked `results/ci/lab-<sha>/` that is not on the `legacy`
+  list in [`ci/lab-attestation.toml`](../../ci/lab-attestation.toml) to carry
+  a GitHub OIDC token binding every committed byte.
 - The rendered result is the claim's row in [`docs/claims.md`](../claims.md).
 
 ## Reproduce
 
 The lab needs root and changes cgroups, so run it only in a disposable Linux
-or WSL2 machine (INV-11). [`docs/verification.md`](../verification.md) has the
+or WSL2 machine (LAB-THROWAWAY in [`AGENTS.md`](../../AGENTS.md)).
+[`docs/verification.md`](../verification.md) has the
 commands, and [`scripts/lab/README.md`](../../scripts/lab/README.md) the
 one-click Windows route that creates and deletes a throwaway WSL2 distro.
 

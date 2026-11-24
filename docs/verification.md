@@ -6,6 +6,12 @@ How to rerun the proofs, the test suites and the browser showcase. The results t
 
 Rust, Bun, Node.js, Python 3, and the pinned Bend checkout. The Lean recheck needs Lean v4.34.0 (or `BENDTT` set to a built kernel). TLA+ checks need Java and `tla2tools.jar` (default `/opt/tla/tla2tools.jar`, or set `TLA2TOOLS`); `scripts/check.sh` skips them if either is missing.
 
+## One command
+
+`python3 tools/vac.py check` runs the rules whose stages include `t0`. Exit 0 is a pass, 1 a failure, 2 a usage error, 3 a missing tool. A failure is one line: `FAIL <rule> <where> <what> | fix: <command>`. `python3 tools/vac.py check --t1` is the full local gate. It includes `scripts/check.sh` (rule T1-GATE) and reports tier T1 only when every rule of that stage ran and passed. `python3 tools/vac.py rules` lists the rules. `python3 tools/vac.py explain <path or rule>` says which rules apply and the fix. [`AGENTS.md`](../AGENTS.md) is that table, written by `python3 tools/vac.py gen --write` from `tools/vac_rules.py`. Do not edit it by hand.
+
+Evidence a claim cites cannot be waived (SAFE-CORE). Any other weakening needs `python3 tools/vac.py waive --reason '<the reason>' --issue N`. That runs the safety loop and, only if the loop passes, writes `ci/waivers.toml` and a receipt under `ci/waiver-receipts/`. The receipt is the loop's own output from that run. SAFE-ATTEST, in the unenforced list in `AGENTS.md`, is what would have CI rerun the loop and attest the receipt. Until that check exists, the receipt is self-asserted.
+
 ## Proofs, tests, differential and mutation checks
 
 ```bash
@@ -19,6 +25,8 @@ scripts/verdict.sh        # Lean recheck; needs Lean v4.34.0, or BENDTT set to a
 
 Near the end, `scripts/check.sh` runs `python3 tools/claims_check.py --strict`, then the kernel crate tests and the tool unit tests. With `--strict`, the claims check fails if a row of [`claims.toml`](../claims.toml) has evidence that no longer holds, if any claim is stale, if `results/attack-suite.json` or `results/live-suite.json` lacks the dual-binary stamps (honest runs from a default build, controls from a different sabotage build), if `results/attack-suite.json` is not a full unwaived run (`timed_repeat >= 30`, no cgroup waiver), or if [`claims.md`](claims.md) is out of date (`--write` regenerates it). The same build rules apply to the newest run under `results/ci/`. Pass `--no-strict` to report stale claims as warnings. The proof, test, differential, mutation, and coverage checks stay mandatory either way. The TLA+ check runs only when `java` and `tla2tools.jar` are present; otherwise the script prints `SKIPPED` and continues.
 
+Either mode also fails on CI-10 (`tools/lab_attest.py`). Every tracked `results/ci/lab-<sha>/` that is not listed under `legacy` in [`ci/lab-attestation.toml`](../ci/lab-attestation.toml) must carry `provenance.json`: a GitHub OIDC token from [`.github/workflows/lab.yaml`](../.github/workflows/lab.yaml), pushed to an allowed ref, in the `evidence` environment, for that commit, whose audience binds the SHA-256 of every committed byte. The two directories named in `legacy` were recorded before attestation and are exempt.
+
 To check locally which claims your current edits invalidate before running the root lab:
 
 ```bash
@@ -28,7 +36,7 @@ python3 tools/claims_check.py --affected origin/main  # entire branch vs origin/
 
 ## Pull request workflow
 
-`main` is squash-only with linear history, and `evidence-freshness` is not a required check (`docs/decisions/0002-repository-settings.md`). Freshness is enforced where the guarantees are made: on release tags.
+`evidence-freshness` is not a required check. In [`.github/workflows/check.yml`](../.github/workflows/check.yml) the job is paused (`if: false`, #206) while `main`'s CI-4 lab evidence is stale. Freshness is enforced on release tags: [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs `python3 tools/claims_check.py --strict`.
 
 1. **Open the PR.** On every push, the `check` job runs `scripts/check.sh --no-strict` (Bend proofs, TLA+, differential, mutation, Clippy, both unit-test builds, tooling tests, and non-strict `claims_check.py`). Formal proofs and source coverage (`CI-7`) are enforced on every commit; stale claims print as warnings.
 2. **Iterate through review rounds** using fast unit tests and the `check` job.
@@ -37,7 +45,7 @@ python3 tools/claims_check.py --affected origin/main  # entire branch vs origin/
    * If `formal/*.bend` changed, commit the regenerated `results/formal-verdict.json` (from `scripts/verdict.sh`) in the same PR. `CI-1` fails `check` until the verdict matches, so this one cannot wait for the merge; it needs the maintainer, since the agent environment has no Lean.
    * Regenerate `docs/claims.md` with `python3 tools/claims_check.py --write`.
 4. **Merge with honestly stale claims.** List the ids `--affected origin/main` prints in the PR. On Ready PRs and on `main`, the `evidence-freshness` job runs `python3 tools/claims_check.py --strict` and reports what is stale; it does not block the merge. That job is paused (#206) while `main`'s CI-4 lab evidence is stale; run the same command locally to see what is stale.
-5. **Refresh lab evidence on `main`, after the merge.** The maintainer runs the root lab on the squashed commit, which is on `main`, so `CI-4` can resolve the commit recorded in `claims.toml` from any clean clone. The results and the `platforms` update land in a follow-up PR. A lab run on a PR branch commit cannot be used: squashing means that commit never reaches `main`.
+5. **Refresh lab evidence on `main`, after the merge.** A push to `main` runs [`.github/workflows/lab.yaml`](../.github/workflows/lab.yaml). The `lab` job runs the suites on that commit. The `attest` job, in the `evidence` environment, asks GitHub for an OIDC token whose audience is `lab-evidence:` plus the SHA-256 of the result manifest (`ci/lab-attestation.toml`, `tools/lab_attest.py`). The `record` job commits `results/ci/lab-<sha>/` byte for byte with that token as `provenance.json`, updates `platforms`, and opens the evidence pull request (`scripts/lab/ci-record.sh`). `tools/claims_check.py` checks the token (CI-10). `attest` and `record` run only on a push to `main`, so a run on a pull-request commit is not recorded. The Windows lab in [`scripts/lab/`](../scripts/lab/README.md) is a separate path and does not mint this token.
 6. **Release.** The `release` workflow requires every claim to be fresh under `--strict` on the tagged commit.
 
 ## What the laws cover

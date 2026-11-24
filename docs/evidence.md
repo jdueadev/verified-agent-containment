@@ -8,7 +8,7 @@ The results behind every guarantee in the [README](../README.md). Each guarantee
 |---|---:|---|
 | Bend laws | 36 proved | Properties of `formal/kernel.bend` |
 | Lean-backed Bend verdict | `ALL PROOFS CHECK` | The proof terms pass the BendTT kernel. Hashes are in `results/formal-verdict.json` |
-| Unsafe Bend kernels | 46/46 rejected, 46/46 with a witness | Each mutant type-checks, fails the proofs, and `tools/law_audit.mjs` finds an input on which it breaks a stated law |
+| Unsafe Bend kernels | 47/47 rejected, 47/47 with a witness | Each mutant type-checks, fails the proofs, and `tools/law_audit.mjs` finds an input on which it breaks a stated law |
 | Original kernel under the law audit | 0 violations in 200,000 inputs | The executable law statements agree with the proofs |
 | Unsafe Rust kernels | 19/19 diverge from the Bend model | The differential test detects these faults |
 | Rust vs Bend, Rust vs WebAssembly | 77,364 transitions each, 0 mismatches | Generated-test agreement, including stale timestamps and resets. Not a proof |
@@ -64,10 +64,12 @@ The Windows lab (`scripts/lab`, commit 9ffd69a, a throwaway distro with interop 
 
 The extra sabotage versus the WSL2 copy is `wide_root`. `results/attack-suite.json` is still the cd7172f copy, so its sabotage list has 29 entries.
 
+Both directories are the `legacy` list in `ci/lab-attestation.toml`. They were committed before CI-10 and have no `provenance.json`. A later `results/ci/lab-<sha>/` has to carry one (`tools/lab_attest.py`).
+
 ## Scope limits
 
 - **Proofs:** they cover the Bend model. The Rust kernel is checked against it by generated traces. Values in those traces stay below 2^53. Rust saturates at u64 where Bend's naturals do not, which is tighter, not looser.
-- **Law audit:** `tools/law_audit.mjs` restates 35 of the 36 laws in JavaScript; the trace law is covered step by step. It is a second opinion, not the proof.
+- **Law audit:** `tools/law_audit.mjs` evaluates all 36 laws in JavaScript on random inputs. `no_sequence_lowers_containment` is one more non-reset event after the first step, compared with the mode the trace started in, and that check is skipped when the first event was a signed reset. It is a second opinion, not the proof.
 - **Outside the proofs:** host actuators, Linux, seccomp, the CPU and the hypervisor. The attack suite tests them; nothing proves them.
 - **Agent and classifier:** the attack agent is scripted. The live harness has been tested end to end with a scripted model, and red-teamed with one real local model (Qwen3.5-9B, thinking off) on WSL2; one model and six tasks are not a measurement of models in general. In the attack suite, System One is a scripted adversary per scenario (stall, crash, Kill requests, a message labelled as a hard rule); no trained classifier model was called. Live runs use the rule-based classifier in `system_one.rs`, which is unit-tested but has not been measured against the false-Hold gate.
 - **Known v2 gap:** a reset-v2 signature binds the run id but not the controller instance or boot ([`design-spec.md`](design-spec.md) section 9).

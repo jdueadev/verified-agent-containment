@@ -90,7 +90,7 @@ writes the results to
 [`results/mutation-check.json`](../../results/mutation-check.json). That file
 is regenerated output, not a lab artifact. For this mutant, the committed copy
 records `"rejected": true`, `"first_failure": "tight_classifier"` and
-`"laws_violated": ["hard_rule_reaches_level", "tighten_only"]`. Read the file
+`"laws_violated": ["hard_rule_reaches_level", "no_sequence_lowers_containment", "tighten_only"]`. Read the file
 at the commit you are looking at rather than trusting these quoted values.
 
 ## Reproduce

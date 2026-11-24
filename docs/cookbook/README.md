@@ -45,7 +45,7 @@ changes:
   only from a committed file under `results/`, say which run produced them, and
   never show them as live.
 - **Reproduce** gives no command that needs root. Lab runs belong in a
-  throwaway machine (INV-11 in [`AGENTS.md`](../../AGENTS.md)), so link to
+  throwaway machine (LAB-THROWAWAY in [`AGENTS.md`](../../AGENTS.md)), so link to
   [`docs/verification.md`](../verification.md) instead.
 
 Recipes are documentation (lane A). They must not edit any file a claim lists,
