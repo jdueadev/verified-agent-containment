@@ -21,3 +21,9 @@ reason = "spec tools/test_gate_approval_freshness.py was edited"
 issue = 235
 receipt = "da20fed6957e2ebd549b2c8932e5a4cdddb1e6141830d1dc5152f66f6e24d26b"
 head = "a5599a19851d5f04861b61b984a977fc23571f55"
+
+[[waiver]]
+reason = "spec tools/test_gate_check.py was edited"
+issue = 235
+receipt = "727d650433c13c45b508c36d7abd7ba433d92bc3bbded2069e38adb826f8f73a"
+head = "9a45de91d3ccbf7dd65ad7ac0b43db9d97ee07f9"
