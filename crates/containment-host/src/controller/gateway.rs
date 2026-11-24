@@ -197,7 +197,8 @@ pub(super) fn denied(reason: &str) -> Value {
 
 /// Reserves an upstream slot under the control lock if the kernel allows the
 /// access now. Admission is ordered with commits exactly like lab egress.
-pub(super) fn admit(shared: &Shared, granted: bool, baseline: bool) -> Option<u64> {
+/// Returns the slot and the lease epoch (`reset_counter`) it was admitted under.
+pub(super) fn admit(shared: &Shared, granted: bool, baseline: bool) -> Option<(u64, u64)> {
     let control = lock(&shared.control);
     let ok = shared.authority_ready()
         && authorize_for(&shared.weak, shared.now_ms(), *control, AccessRequest { kind: AccessKind::Egress, granted, baseline });
@@ -209,8 +210,21 @@ pub(super) fn admit(shared: &Shared, granted: bool, baseline: bool) -> Option<u6
         if baseline {
             upstreams.baseline.insert(slot);
         }
-        slot
+        (slot, control.reset_counter)
     })
+}
+
+/// Gives back a slot that was admitted but will not be used.
+fn release_slot(shared: &Shared, slot: u64) {
+    let mut upstreams = lock(&shared.upstreams);
+    upstreams.active.remove(&slot);
+    upstreams.baseline.remove(&slot);
+}
+
+/// The epoch a book operation uses. `live_lease_unbound` is the lab defect
+/// that charges whatever lease is current instead of the one that admitted the call.
+fn book_epoch(shared: &Shared, books: &crate::live::LeaseBooks, admitted: u64) -> u64 {
+    if shared.weak.live_lease_unbound() { books.epoch() } else { admitted }
 }
 
 /// Sends one upstream request on an admitted slot. A cut between admission and
@@ -234,7 +248,12 @@ pub(super) fn send_on_slot(shared: &Shared, slot: u64, url: &crate::http::Url, m
     result
 }
 
+/// Every reply, refusals and their error text included, goes through redaction.
 pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, received: u64) -> Value {
+    redact(live, infer_unredacted(shared, live, message, received))
+}
+
+fn infer_unredacted(shared: &Shared, live: &LiveState, message: &Value, received: u64) -> Value {
     let budget = live.policy.model.token_budget;
     let reserve = live.policy.model.max_tokens_per_call;
     let request = json!({
@@ -251,28 +270,40 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
         shared.apply(Some(if local { "canary_to_local_model" } else { "canary_exfil" }), received, |now_ms| Event::HardRule { now_ms, level });
         return denied("denied");
     }
-    // Reserve the call's maximum (prompt estimate plus completion) first, so
-    // concurrent calls cannot overspend. The reservation belongs to this lease.
-    let reserve = reserve + body.len() as u64 / 3;
-    let lease = live.lease.load(Ordering::SeqCst);
-    let reserved = live.tokens.try_update(Ordering::SeqCst, Ordering::SeqCst, |used| (used + reserve <= budget).then_some(used + reserve));
-    if reserved.is_err() {
-        shared.apply(Some("budget_tokens"), received, |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
-        return denied("token budget for this lease is used up");
-    }
-    let release = |used: u64| {
-        // Same lock as the reset, so the lease cannot change under this release.
-        let _guard = lock(&live.used);
-        if live.lease.load(Ordering::SeqCst) != lease {
-            // A reset started a new lease; this call's charge belongs to the old one.
-            return live.tokens.load(Ordering::SeqCst);
-        }
-        live.tokens.try_update(Ordering::SeqCst, Ordering::SeqCst, |t| Some(t.saturating_sub(reserve) + used)).map_or(0, |t| t.saturating_sub(reserve) + used)
-    };
     // Inference is baseline egress: allowed in Restrict, refused in Hold and above.
-    let Some(slot) = admit(shared, true, true) else {
-        release(0);
+    // Admission fixes the lease the call belongs to.
+    let Some((slot, epoch)) = admit(shared, true, true) else {
         return denied("inference is not allowed in the current mode");
+    };
+    // Reserve the call's maximum (prompt estimate plus completion) in that
+    // lease's book before sending, so concurrent calls cannot overspend.
+    let reserve = reserve.saturating_add(body.len() as u64 / 3);
+    let reserved = {
+        let mut books = lock(&live.books);
+        let epoch = book_epoch(shared, &books, epoch);
+        books.reserve(epoch, reserve, budget)
+    };
+    match reserved {
+        Ok(_) => {}
+        Err(crate::live::Refusal::OverBudget) => {
+            release_slot(shared, slot);
+            shared.apply(Some("budget_tokens"), received, |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
+            return denied("token budget for this lease is used up");
+        }
+        Err(crate::live::Refusal::Stale) => {
+            release_slot(shared, slot);
+            return denied("a reset started a new lease during the call; try again");
+        }
+    }
+    let settle = |used: u64| {
+        // The lease in force now, read under the control lock and released before
+        // the books are taken. Opening its book first makes a call from an earlier
+        // lease stale even when no call of the new lease has been charged yet.
+        let current = lock(&shared.control).reset_counter;
+        let mut books = lock(&live.books);
+        books.open(current);
+        let epoch = book_epoch(shared, &books, epoch);
+        books.settle(epoch, reserve, used)
     };
     let mut headers = vec![("Content-Type".to_owned(), "application/json".to_owned())];
     headers.extend(live.model_header.clone());
@@ -283,22 +314,31 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
             // failure may have reached the model, so the reservation stays charged.
             let unsent = matches!(e.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
                 | std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::InvalidInput);
-            release(if unsent { 0 } else { reserve });
+            settle(if unsent { 0 } else { reserve });
             return denied(&format!("model server: {e}"));
         }
     };
     let Ok(reply) = serde_json::from_slice::<Value>(&response.body) else {
         // The model did the work; charge the reservation.
-        release(reserve);
+        settle(reserve);
         return denied(&format!("model server returned HTTP {} without JSON", response.status));
     };
-    let used = reply["usage"]["total_tokens"].as_u64().unwrap_or((body.len() + response.body.len()) as u64 / 4);
-    let total = release(used);
-    if total + reserve > budget {
+    // What the server reports is charged in full. A reply without a usable count
+    // is charged the reservation, like a reply without JSON.
+    let used = reply["usage"]["total_tokens"].as_u64().unwrap_or(reserve);
+    // None: a reset started a new lease while the call ran. The charge stays
+    // with the old lease, which already enforced its budget.
+    let total = settle(used);
+    if total.is_some_and(|t| t.saturating_add(reserve) > budget) {
         shared.apply(Some("budget_tokens"), boot_ns(), |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
     }
-    let message = redact(live, reply["choices"][0]["message"].clone());
-    json!({"ok": true, "message": message, "usage": {"call": used, "lease_total": total, "budget": budget}})
+    infer_reply(&live.secret_values, reply["choices"][0]["message"].clone(), used, total, budget)
+}
+
+/// The reply to an infer call. The whole of it is redacted, the usage numbers
+/// included: the server chooses them, so one can spell a numeric credential.
+fn infer_reply(secrets: &[String], message: Value, call: u64, total: Option<u64>, budget: u64) -> Value {
+    redact_value(secrets, json!({"ok": true, "message": message, "usage": {"call": call, "lease_total": total, "budget": budget}}))
 }
 
 /// Removes exact credential values from anything returned to the agent, in
@@ -388,6 +428,38 @@ fn redact_value(secrets: &[String], value: Value) -> Value {
     }
 }
 
+/// The most response body the agent is given, in bytes.
+const MAX_BODY_TO_AGENT: usize = 64 * 1024;
+
+/// Prepares a response body for the agent: redacts the whole body first, then
+/// cuts it to `limit` bytes on a character boundary. If the body was cut here or
+/// upstream (`truncated`), a tail that could be the start of a secret is masked,
+/// so a credential that straddles a cut leaves no prefix behind.
+fn clip_body(secrets: &[String], body: &[u8], limit: usize, truncated: bool) -> (String, bool) {
+    let text = String::from_utf8_lossy(body).into_owned();
+    let mut text = redact_text(secrets, &text).unwrap_or(text);
+    let cut = text.len() > limit;
+    if cut {
+        text.truncate(text.floor_char_boundary(limit));
+    }
+    let truncated = truncated || cut;
+    if truncated {
+        // An upstream cut inside a multibyte character leaves U+FFFD at the end,
+        // which would hide a secret's prefix from the check below.
+        text.truncate(text.trim_end_matches('\u{FFFD}').len());
+        let tail = secrets.iter()
+            .filter_map(|secret| (1..secret.len()).rev().find(|&k| secret.is_char_boundary(k) && text.ends_with(&secret[..k])))
+            .max();
+        if let Some(k) = tail {
+            text.truncate(text.len() - k);
+            text.push_str(REDACTED);
+            // The marker could complete a secret with the text before it.
+            text = redact_text(secrets, &text).unwrap_or(text);
+        }
+    }
+    (text, truncated)
+}
+
 pub(super) fn live_http(shared: &Shared, live: &LiveState, message: &Value, received: u64) -> Value {
     let method = message["method"].as_str().unwrap_or("GET").to_ascii_uppercase();
     if !matches!(method.as_str(), "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE") {
@@ -407,29 +479,33 @@ pub(super) fn live_http(shared: &Shared, live: &LiveState, message: &Value, rece
     }
     let rule = live.hosts.get(&url.origin());
     let granted = rule.is_some_and(|(r, _)| !writes || r.access == crate::live::Access::Write || shared.weak.live_write_unchecked());
-    let Some(slot) = admit(shared, granted, false) else {
+    let Some((slot, epoch)) = admit(shared, granted, false) else {
         if !granted && shared.denied.fetch_add(1, Ordering::SeqCst) + 1 >= 3 {
             shared.apply(Some("denied_requests"), received, |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
         }
         return denied(if granted { "not allowed in the current mode" } else { "host or method is not in the policy" });
     };
-    // Budgets count admitted requests; path and query bytes count like body bytes.
+    // Budgets count admitted requests against the lease that admitted them;
+    // path and query bytes count like body bytes.
     if let Some((r, _)) = rule {
-        let sent = (body.len() + url.path.len()) as u64;
-        let mut used = lock(&live.used);
-        let entry = used.entry(url.origin()).or_default();
-        let over = !shared.weak.live_budget_unchecked()
-            && (r.budget_requests.is_some_and(|b| entry.requests + 1 > b) || r.budget_bytes.is_some_and(|b| entry.bytes + sent > b));
-        if over {
-            drop(used);
-            let mut upstreams = lock(&shared.upstreams);
-            upstreams.active.remove(&slot);
-            drop(upstreams);
-            shared.apply(Some("budget_exhausted"), received, |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
-            return denied("the budget for this host and lease is used up");
+        let sent = (body.len() as u64).saturating_add(url.path.len() as u64);
+        let charged = {
+            let mut books = lock(&live.books);
+            let epoch = book_epoch(shared, &books, epoch);
+            books.charge(epoch, &url.origin(), sent, r, !shared.weak.live_budget_unchecked())
+        };
+        match charged {
+            Ok(()) => {}
+            Err(crate::live::Refusal::OverBudget) => {
+                release_slot(shared, slot);
+                shared.apply(Some("budget_exhausted"), received, |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
+                return denied("the budget for this host and lease is used up");
+            }
+            Err(crate::live::Refusal::Stale) => {
+                release_slot(shared, slot);
+                return denied("a reset started a new lease during the request; try again");
+            }
         }
-        entry.requests += 1;
-        entry.bytes += sent;
     }
     let mut headers = Vec::new();
     if let Some((_, Some(credential))) = rule {
@@ -444,8 +520,10 @@ pub(super) fn live_http(shared: &Shared, live: &LiveState, message: &Value, rece
         headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
     }
     match send_on_slot(shared, slot, &url, &method, &headers, body.as_bytes()) {
-        Ok(r) => redact(live, json!({"ok": true, "status": r.status, "truncated": r.truncated,
-            "body": String::from_utf8_lossy(&r.body[..r.body.len().min(64 * 1024)])})),
+        Ok(r) => {
+            let (body, truncated) = clip_body(&live.secret_values, &r.body, MAX_BODY_TO_AGENT, r.truncated);
+            redact(live, json!({"ok": true, "status": r.status, "truncated": truncated, "body": body}))
+        }
         Err(e) => redact(live, denied(&format!("upstream: {e}"))),
     }
 }
@@ -556,6 +634,73 @@ mod tests {
     fn replaces_the_longer_secret_whole() {
         let clean = redact_value(&secrets(&["abc", "abcdef"]), json!("abcdef abc"));
         assert_eq!(clean, json!("[redacted] [redacted]"));
+    }
+
+    /// G5: every number in the reply goes through redaction too. The server
+    /// chooses the usage counts, so one can spell a numeric credential.
+    #[test]
+    fn usage_numbers_are_redacted() {
+        let reply = infer_reply(&secrets(&["424242"]), json!({"content": "hi"}), 424_242, Some(1_424_242), 9);
+        assert_eq!(reply["usage"]["call"], json!("[redacted]"), "{reply}");
+        assert_eq!(reply["usage"]["lease_total"], json!("[redacted]"), "{reply}");
+        assert_eq!(reply["usage"]["budget"], json!(9));
+    }
+
+    /// G6: a body over the limit is cut and says so.
+    #[test]
+    fn a_long_body_is_cut_and_marked_truncated() {
+        let body = vec![b'a'; 70 * 1024];
+        let (text, truncated) = clip_body(&secrets(&["sk-secret-value"]), &body, MAX_BODY_TO_AGENT, false);
+        assert!(text.len() <= MAX_BODY_TO_AGENT, "{}", text.len());
+        assert!(truncated);
+    }
+
+    /// G6: a credential that straddles the cut leaves no prefix behind.
+    #[test]
+    fn a_secret_split_at_the_cut_leaves_no_prefix() {
+        let secret = "sk-secret-value";
+        for keep in 1..secret.len() {
+            let mut body = vec![b'a'; MAX_BODY_TO_AGENT - keep];
+            body.extend_from_slice(secret.as_bytes());
+            body.extend_from_slice(b" and more");
+            let (text, truncated) = clip_body(&secrets(&[secret]), &body, MAX_BODY_TO_AGENT, false);
+            assert!(truncated, "keep {keep}");
+            assert!(!text.ends_with(&secret[..keep]), "keep {keep}: the tail is {:?}", &text[text.len() - keep..]);
+            assert!(!text.contains(secret), "keep {keep}");
+        }
+    }
+
+    /// G6: the upstream cut (http.rs) can split a credential too.
+    #[test]
+    fn a_secret_split_by_the_upstream_cut_is_masked() {
+        let secret = "sk-secret-value";
+        let body = format!("ok {}", &secret[..6]);
+        let (text, truncated) = clip_body(&secrets(&[secret]), body.as_bytes(), MAX_BODY_TO_AGENT, true);
+        assert!(truncated);
+        assert!(!text.contains(&secret[..6]), "{text:?}");
+        // A body that was not cut keeps its tail, even one that looks like a prefix.
+        let (text, truncated) = clip_body(&secrets(&[secret]), body.as_bytes(), MAX_BODY_TO_AGENT, false);
+        assert_eq!((text.as_str(), truncated), (body.as_str(), false));
+    }
+
+    /// G6: an upstream cut inside a multibyte character of a secret still masks its prefix.
+    #[test]
+    fn a_non_ascii_secret_split_mid_character_is_masked() {
+        let secret = "cl\u{00e9}-secret";
+        let mut body = b"ok ".to_vec();
+        body.extend_from_slice(&secret.as_bytes()[..3]);
+        let (text, truncated) = clip_body(&secrets(&[secret]), &body, MAX_BODY_TO_AGENT, true);
+        assert!(truncated);
+        assert!(!text.contains("cl"), "{text:?}");
+    }
+
+    /// G6: the cut never splits a character, whatever the server sends.
+    #[test]
+    fn the_cut_respects_character_boundaries() {
+        let mut body = vec![b'a'; MAX_BODY_TO_AGENT - 1];
+        body.extend_from_slice("\u{00e9}\u{1f511}".as_bytes());
+        let (text, truncated) = clip_body(&secrets(&["zz"]), &body, MAX_BODY_TO_AGENT, false);
+        assert!(truncated && text.len() <= MAX_BODY_TO_AGENT && text.ends_with('a'), "{}", text.len());
     }
 
     #[test]

@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU64;
 use std::sync::Mutex;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -128,6 +127,95 @@ pub struct Use {
     pub bytes: u64,
 }
 
+/// Why a lease book refused a charge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The call was admitted under an earlier lease; a reset has started a new one.
+    Stale,
+    /// The charge does not fit the lease's budget.
+    OverBudget,
+}
+
+/// The spend of the current lease, token and per-host, in one place.
+///
+/// Every charge names the epoch it was admitted under: the kernel's
+/// `reset_counter`, read under the control lock in `admit`. It moves once per
+/// accepted reset and never otherwise, so it names the lease exactly. The first
+/// charge of a newer epoch opens a fresh book; a charge of an older epoch never
+/// touches the current one. A reset itself changes no book.
+#[derive(Clone, Debug, Default)]
+pub struct LeaseBooks {
+    epoch: u64,
+    tokens: u64,
+    used: BTreeMap<String, Use>,
+}
+
+impl LeaseBooks {
+    /// Moves to `epoch` if it is newer. False if it belongs to an earlier lease.
+    pub fn open(&mut self, epoch: u64) -> bool {
+        if epoch > self.epoch {
+            *self = Self { epoch, ..Self::default() };
+        }
+        epoch == self.epoch
+    }
+
+    /// Reserves a call's maximum before it is sent, so concurrent calls cannot overspend.
+    pub fn reserve(&mut self, epoch: u64, amount: u64, budget: u64) -> Result<u64, Refusal> {
+        if !self.open(epoch) {
+            return Err(Refusal::Stale);
+        }
+        match self.tokens.checked_add(amount) {
+            Some(total) if total <= budget => {
+                self.tokens = total;
+                Ok(total)
+            }
+            _ => Err(Refusal::OverBudget),
+        }
+    }
+
+    /// Replaces a reservation with what the call used. A call that used more
+    /// than it reserved is charged in full, so the overrun stays visible and the
+    /// next reservation is refused; the sum saturates instead of wrapping. A call
+    /// from an earlier lease is dropped (None): its lease already enforced its
+    /// budget, and failing here would let an agent turn an operator reset into a stop.
+    pub fn settle(&mut self, epoch: u64, reserved: u64, used: u64) -> Option<u64> {
+        if epoch != self.epoch {
+            return None;
+        }
+        self.tokens = self.tokens.saturating_sub(reserved).saturating_add(used);
+        Some(self.tokens)
+    }
+
+    /// Counts one admitted request against a host's budgets. `checked` false is
+    /// the lab defect that skips the budget.
+    pub fn charge(&mut self, epoch: u64, origin: &str, sent: u64, rule: &HostRule, checked: bool) -> Result<(), Refusal> {
+        if !self.open(epoch) {
+            return Err(Refusal::Stale);
+        }
+        let entry = self.used.entry(origin.to_owned()).or_default();
+        let (requests, bytes) = (entry.requests.checked_add(1), entry.bytes.checked_add(sent));
+        let over = |value: Option<u64>, budget: Option<u64>| budget.is_some_and(|b| value.is_none_or(|v| v > b));
+        if checked && (over(requests, rule.budget_requests) || over(bytes, rule.budget_bytes)) {
+            return Err(Refusal::OverBudget);
+        }
+        entry.requests = requests.unwrap_or(u64::MAX);
+        entry.bytes = bytes.unwrap_or(u64::MAX);
+        Ok(())
+    }
+
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    pub fn tokens(&self) -> u64 {
+        self.tokens
+    }
+
+    pub fn used(&self) -> &BTreeMap<String, Use> {
+        &self.used
+    }
+}
+
 /// Resolved policy plus mutable per-lease state.
 pub struct LiveState {
     pub policy: Policy,
@@ -136,11 +224,9 @@ pub struct LiveState {
     /// origin -> (rule, credential header)
     pub hosts: BTreeMap<String, (HostRule, Option<(String, String)>)>,
     pub canary: String,
-    pub used: Mutex<BTreeMap<String, Use>>,
-    pub tokens: AtomicU64,
-    /// Incremented by every accepted reset; reservations from an earlier lease
-    /// are not released into the new one.
-    pub lease: AtomicU64,
+    /// Token and request spend, keyed by lease. Reservations from an earlier
+    /// lease are never released into a new one.
+    pub books: Mutex<LeaseBooks>,
     pub task: String,
     /// Exact credential values, redacted from anything returned to the agent.
     pub secret_values: Vec<String>,
@@ -194,7 +280,7 @@ impl LiveState {
         secret_values.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
         secret_values.dedup();
         crate::common::check_redactable(&secret_values)?;
-        Ok(Self { policy, model_url, model_header, hosts, canary, used: Mutex::default(), tokens: AtomicU64::new(0), lease: AtomicU64::new(0), task, secret_values })
+        Ok(Self { policy, model_url, model_header, hosts, canary, books: Mutex::default(), task, secret_values })
     }
 }
 
@@ -249,6 +335,118 @@ mod tests {
         let policy: Policy = toml::from_str(text).unwrap();
         assert!(!policy.host.is_empty());
         assert!(Url::parse(&policy.model.endpoint).is_some());
+    }
+
+    fn rule(requests: Option<u64>, bytes: Option<u64>) -> HostRule {
+        HostRule { url: "http://127.0.0.1:1".into(), access: Access::Write, budget_requests: requests, budget_bytes: bytes, credential: None }
+    }
+
+    /// A call in flight across a reset settles into its own lease's book; the
+    /// new lease starts empty and counts only its own calls.
+    #[test]
+    fn a_call_in_flight_across_a_reset_stays_in_its_lease() {
+        let mut books = LeaseBooks::default();
+        assert_eq!(books.reserve(0, 300, 1_000), Ok(300));
+        // Reset accepted: epoch 1. The books do not change.
+        assert_eq!(books.settle(0, 300, 120), Some(120));
+        assert_eq!(books.reserve(1, 300, 1_000), Ok(300));
+        assert_eq!(books.settle(1, 300, 120), Some(120));
+        assert_eq!((books.epoch(), books.tokens()), (1, 120));
+    }
+
+    /// Window 4: a call admitted after the reset commits is charged to the new
+    /// lease, and nothing later wipes it.
+    #[test]
+    fn a_call_admitted_after_the_reset_is_counted() {
+        let mut books = LeaseBooks::default();
+        assert_eq!(books.reserve(0, 900, 1_000), Ok(900));
+        assert_eq!(books.reserve(1, 300, 1_000), Ok(300));
+        assert_eq!(books.settle(1, 300, 200), Some(200));
+        // The stale call settles late: it is dropped and the new book keeps its spend.
+        assert_eq!(books.settle(0, 900, 900), None);
+        assert_eq!((books.epoch(), books.tokens()), (1, 200));
+        let mut books = LeaseBooks::default();
+        books.charge(0, "o", 10, &rule(Some(5), None), true).expect("old lease");
+        books.charge(1, "o", 10, &rule(Some(5), None), true).expect("new lease");
+        assert_eq!(books.used()["o"].requests, 1);
+    }
+
+    /// A call admitted under an earlier lease cannot reserve or charge in the new one.
+    #[test]
+    fn a_stale_epoch_is_refused_and_changes_nothing() {
+        let mut books = LeaseBooks::default();
+        assert_eq!(books.reserve(2, 100, 1_000), Ok(100));
+        books.charge(2, "o", 10, &rule(None, None), true).expect("charge");
+        assert_eq!(books.reserve(1, 100, 1_000), Err(Refusal::Stale));
+        assert_eq!(books.charge(1, "o", 10, &rule(None, None), true), Err(Refusal::Stale));
+        assert_eq!(books.settle(1, 100, 100), None);
+        assert_eq!((books.epoch(), books.tokens(), books.used()["o"].requests, books.used()["o"].bytes), (2, 100, 1, 10));
+    }
+
+    /// G5: whatever count the server reports, the total saturates instead of
+    /// wrapping, an overrun is charged in full, and the next call is refused.
+    #[test]
+    fn usage_cannot_wrap_the_total() {
+        let mut books = LeaseBooks::default();
+        assert_eq!(books.reserve(0, 300, 1_000), Ok(300));
+        assert_eq!(books.settle(0, 300, 400), Some(400));
+        assert_eq!(books.reserve(0, 300, 1_000), Ok(700));
+        assert_eq!(books.settle(0, 300, u64::MAX), Some(u64::MAX));
+        assert_eq!(books.reserve(0, 1, u64::MAX), Err(Refusal::OverBudget));
+        assert_eq!(books.reserve(0, 0, 1_000), Err(Refusal::OverBudget));
+        let mut books = LeaseBooks::default();
+        assert_eq!(books.reserve(0, u64::MAX, u64::MAX), Ok(u64::MAX));
+        assert_eq!(books.reserve(0, 1, u64::MAX), Err(Refusal::OverBudget));
+        let mut books = LeaseBooks::default();
+        assert_eq!(books.charge(0, "o", u64::MAX, &rule(None, Some(u64::MAX)), true), Ok(()));
+        assert_eq!(books.charge(0, "o", 1, &rule(None, Some(u64::MAX)), true), Err(Refusal::OverBudget));
+    }
+
+    #[test]
+    fn host_budgets_hold() {
+        let mut books = LeaseBooks::default();
+        let limited = rule(Some(2), Some(15));
+        assert_eq!(books.charge(0, "o", 5, &limited, true), Ok(()));
+        assert_eq!(books.charge(0, "o", 20, &limited, true), Err(Refusal::OverBudget));
+        assert_eq!(books.charge(0, "o", 10, &limited, true), Ok(()));
+        assert_eq!(books.charge(0, "o", 0, &limited, true), Err(Refusal::OverBudget));
+        assert_eq!(books.charge(0, "o", 0, &limited, false), Ok(()));
+        assert_eq!(books.used()["o"].requests, 3);
+    }
+
+    /// A settle opens the book of the lease in force first, so a call from an
+    /// earlier lease is dropped even before the new lease has charged anything,
+    /// and the old lease's total cannot restrict the reset agent.
+    #[test]
+    fn a_stale_settle_is_dropped_before_the_new_lease_charges() {
+        let mut books = LeaseBooks::default();
+        assert_eq!(books.reserve(0, 900, 1_000), Ok(900));
+        assert!(books.open(1));
+        assert_eq!(books.settle(0, 900, 900), None);
+        assert_eq!((books.epoch(), books.tokens()), (1, 0));
+    }
+
+    /// The sequence of the live scenario `reset_during_inference`, honest and
+    /// with the `live_lease_unbound` defect (the late settle lands in whatever
+    /// book is current, not the one that admitted the call). Only the defect
+    /// charges the stale call to the new lease.
+    #[test]
+    fn the_unbound_defect_charges_the_stale_call_to_the_new_lease() {
+        let run = |unbound: bool| {
+            let mut books = LeaseBooks::default();
+            books.reserve(0, 300, 100_000).expect("first call");
+            // The call settles after the reset: the gateway opens the current lease first.
+            books.open(1);
+            let epoch = if unbound { books.epoch() } else { 0 };
+            books.settle(epoch, 300, 120);
+            for _ in 0..2 {
+                books.reserve(1, 300, 100_000).expect("later call");
+                books.settle(1, 300, 120);
+            }
+            books.tokens()
+        };
+        assert_eq!(run(false), 240);
+        assert_eq!(run(true), 360);
     }
 
     #[test]
