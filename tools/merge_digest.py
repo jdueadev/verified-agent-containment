@@ -195,9 +195,10 @@ def owner_commits_only(commits, login):
     with a signature GitHub verified. Another identity with write access could otherwise
     push to the owner's branch before the owner merges it through the bypass. A commit
     made in the web UI or through the API is committed by `web-flow`, whose signature
-    covers whatever author the caller named, so it does not count as proof."""
-    flat = [c for page in commits or [] for c in (page if isinstance(page, list) else [page])]
-    if not flat:
+    covers whatever author the caller named, so it does not count as proof. A list of
+    COMMIT_LIST_LIMIT or more may be missing commits, so it proves nothing either."""
+    flat = policy_check.flat_commits(commits or [])
+    if not flat or len(flat) >= policy_check.COMMIT_LIST_LIMIT:
         return False
     for c in flat:
         author = ((c.get("author") or {}).get("login") or "").lower()
@@ -270,7 +271,8 @@ def render(rows, stale, title, stale_at="main"):
             lines.append(f"- **{_pr(r)}**, lane {r['lane']}, `{r['sha'][:7]}`: {safe(r['approval'])}")
     else:
         lines.append("")
-        lines.append("None. Every lane C merge was approved at its head commit or is the maintainer's own.")
+        lines.append("None. Every lane C merge was approved at its head commit, came from a trusted author "
+                     "with trusted commits, or is the maintainer's own.")
     lines += ["", "## Lane B merges (no human review)", ""]
     lane_b = [r for r in rows if r["lane"] == "B"]
     if lane_b:

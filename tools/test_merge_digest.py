@@ -178,6 +178,7 @@ class AnalyzeTests(unittest.TestCase):
             "made in the web UI or through the API": [[commit(committer="web-flow")]],
             "unsigned": [[commit(verified=False)]],
             "a second page with a stranger": [[commit()], [commit(author="someone", committer="someone")]],
+            "too many to list": [[commit()] * md.policy_check.COMMIT_LIST_LIMIT],
         }
         for name, commits in cases.items():
             with self.subTest(name=name):
@@ -353,6 +354,12 @@ class ReportTests(unittest.TestCase):
         self.assertIn("CI-4 X-1: stale", text)
         code, _ = self.run_report(merges, "--fail-on-unapproved")
         self.assertEqual(code, 1)
+
+    def test_no_alerts_names_every_way_a_lane_c_merge_passes(self):
+        _, text = self.run_report([{"sha": full(LANE_B), "pr": pr(full(LANE_B)), "pulls": [1]}])
+        none = text.split("## Alerts")[1].split("## Lane B merges")[0]
+        for way in ("approved at its head commit", "trusted author with trusted commits", "maintainer's own"):
+            self.assertIn(way, none)
 
     def test_pull_request_text_cannot_hide_or_forge_rows(self):
         hostile = 'x <!-- | @jdueadev [None.](http://e) **ok**\n## Alerts'
