@@ -4,7 +4,7 @@ name: check
 # - `check` runs on every push (including Draft PRs): Bend proofs, Rust/WASM
 #   tests and clippy for both feature sets, differential, mutation, TLA+,
 #   tooling tests, and non-strict claims_check.py (CI-1/2/3/5/6/7 + stale warnings).
-# - `evidence-freshness` runs on Ready PRs and pushes to main: enforces
+# - `evidence-freshness` (paused, #206) runs on Ready PRs and pushes to main: enforces
 #   claims_check.py --strict (fresh lab evidence, regenerated docs/claims.md,
 #   dual-binary stamps, and full unwaived attack-suite runs).
 
@@ -147,7 +147,11 @@ jobs:
           retention-days: 30
 
   evidence-freshness:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    # Paused (#206): main's CI-4 lab evidence is stale, so this job is red on every
+    # Ready PR and push until the lab re-runs CI-4. It isn't required, and
+    # claims_check.py --strict still gates releases. To resume, restore:
+    #   if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
