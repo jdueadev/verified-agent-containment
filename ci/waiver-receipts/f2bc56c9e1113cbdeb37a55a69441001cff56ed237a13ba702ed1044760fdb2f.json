@@ -1,0 +1,49 @@
+{
+  "base": "3ae6bc62ba5e40767992a92c035677f9821cfbf7",
+  "digest": "f2bc56c9e1113cbdeb37a55a69441001cff56ed237a13ba702ed1044760fdb2f",
+  "head": "f2c242988105fe29a96f599950b2cbc0aba77353",
+  "ok": true,
+  "steps": [
+    {
+      "detail": [],
+      "ok": true,
+      "step": "core-unchanged"
+    },
+    {
+      "exit": 0,
+      "ok": true,
+      "step": "bend-proof",
+      "tail": [
+        "ALL PROOFS CHECK",
+        "Use --verdict for mathematical validity."
+      ]
+    },
+    {
+      "exit": 0,
+      "ok": true,
+      "step": "kernel-tests",
+      "tail": [
+        "running 0 tests",
+        "",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "exit": 0,
+      "ok": true,
+      "step": "claims",
+      "tail": [
+        "    \"CI-4 L-ISO-02: stale, (cannot diff against f88aeef) changed after its platform commit; rerun and update platforms\"",
+        "  ]",
+        "}"
+      ]
+    }
+  ],
+  "waivable": [
+    "spec tools/test_gate_approval_freshness.py was edited",
+    "spec tools/test_gate_check.py was edited",
+    "spec tools/test_gate_current_base.py was edited",
+    "spec tools/test_merge_digest.py was edited",
+    "spec tools/test_policy_trusted.py was edited"
+  ]
+}
