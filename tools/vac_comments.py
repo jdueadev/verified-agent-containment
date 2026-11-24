@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import tokenize
 import tomllib
 from pathlib import Path, PurePosixPath
@@ -1021,13 +1022,14 @@ def debt_write(root, out=sys.stdout):
         return 1
     keep = [p for p in candidates if tree.spans(p)]
     target.parent.mkdir(parents=True, exist_ok=True)
+    fd, staged = tempfile.mkstemp(dir=target.parent, prefix=".comment_debt.", suffix=".toml")
     try:
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o644)
-    except OSError as error:
-        print(f"vac: {DEBT_FILE} was not written ({error.strerror}); replace it with a regular file", file=out)
-        return 1
-    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-        handle.write(debt_text(keep))
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(debt_text(keep))
+        os.replace(staged, target)
+    except BaseException:
+        Path(staged).unlink(missing_ok=True)
+        raise
     removed = sorted(set(old) - set(keep))
     print(f"vac: {DEBT_FILE} lists {len(set(keep))} files" + (f"; removed {', '.join(removed)}" if removed else ""),
           file=out)

@@ -507,9 +507,10 @@ class CommandTests(unittest.TestCase):
         link.symlink_to(outside)
         out = io.StringIO()
         with __import__("unittest.mock").mock.patch.object(type(link), "is_symlink", return_value=False):
-            self.assertEqual(comments.debt_write(repo.root, out=out), 1)
+            comments.debt_write(repo.root, out=out)
         self.assertEqual(outside.read_text(encoding="utf-8"), "files = []\n")
-        self.assertIn("not written", out.getvalue())
+        self.assertFalse(link.is_symlink())
+        self.assertEqual([p.name for p in link.parent.iterdir() if p.name.startswith(".comment_debt.")], [])
 
     def test_debt_write_refuses_while_a_listed_file_cannot_be_read(self):
         repo = Repo(self)
