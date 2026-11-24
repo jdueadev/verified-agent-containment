@@ -151,8 +151,16 @@ class VerifyRecord(unittest.TestCase):
 
     def test_a_stable_head_is_recorded(self):
         head = (0, "a" * 40 + "\n", "")
-        code, err, recorded = self.record([(0, "", ""), head, head])
+        code, err, recorded = self.record([(0, "", ""), head, (0, "", ""), head])
         self.assertEqual((code, err, recorded), (0, "", ["a" * 40]))
+
+    def test_a_tracked_file_the_t1_run_changed_refuses_the_record(self):
+        head = (0, "a" * 40 + "\n", "")
+        for changed in (" M formal/PROOF.bend\n", " M results/mutation-check.json\n"):
+            with self.subTest(changed=changed):
+                code, err, recorded = self.record([(0, "", ""), head, (0, changed, ""), head])
+                self.assertEqual((code, recorded), (2, []))
+                self.assertIn("changed during the T1 run", err)
 
     def test_any_uncommitted_change_refuses_the_record(self):
         code, err, recorded = self.record([(0, " M Cargo.toml\n", "")])
@@ -165,7 +173,7 @@ class VerifyRecord(unittest.TestCase):
         self.assertIn("git status failed", err)
 
     def test_a_head_that_moves_during_the_run_is_never_recorded(self):
-        code, err, recorded = self.record([(0, "", ""), (0, "a" * 40 + "\n", ""), (0, "b" * 40 + "\n", "")])
+        code, err, recorded = self.record([(0, "", ""), (0, "a" * 40 + "\n", ""), (0, "", ""), (0, "b" * 40 + "\n", "")])
         self.assertEqual((code, recorded), (2, []))
         self.assertIn("HEAD moved from aaaaaaaaaaaa to bbbbbbbbbbbb", err)
 

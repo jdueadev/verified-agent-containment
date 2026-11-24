@@ -949,7 +949,7 @@ class Tree:
             raise ValueError(f"git log failed: {added.stderr.decode(errors='replace').strip()}")
         first = added.stdout.decode().split()
         if not first:
-            return "the working tree", self.debt(), base
+            return FRESH_START, self.debt(), base
         return first[0][:12], load_debt(blobs(self.root, first[0], [DEBT_FILE])[DEBT_FILE].decode("utf-8")), base
 
     def debt_existed(self):
@@ -957,6 +957,9 @@ class Tree:
         if past.returncode:
             raise ValueError(f"git log failed: {past.stderr.decode(errors='replace').strip()}")
         return bool(past.stdout.split())
+
+
+FRESH_START = "the working tree"
 
 
 def describe(span):
@@ -1042,7 +1045,7 @@ def debt_write(root, out=sys.stdout):
             print(f"vac: {error}", file=out)
             return 1
         old = []
-        candidates = tree.checked() if start is not None else ceiling
+        candidates = tree.checked() if where == FRESH_START else ceiling
         if start is None:
             print(f"vac: {DEBT_FILE} is absent; the ceiling is {where}, so only the files it lists can be listed again",
                   file=out)

@@ -108,6 +108,12 @@ class WaiverFileTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     safety.load_waivers(text)
 
+    def test_a_row_that_is_not_a_table_is_refused(self):
+        for text in ("waiver = [1]\n", 'waiver = ["x"]\n', "waiver = 1\n"):
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError):
+                    safety.load_waivers(text)
+
     def test_no_file_means_no_waivers(self):
         self.assertEqual(safety.load_waivers(None), [])
 

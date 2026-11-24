@@ -157,6 +157,15 @@ def cmd_verify(args):
     if core.tier(outcomes, "t1") != "T1":
         print("vac: verify record refused: vac check --t1 must pass in full at this commit first", file=sys.stderr)
         return core.exit_code(outcomes) or core.EXIT_FAIL
+    code, changed, err = git(["status", "--porcelain", "--untracked-files=no"])
+    if code != 0:
+        print(f"vac: verify record refused: git status failed: {err.strip()}", file=sys.stderr)
+        return core.EXIT_USAGE
+    if changed.strip():
+        print("vac: verify record refused: tracked files changed during the T1 run, so the commit is not what T1 judged: "
+              + ", ".join(line[3:] for line in changed.splitlines() if line.strip())
+              + "; commit what T1 regenerated, then run vac verify record again", file=sys.stderr)
+        return core.EXIT_USAGE
     code, head, err = git(["rev-parse", "HEAD"])
     if code != 0:
         print(f"vac: verify record refused: git rev-parse HEAD failed: {err.strip()}", file=sys.stderr)

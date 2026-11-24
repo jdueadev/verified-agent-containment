@@ -16,6 +16,7 @@ vac_safety = importlib.import_module("vac_safety")
 vac_gen = importlib.import_module("vac_gen")
 results_ratchet = importlib.import_module("results_ratchet")
 vac_comments = importlib.import_module("vac_comments")
+rust_tokens = importlib.import_module("rust_tokens")
 
 Finding = vac_core.Finding
 Rule = vac_core.Rule
@@ -193,6 +194,10 @@ def waivers_cover(ctx):
         if not isinstance(receipt, dict):
             out.append(Finding("WAIVE-1", receipt_name, 0, f"{row['reason']}: receipt is not a JSON object; run vac waive again"))
             continue
+        if not (type(receipt.get("ok")) is bool and isinstance(receipt.get("waivable"), list)
+                and isinstance(receipt.get("base"), str) and isinstance(receipt.get("head"), str)):
+            out.append(Finding("WAIVE-1", receipt_name, 0, f"{row['reason']}: receipt is malformed: ok, waivable, base and head need their types; run vac waive again"))
+            continue
         body = {k: v for k, v in receipt.items() if k != "digest"}
         digest = __import__("hashlib").sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
         if digest != row["receipt"] or receipt.get("digest") != digest:
@@ -254,9 +259,31 @@ CRLF_EOL = ("i/crlf", "i/mixed")
 
 
 def allow_lints(text):
+    tokens = [t for t in rust_tokens.tokenize(text or "") if t.kind not in ("comment", "doc", "str", "char")]
     found = []
-    for attribute in ALLOW_ATTR.finditer(text or ""):
-        found += [name.strip() for name in attribute.group(1).split(",") if name.strip()] or [""]
+    for i, tok in enumerate(tokens):
+        if tok.kind != "punct" or tok.text != "#":
+            continue
+        j = i + 1
+        if j < len(tokens) and tokens[j].text == "!":
+            j += 1
+        if not (j + 2 < len(tokens) and tokens[j].text == "[" and tokens[j + 1].kind == "ident"
+                and tokens[j + 1].text == "allow" and tokens[j + 2].text == "("):
+            continue
+        names, name, depth, k = [], "", 1, j + 3
+        while k < len(tokens) and depth:
+            if tokens[k].text == "(":
+                depth += 1
+            elif tokens[k].text == ")":
+                depth -= 1
+            if depth == 1 and tokens[k].text == ",":
+                names.append(name)
+                name = ""
+            elif depth:
+                name += tokens[k].text
+            k += 1
+        names.append(name)
+        found += [n for n in names if n] or [""]
     return found
 
 
@@ -264,10 +291,19 @@ def allow_count(get, paths):
     return sum(len(allow_lints(get(p))) for p in paths)
 
 
-def allow_places(get, paths):
+def allow_places(get, paths, unreadable=None):
     places = {}
     for path in paths:
-        for lint in allow_lints(get(path)):
+        text = get(path)
+        try:
+            lints = allow_lints(text)
+        except rust_tokens.LexError:
+            if unreadable is not None:
+                unreadable.append(path)
+                continue
+            lints = [name.strip() for attribute in ALLOW_ATTR.finditer(text or "")
+                     for name in attribute.group(1).split(",") if name.strip()]
+        for lint in lints:
             places[(path, lint)] = places.get((path, lint), 0) + 1
     return places
 
@@ -282,10 +318,13 @@ def allow_not_added(ctx):
     base_paths = [p for p in vac_core.git(ctx, "ls-tree", "-r", "--name-only", base, "--", "crates").splitlines()
                   if p.endswith(".rs")]
     before = allow_places(policy_check.reader(base), base_paths)
+    unreadable = []
     after = allow_places(lambda p: (ctx.root / p).read_text(encoding="utf-8") if (ctx.root / p).exists() else None,
-                         head_paths)
-    return [Finding("RS-ALLOW", path, 0, f"#[allow({lint})] is new here; it was not at {base[:12]}")
-            for path, lint in allow_added(before, after)]
+                         head_paths, unreadable)
+    return [Finding("RS-ALLOW", path, 0, "the Rust lexer cannot read this file, so its #[allow] attributes cannot be counted")
+            for path in unreadable] + [
+        Finding("RS-ALLOW", path, 0, f"#[allow({lint})] is new here; it was not at {base[:12]}")
+        for path, lint in allow_added(before, after)]
 
 
 def line_endings(ctx):

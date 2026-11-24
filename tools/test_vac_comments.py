@@ -529,6 +529,16 @@ class CommandTests(unittest.TestCase):
         comments.debt_write(repo.root, out=io.StringIO())
         self.assertEqual(comments.load_debt((repo.root / DEBT).read_text(encoding="utf-8")), ["a.py"])
 
+    def test_debt_write_rebuilds_a_locally_deleted_first_list_from_its_own_ceiling(self):
+        repo = Repo(self)
+        repo.commit({"a.py": "# a\n", "b.py": "# b\n"})
+        repo.main_here()
+        repo.commit({DEBT: comments.debt_text(["a.py"])})
+        (repo.root / DEBT).unlink()
+        comments.debt_write(repo.root, out=io.StringIO())
+        self.assertEqual(comments.load_debt((repo.root / DEBT).read_text(encoding="utf-8")), ["a.py"])
+        self.assertEqual(repo.check("NC-2"), [])
+
     def test_a_file_that_cannot_be_read_is_an_unreadable_span(self):
         repo = Repo(self)
         repo.commit({"a.py": "# a\n"})

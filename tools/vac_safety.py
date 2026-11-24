@@ -147,8 +147,10 @@ def run_formal(work, base_get, c, paths):
 def load_waivers(text):
     data = tomllib.loads(text or "")
     rows = data.get("waiver", [])
+    if not isinstance(rows, list):
+        rows = [rows]
     for row in rows:
-        if not (isinstance(row.get("reason"), str) and type(row.get("issue")) is int
+        if not isinstance(row, dict) or not (isinstance(row.get("reason"), str) and type(row.get("issue")) is int
                 and re.fullmatch(r"[0-9a-f]{64}", str(row.get("receipt", ""))) and re.fullmatch(r"[0-9a-f]{40}", str(row.get("head", "")))):
             raise ValueError(f"{WAIVERS_FILE}: each waiver needs reason (text), issue (number), receipt (sha256), head (commit)")
     return rows

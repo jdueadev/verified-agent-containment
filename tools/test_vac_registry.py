@@ -225,6 +225,17 @@ class RustRuleTests(unittest.TestCase):
         return registry.allow_added(registry.allow_places(base.get, paths),
                                     registry.allow_places(head.get, paths))
 
+    def test_allow_text_in_strings_and_comments_is_not_an_attribute(self):
+        self.assertEqual(registry.allow_lints('fn f() { let _ = "#[allow(x)]"; }\n// #[allow(y)]\n/* #[allow(w)] */\n'), [])
+        base = {"crates/a.rs": 'pub fn f() { let _ = "#[allow(unused_variables)]"; }\n'}
+        head = {"crates/a.rs": "pub fn f() { #[allow(unused_variables)] let unused = 1; }\n"}
+        self.assertEqual(self.added(base, head), [("crates/a.rs", "unused_variables")])
+
+    def test_a_head_file_the_lexer_cannot_read_is_reported_not_skipped(self):
+        unreadable = []
+        places = registry.allow_places({"crates/a.rs": 'fn f() { "open\n'}.get, ["crates/a.rs"], unreadable)
+        self.assertEqual((places, unreadable), ({}, ["crates/a.rs"]))
+
     def test_an_allow_that_moves_file_or_lint_is_still_an_addition(self):
         base = {"crates/a.rs": "#[allow(dead_code)]\nfn a() {}\n", "crates/b.rs": "fn b() {}\n"}
         self.assertEqual(self.added(base, base), [])
@@ -306,6 +317,19 @@ class WaiverRowTests(unittest.TestCase):
             found = self.check(root, [{"reason": "r", "issue": 1, "receipt": name, "head": head}])
             self.assertEqual(len(found), 1, found)
             self.assertIn("not a JSON object", found[0])
+
+    def test_a_receipt_with_mistyped_fields_is_a_finding_not_a_crash(self):
+        root, head = self.repo()
+        for field, value in (("waivable", None), ("waivable", "r"), ("ok", "yes"), ("base", 7), ("head", None)):
+            with self.subTest(field=field, value=value):
+                body = {"base": "b" * 40, "head": head, "ok": True, "waivable": ["r"], "steps": []}
+                body[field] = value
+                digest = __import__("hashlib").sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+                (root / "ci/waiver-receipts").mkdir(parents=True, exist_ok=True)
+                (root / f"ci/waiver-receipts/{digest}.json").write_text(json.dumps({**body, "digest": digest}), encoding="utf-8")
+                found = self.check(root, [{"reason": "r", "issue": 1, "receipt": digest, "head": head}])
+                self.assertEqual(len(found), 1, found)
+                self.assertIn("malformed", found[0])
 
     def test_a_receipt_judged_from_another_base_is_refused(self):
         root, head = self.repo()
