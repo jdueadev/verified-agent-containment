@@ -35,6 +35,7 @@ C = [
   # handovers. Settings and hooks run on the machine of whoever opens a session in
   # the checkout, and the rest steers the next agent session (#169).
   ".claude/**",
+  ".devcontainer/**",
   "AGENTS.md",
   "CLAUDE.md",
   "docs/decisions/**",
