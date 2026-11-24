@@ -86,14 +86,15 @@ class Judge(unittest.TestCase):
         def merge_problem(claims, pr, workflows_approved, git=None):
             seen["workflows_approved"] = workflows_approved
 
-        def policy_result(pr, merge_base, reviews_file, enforce):
+        def policy_result(pr, merge_base, base, reviews_file, enforce):
             seen["policy_reviews"] = json.loads(Path(reviews_file).read_text(encoding="utf-8"))
             return True, "ok"
 
         with mock.patch.object(gc, "pages", pages), mock.patch.object(gc, "gh", gh), \
                 mock.patch.object(gc, "proven", proven), mock.patch.object(gc, "merge_problem", merge_problem), \
                 mock.patch.object(gc, "policy_result", policy_result), \
-                mock.patch.object(gc, "fetch_head", lambda pr: OLD), \
+                mock.patch.object(gc, "fetch_head", lambda pr, base: OLD), \
+                mock.patch.object(gc, "main_tip", lambda: OLD), \
                 mock.patch.object(gc, "changed_paths", lambda base, head: list(paths)), \
                 mock.patch.object(gc, "proofs_of", lambda repo: None), \
                 mock.patch.object(gc, "signing_keys", lambda: {}), \

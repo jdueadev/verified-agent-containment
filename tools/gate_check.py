@@ -417,12 +417,18 @@ def sweep_heads(repo):
     return into_main, away
 
 
-def fetch_head(pr):
-    git("fetch", "--quiet", "--no-tags", "origin", pr["base"]["sha"])
+def main_tip():
+    """The commit of this checkout: main, since gate.yml runs only on workflow_run and
+    schedule. The lane map and merge base come from it, not the PR's base.sha, which
+    stays at the main of the PR's last push and would judge with that day's rules (#217)."""
+    return git("rev-parse", "HEAD").strip()
+
+
+def fetch_head(pr, base):
     git("fetch", "--quiet", "--no-tags", "origin", f"pull/{pr['number']}/head")
     if git("rev-parse", "FETCH_HEAD").strip() != pr["head"]["sha"]:
         raise RuntimeError("pull/N/head moved while judging; the next run judges the new head")
-    return git("merge-base", pr["base"]["sha"], pr["head"]["sha"]).strip()
+    return git("merge-base", base, pr["head"]["sha"]).strip()
 
 
 def changed_paths(base, head):
@@ -430,10 +436,10 @@ def changed_paths(base, head):
     return [p for p in git("diff", "--name-only", "--no-renames", "-z", base, head).split("\0") if p]
 
 
-def policy_result(pr, merge_base, reviews_file, enforce):
+def policy_result(pr, merge_base, base, reviews_file, enforce):
     """main's checkers against the head, with the arguments policy.yml uses. None runs head code."""
-    head, base_sha = pr["head"]["sha"], pr["base"]["sha"]
-    classify = ["classify", "--base", merge_base, "--map-ref", base_sha, "--head", head,
+    head = pr["head"]["sha"]
+    classify = ["classify", "--base", merge_base, "--map-ref", base, "--head", head,
                 "--reviews", str(reviews_file), "--head-sha", head] + (["--enforce"] if enforce else [])
     head_repo = ((pr.get("head") or {}).get("repo") or {}).get("full_name")
     base_repo = ((pr.get("base") or {}).get("repo") or {}).get("full_name")
@@ -474,7 +480,8 @@ def judge(head_sha):
     reviews, void = policy_check.review_freshness(reviews, activity, pr, timeline, head_sha)
     if void:
         print(f"gate_check: no review of {head_sha} counts, because {void}.", file=sys.stderr)
-    merge_base = fetch_head(pr)
+    base = main_tip()
+    merge_base = fetch_head(pr, base)
     changed = changed_paths(merge_base, head_sha)
     workflows_approved = any(touches_workflows(p) for p in changed) and policy_check.approved(reviews, owner, head_sha)
     by_path, ignored = proven(by_path, pr, repo, proofs_of(repo), signing_keys(),
@@ -484,7 +491,7 @@ def judge(head_sha):
     reviews_file = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / f"gate-reviews-{head_sha}.json"
     reviews_file.write_text(json.dumps(reviews), encoding="utf-8")
     # Always enforcing: gate/policy is the authority, whatever POLICY_ENFORCE says.
-    policy = policy_result(pr, merge_base, reviews_file, True)
+    policy = policy_result(pr, merge_base, base, reviews_file, True)
     return pr["number"], verdicts(pr, by_path, jobs, changed, reviews, owner, policy, ignored)
 
 

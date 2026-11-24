@@ -24,7 +24,7 @@ def classify_args(p):
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     with mock.patch.object(gc.subprocess, "run", fake_run):
-        gc.policy_result(p, "c" * 40, "reviews.json", True)
+        gc.policy_result(p, "c" * 40, "d" * 40, "reviews.json", True)
     return next(c for c in seen if "classify" in c)
 
 
