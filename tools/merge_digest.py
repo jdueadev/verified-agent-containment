@@ -101,6 +101,7 @@ def collect(repo, since=None, commit=None, span=None):
                 "base": (pr.get("base") or {}).get("ref", ""),
                 "merge_commit_sha": pr.get("merge_commit_sha", ""),
                 "head_sha": head,
+                "fork": ((pr.get("head") or {}).get("repo") or {}).get("full_name") != repo,
                 "reviews": reviews or [],
                 "commits": commits or [],
             }
@@ -157,6 +158,9 @@ def analyze(merge):
         state = "not needed"
     elif policy_check.approved(pr.get("reviews", []), owner, pr.get("head_sha")):
         state = "approved"
+    elif policy_check.trusted_change(pr.get("author"), pr.get("commits"), policy_check.load_trusted(lanes_text),
+                                     pr.get("fork", True))[0]:
+        state = "trusted author and commits"
     elif (pr.get("author") or "").lower() == login and (pr.get("merged_by") or "").lower() == login:
         state = ("maintainer merge (bypass)" if owner_commits_only(pr.get("commits"), login)
                  else "maintainer merge (bypass) of commits not proven to be the owner's")
@@ -170,7 +174,7 @@ def analyze(merge):
         "claims": [h["id"] for h in hits],
         "lab_claims": [h["id"] for h in hits if h["needs_lab"]],
         "approval": state,
-        "alert": state not in ("approved", "not needed", "maintainer merge (bypass)"),
+        "alert": state not in ("approved", "not needed", "trusted author and commits", "maintainer merge (bypass)"),
     }
 
 

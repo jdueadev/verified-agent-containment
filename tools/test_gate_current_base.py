@@ -48,6 +48,8 @@ class CurrentBase(unittest.TestCase):
                 return data["activity"]
             if path.startswith(f"repos/{REPO}/issues/{number}/timeline?"):
                 return data["timeline"]
+            if path.startswith(f"repos/{REPO}/pulls/{number}/commits?"):
+                return []
             raise AssertionError(f"unexpected GET {path}")
 
         def fetch_head(pr):
@@ -58,7 +60,7 @@ class CurrentBase(unittest.TestCase):
             seen["changed_from"] = base
             return ["src/x.rs"]
 
-        def policy_result(pr, merge_base, reviews_file, enforce):
+        def policy_result(pr, merge_base, reviews_file, enforce, commits_file=None):
             seen["policy_base"], seen["merge_base"] = pr["base"]["sha"], merge_base
             return True, "ok"
 

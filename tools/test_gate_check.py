@@ -514,6 +514,20 @@ class PolicyResult(unittest.TestCase):
                                lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", "")):
             self.assertTrue(gc.policy_result(PR, "c" * 40, "r.json", False)[0])
 
+    def test_the_commit_list_reaches_classify_only_when_given(self):
+        seen = []
+
+        def fake_run(cmd, **kw):
+            seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with mock.patch.object(gc.subprocess, "run", fake_run):
+            gc.policy_result(PR, "c" * 40, "r.json", True, "commits.json")
+            gc.policy_result(PR, "c" * 40, "r.json", True)
+        with_list, without = [c for c in seen if "classify" in c]
+        self.assertEqual(with_list[with_list.index("--commits") + 1], "commits.json")
+        self.assertNotIn("--commits", without)
+
 
 def openssl(*args, data=None):
     return subprocess.run(["openssl", *args], input=data, capture_output=True, check=True).stdout

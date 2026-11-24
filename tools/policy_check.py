@@ -3,7 +3,7 @@
 
 Usage:
   policy_check.py classify --base REF [--head REF] [--map-ref REF] [--reviews FILE --head-sha SHA]
-                           [--fork] [--author LOGIN] [--enforce]
+                           [--fork] [--author LOGIN] [--commits FILE] [--enforce]
   policy_check.py codeowners [--write]
   policy_check.py invariants [--ref REF]
   policy_check.py fresh-reviews --head-sha SHA --reviews FILE --activity FILE --pr FILE --timeline FILE
@@ -15,10 +15,12 @@ classify   prints the lane of the diff between two commits. Lanes are defined in
            departs from written-once handovers (a rewrite, rename, re-used
            path, removal, or handover mixed with other work). With --enforce, a lane C change (or any change from a
            fork) fails unless the maintainer approved the head commit. A lane C
-           change by an author on the lane map's `trusted` list needs no
-           approval; a fork always does, whoever its author is. The list comes
+           change needs no approval when its author is on the lane map's
+           `trusted` list and so is the author and committer of every commit in
+           --commits (the API's JSON), each with a signature GitHub verified
+           (#235); a fork always needs it, whoever its author is. The list comes
            from --map-ref, so a change cannot add its own author. Without
-           --author nobody is trusted.
+           --author or --commits nobody is trusted.
 codeowners checks that .github/CODEOWNERS is exactly lane C (--write regenerates it).
 invariants checks rules that hold on every commit: `sabotage` is not a default
            feature, the lane map parses, CODEOWNERS matches it, and the kernel
@@ -101,6 +103,58 @@ def load_trusted(text):
 def is_trusted(author, trusted):
     """True when `author` is on the trusted list. No author is never trusted."""
     return bool(author) and author.lstrip("@").lower() in trusted
+
+
+COMMIT_LIST_LIMIT = 250
+
+
+def flat_commits(commits):
+    """The commits of GET /pulls/N/commits, whether paged by --slurp or already flat."""
+    return [c for page in commits for c in (page if isinstance(page, list) else [page])]
+
+
+def untrusted_commits(commits, trusted):
+    """Why the pull request's commits cannot be shown to come from trusted logins only,
+    or None. Every commit needs a trusted author and committer and a signature GitHub
+    verified. `web-flow` signs whatever author the API caller names, so it proves nothing.
+    The API lists at most 250 commits, so a list that long may be missing some."""
+    if commits is None:
+        return "its commits were not given"
+    if not isinstance(commits, list):
+        return "its commit list is not the API's JSON"
+    flat = flat_commits(commits)
+    if not flat:
+        return "it lists no commits"
+    if len(flat) >= COMMIT_LIST_LIMIT:
+        return f"it has {COMMIT_LIST_LIMIT} or more commits, more than the API lists"
+    for c in flat:
+        if not isinstance(c, dict):
+            return "its commit list is not the API's JSON"
+        sha = str(c.get("sha") or "?")[:12]
+        author = (c.get("author") or {}).get("login") or ""
+        committer = (c.get("committer") or {}).get("login") or ""
+        verified = ((c.get("commit") or {}).get("verification") or {}).get("verified") is True
+        if committer.lower() == "web-flow":
+            return f"commit {sha} was committed by web-flow, whose signature does not prove its author"
+        if not is_trusted(author, trusted):
+            return f"commit {sha} is authored by {author or 'no GitHub account'}, which is not trusted"
+        if not is_trusted(committer, trusted):
+            return f"commit {sha} is committed by {committer or 'no GitHub account'}, which is not trusted"
+        if not verified:
+            return f"commit {sha} has no signature GitHub verified"
+    return None
+
+
+def trusted_change(author, commits, trusted, fork):
+    """(True, None) when a lane C change needs no approval: it is not from a fork, its
+    author is trusted, and so is every commit (untrusted_commits). Otherwise (False, why).
+    `policy`, the gate and the merge digest all decide with this one rule (#235)."""
+    if fork:
+        return False, "it comes from a fork"
+    if not is_trusted(author, trusted):
+        return False, f"its author {author or '(none)'} is not trusted"
+    why = untrusted_commits(commits, trusted)
+    return (False, why) if why else (True, None)
 
 
 def lane_match(path, pattern):
@@ -996,6 +1050,7 @@ def main(argv=None):
     c.add_argument("--head-sha")
     c.add_argument("--fork", action="store_true")
     c.add_argument("--author", help="login of the pull request's author, from the event")
+    c.add_argument("--commits", help="the pull request's commits, as GET /pulls/N/commits returns them")
     c.add_argument("--enforce", action="store_true")
     o = sub.add_parser("codeowners")
     o.add_argument("--write", action="store_true")
@@ -1053,18 +1108,21 @@ def run(parser, args):
         handovers = (tree_entries(args.base, HANDOVER_DIR), tree_entries(args.head, HANDOVER_DIR),
                      earlier_handovers(args.base))
         result = classify(paths, base_get, head_get, lanes, spec_links(args.head, paths), handovers)
-        author_trusted = is_trusted(args.author, trusted)
-        needs_owner = (result["lane"] == "C" and not author_trusted) or args.fork
+        commits = json.loads(Path(args.commits).read_text(encoding="utf-8")) if args.commits else None
+        change_trusted, not_trusted_why = trusted_change(args.author, commits, trusted, args.fork)
+        needs_owner = (result["lane"] == "C" and not change_trusted) or args.fork
         reviews = json.loads(Path(args.reviews).read_text(encoding="utf-8")) if args.reviews else []
         result["fork"] = args.fork
         result["author"] = args.author
-        result["trusted"] = author_trusted
+        result["trusted"] = change_trusted
+        result["not_trusted_because"] = not_trusted_why
         result["needs_maintainer"] = needs_owner
         result["approved"] = approved(reviews, owner, args.head_sha) if needs_owner else None
         result["enforced"] = args.enforce
         print(json.dumps(result, indent=2))
         if needs_owner and not result["approved"]:
-            why = "it comes from a fork" if args.fork and result["lane"] != "C" else "it is lane C"
+            why = "it comes from a fork" if args.fork and result["lane"] != "C" \
+                else f"it is lane C and {not_trusted_why}"
             print(f"policy: this change needs {owner}'s approval of the head commit because {why}.", file=sys.stderr)
             return 1 if args.enforce else 0
         return 0

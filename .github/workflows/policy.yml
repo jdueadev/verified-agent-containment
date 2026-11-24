@@ -7,8 +7,9 @@ name: policy
 #
 # Until the repository variable POLICY_ENFORCE is "true" the job reports the
 # lane and passes. With it on, a lane C change needs the maintainer's approval
-# of the head unless its author is on the `trusted` list in the base branch's
-# ci/lanes.toml (#206); a fork always needs it. The author comes from the event,
+# of the head unless its author, and the author and committer of every commit,
+# are on the `trusted` list in the base branch's ci/lanes.toml (#206, #235); a
+# fork always needs it. The author comes from the event,
 # never from the pull request's text. Only an approval submitted after the head
 # arrived counts (#149): GitHub moves an old approval's commit_id onto a new
 # head, which let #79, #93 and #101 merge on approvals of earlier heads.
@@ -79,10 +80,13 @@ jobs:
               > "$RUNNER_TEMP/fresh-reviews.json"
             mv "$RUNNER_TEMP/fresh-reviews.json" "$RUNNER_TEMP/reviews.json"
           fi
+          # Who wrote every commit decides whether a trusted author's lane C change needs the owner (#235).
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$PR/commits?per_page=100" > "$RUNNER_TEMP/commits.json"
           # The diff and ratchets start from the merge base; the lane map is the target branch's current one.
           args=(classify --base "$base" --map-ref "$BASE_SHA" --head "$HEAD_SHA" --reviews "$RUNNER_TEMP/reviews.json" --head-sha "$HEAD_SHA")
           if [ "$FORK" = "true" ]; then args+=(--fork); fi
           if grep -q -- '"--author"' tools/policy_check.py; then args+=(--author "$AUTHOR"); fi
+          if grep -q -- '"--commits"' tools/policy_check.py; then args+=(--commits "$RUNNER_TEMP/commits.json"); fi
           if [ "$ENFORCE" = "true" ]; then args+=(--enforce); fi
           # Run the classifier in this shell, not inside a pipeline, so its exit status survives.
           code=0

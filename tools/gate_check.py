@@ -443,11 +443,14 @@ def changed_paths(base, head):
     return [p for p in git("diff", "--name-only", "--no-renames", "-z", base, head).split("\0") if p]
 
 
-def policy_result(pr, merge_base, reviews_file, enforce):
-    """main's checkers against the head, with the arguments policy.yml uses. None runs head code."""
+def policy_result(pr, merge_base, reviews_file, enforce, commits_file=None):
+    """main's checkers against the head, with the arguments policy.yml uses. None runs head code.
+    Without commits_file no change is trusted, so a lane C head then needs the owner (#235)."""
     head, base_sha = pr["head"]["sha"], pr["base"]["sha"]
     classify = ["classify", "--base", merge_base, "--map-ref", base_sha, "--head", head,
                 "--reviews", str(reviews_file), "--head-sha", head] + (["--enforce"] if enforce else [])
+    if commits_file:
+        classify += ["--commits", str(commits_file)]
     head_repo = ((pr.get("head") or {}).get("repo") or {}).get("full_name")
     base_repo = ((pr.get("base") or {}).get("repo") or {}).get("full_name")
     if not head_repo or head_repo != base_repo:
@@ -497,8 +500,11 @@ def judge(head_sha):
             for rs in by_path.values() for r in rs if r.get("status") == "completed"}
     reviews_file = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / f"gate-reviews-{head_sha}.json"
     reviews_file.write_text(json.dumps(reviews), encoding="utf-8")
+    commits_file = reviews_file.with_name(f"gate-commits-{head_sha}.json")
+    commits_file.write_text(json.dumps(pages(f"repos/{repo}/pulls/{pr['number']}/commits?per_page=100")),
+                            encoding="utf-8")
     # Always enforcing: gate/policy is the authority, whatever POLICY_ENFORCE says.
-    policy = policy_result(now, merge_base, reviews_file, True)
+    policy = policy_result(now, merge_base, reviews_file, True, commits_file)
     return pr["number"], verdicts(pr, by_path, jobs, changed, reviews, owner, policy, ignored)
 
 

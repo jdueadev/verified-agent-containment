@@ -32,6 +32,7 @@ import merge_digest as md
 import policy_check as pc
 
 LANES_BEFORE = """owner = "@jdueadev"
+trusted = ["@jdueadev", "@jdueadev-agent", "@claude"]
 
 [lanes]
 C = ["ci/**", "tools/**"]
@@ -182,6 +183,25 @@ class AnalyzeTests(unittest.TestCase):
             with self.subTest(name=name):
                 data = pr(self.c, author="jdueadev", merged_by="jdueadev", commits=commits)
                 self.assertEqual(self.state(self.c, data), (bad, True))
+
+    def test_a_lane_c_merge_by_a_trusted_author_with_trusted_commits_is_no_alert(self):
+        agents = [[commit("claude", "claude"), commit("jdueadev-agent", "jdueadev-agent")]]
+        self.assertEqual(self.state(self.c, pr(self.c, author="jdueadev", merged_by="jdueadev",
+                                               commits=agents, fork=False)),
+                         ("trusted author and commits", False))
+
+    def test_a_trusted_merge_needs_every_commit_trusted_and_no_fork(self):
+        cases = {
+            "an untrusted commit": ([[commit("claude", "claude"), commit("someone", "someone")]], False),
+            "from a fork": ([[commit("claude", "claude")]], True),
+            "fork unknown": ([[commit("claude", "claude")]], None),
+        }
+        for name, (commits, fork) in cases.items():
+            with self.subTest(name=name):
+                extra = {"commits": commits} if fork is None else {"commits": commits, "fork": fork}
+                approval, alert = self.state(self.c, pr(self.c, author="jdueadev-agent",
+                                                        merged_by="jdueadev-agent", **extra))
+                self.assertEqual((approval, alert), ("UNAPPROVED", True))
 
     def test_the_merged_tree_must_be_the_approved_heads_tree(self):
         other = full(LANE_B)

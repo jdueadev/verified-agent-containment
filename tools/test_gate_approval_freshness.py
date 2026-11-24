@@ -74,6 +74,8 @@ class Judge(unittest.TestCase):
                 return data["activity"]
             if path.startswith(f"repos/{REPO}/issues/{data['pr']['number']}/timeline?"):
                 return data["timeline"]
+            if path.startswith(f"repos/{REPO}/pulls/{data['pr']['number']}/commits?"):
+                return []
             raise AssertionError(f"unexpected GET {path}")
 
         def gh(path):
@@ -86,7 +88,7 @@ class Judge(unittest.TestCase):
         def merge_problem(claims, pr, workflows_approved, git=None):
             seen["workflows_approved"] = workflows_approved
 
-        def policy_result(pr, merge_base, reviews_file, enforce):
+        def policy_result(pr, merge_base, reviews_file, enforce, commits_file=None):
             seen["policy_reviews"] = json.loads(Path(reviews_file).read_text(encoding="utf-8"))
             return True, "ok"
 
