@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""workflow_lint.py keeps the release gate strict (#175): release.yml runs
-`python3 tools/claims_check.py --strict` as a whole step, unskipped and unsoftened."""
 import unittest
 from pathlib import Path
 
@@ -69,7 +67,6 @@ class ReleaseGate(unittest.TestCase):
         self.assertTrue(self.errors(text), text)
 
     def test_a_run_nested_in_env_or_with_does_not_count(self):
-        # Security review: env: {run: ...} matched the old rule while the real run was not strict.
         for nest in ("env", "with"):
             text = GOOD.replace("        run: python3 tools/claims_check.py --strict\n",
                                 f"        run: python3 tools/claims_check.py\n        {nest}:\n"
@@ -94,6 +91,21 @@ class ReleaseGate(unittest.TestCase):
             text = GOOD.replace('on:\n  push:\n    tags: ["v*"]\n', on)
             with self.subTest(on=on):
                 self.assertTrue(any("must run on push of tags" in e for e in self.errors(text)), text)
+
+    def test_a_trigger_with_no_value_is_refused(self):
+        for extra in ("  workflow_dispatch:\n", "  pull_request_target:\n", "  'workflow_dispatch':\n",
+                      "  workflow_dispatch: # manual\n", "    branches:\n"):
+            text = GOOD.replace('    tags: ["v*"]\n', '    tags: ["v*"]\n' + extra)
+            with self.subTest(extra=extra):
+                self.assertTrue(any("must run on push of tags" in e for e in self.errors(text)), text)
+
+    def test_a_second_on_key_is_refused(self):
+        text = GOOD + "on:\n  workflow_dispatch:\n"
+        self.assertTrue(any("must run on push of tags" in e for e in self.errors(text)), text)
+
+    def test_a_trigger_with_an_empty_mapping_fails_the_lint(self):
+        text = GOOD.replace('    tags: ["v*"]\n', '    tags: ["v*"]\n  workflow_dispatch: {}\n')
+        self.assertTrue(wl.lint(wl.RELEASE, text, set()), text)
 
 
 if __name__ == "__main__":

@@ -46,7 +46,8 @@ items, block-scalar indentation indicators, a lone CR or other Unicode line
 breaks, and lines it cannot classify.
 
 The release gate stays strict (#175): `.github/workflows/release.yml` must
-exist, run on `push` of tags `v*` and nothing else, and have a step whose whole
+exist, run on `push` of tags `v*` and nothing else (a trigger key with no value
+and a second `on:` count too), and have a step whose whole
 `run:` is `python3 tools/claims_check.py --strict`. Nothing under it may skip
 or soften a step or swap what runs it: no `if`, `continue-on-error`, `shell`,
 `env`, `container`, `services`, `defaults` or `working-directory`. This is a
@@ -300,6 +301,32 @@ RELEASE_REFUSED = ("if", "continue-on-error", "shell", "env", "container", "serv
                    "working-directory")
 
 
+RELEASE_TRIGGER_KEYS = [["on", "push"], ["on", "push", "tags"]]
+
+
+def trigger_keys(text):
+    """Every key under each top-level `on`, as its path, whether or not it has a value, and
+    how many `on` keys there are. A trigger written with no value is no scalar to parse()."""
+    paths, stack, blocks = [], [], 0
+    for raw in text.replace("\r\n", "\n").split("\n"):
+        stripped = raw.strip(" ")
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        match = KEY.fullmatch(raw[indent:])
+        if indent == 0:
+            stack = [(0, unquote(match.group("key")))] if match else []
+            blocks += stack[:1] == [(0, "on")]
+            continue
+        if stack[:1] != [(0, "on")]:
+            continue
+        while len(stack) > 1 and stack[-1][0] >= indent:
+            stack.pop()
+        stack.append((indent, unquote(match.group("key")) if match else stripped))
+        paths.append([key for _, key in stack])
+    return paths, blocks
+
+
 def release_gate(files):
     """release.yml runs the strict claims check as a step of its own, which no condition
     skips and no continue-on-error softens (#175)."""
@@ -316,8 +343,10 @@ def release_gate(files):
             errors.append(f"{RELEASE}:{s.line}: '{key}' in the release workflow; the strict claims check "
                           "must run on every tag, as written, and fail the release when it fails")
     triggers = [(s.path, s.text.strip()) for s in scalars if s.path[:1] == ["on"]]
-    if triggers != [(["on", "push", "tags"], '["v*"]')]:
-        errors.append(f"{RELEASE}: must run on push of tags [\"v*\"] and nothing else, not {triggers}")
+    keys, blocks = trigger_keys(text.removeprefix("\ufeff"))
+    if triggers != [(["on", "push", "tags"], '["v*"]')] or keys != RELEASE_TRIGGER_KEYS or blocks != 1:
+        errors.append(f"{RELEASE}: must run on push of tags [\"v*\"] and nothing else, not {triggers}, "
+                      f"keys {keys} in {blocks} 'on' blocks")
     in_jobs = [s for s in scalars if len(s.path) >= 2 and s.path[0] == "jobs"]
     # jobs.<id>.steps.run, exactly: a `run` key nested under a step's env: or with: is not the step's script.
     if not any(len(s.path) == 4 and s.path[2:] == ["steps", "run"] and s.text.strip() == RELEASE_GATE

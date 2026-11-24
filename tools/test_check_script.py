@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""scripts/check.sh's arguments decide how claims_check.py runs (#175).
-
-The real scripts/check.sh runs in a scratch tree, with a stub for every tool it calls
-first on PATH. Each stub records its argv, so the test sees the claims_check.py
-invocation each argument list produces, not what the script's text seems to say.
-"""
 import os
 import shutil
 import subprocess
@@ -66,7 +60,6 @@ class CheckScriptArgs(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_the_last_strict_flag_cannot_be_undone(self):
-        # --strict then --no-strict stays strict: --no-strict only says it is the default.
         child, _, claims = self.run_check("--strict", "--no-strict")
         self.assertEqual(child.returncode, 0, child.stderr)
         self.assertEqual(claims, ["python3 tools/claims_check.py --strict"])
