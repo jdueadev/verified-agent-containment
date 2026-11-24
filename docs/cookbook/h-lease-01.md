@@ -79,7 +79,8 @@ at the commit you are looking at.
   different builds, and a full unwaived timed run. CI-10, in either mode,
   requires every tracked `results/ci/lab-<sha>/` that is not on the `legacy`
   list in [`ci/lab-attestation.toml`](../../ci/lab-attestation.toml) to carry
-  a GitHub OIDC token binding every committed byte.
+  a GitHub OIDC token whose audience binds the SHA-256 of `attack-suite.json`,
+  `live-suite.json` and `environment.txt`.
 - The rendered result is the claim's row in [`docs/claims.md`](../claims.md).
 
 ## Reproduce
