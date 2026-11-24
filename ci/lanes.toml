@@ -16,6 +16,12 @@
 
 owner = "@jdueadev"
 
+# Authors whose lane C changes merge without the owner's approval (#206). The
+# owner and the agents the project runs are trusted; outside collaborators are
+# not. `policy` reads this list from the target branch, so a change cannot add
+# its own author. A fork always needs the owner, whoever opened it.
+trusted = ["@jdueadev", "@jdueadev-agent", "@vac-agent-app[bot]", "@vac-lab-runner[bot]"]
+
 [lanes]
 C = [
   # The rules and the machinery that enforces them.
@@ -53,6 +59,9 @@ C = [
   "tools/generate_proof.py",
   # After-the-fact audit of merges to main (#54, #71).
   "tools/merge_digest.py",
+  # A no-root driver (#180). It starts commands as the person who runs it, so it
+  # is trusted base, listed by name rather than left to the unlisted default.
+  "tools/vac.py",
   # Writes lab evidence from a CI run (#53).
   "tools/lab_record.py",
   # The attack harness, live suite and red-team runner decide what "passed"
