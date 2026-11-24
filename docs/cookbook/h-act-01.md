@@ -103,5 +103,8 @@ follow-up pull request.
 - **The order of actions is a kernel claim.** That every stop revokes secrets
   and blocks egress before it freezes or kills is K-PLAN-01, proved on the Bend
   model. This claim is about the host carrying out whatever plan it is given.
-- **Host code can fool the lab.** That is why host code is lane C and needs
-  the maintainer ([`docs/decisions/0004-host-code-in-lane-c.md`](../decisions/0004-host-code-in-lane-c.md)).
+- **Host code can fool the lab.** That is why host code is lane C
+  ([`docs/decisions/0004-host-code-in-lane-c.md`](../decisions/0004-host-code-in-lane-c.md)).
+  The maintainer's approval is required for an author who is not on the
+  `trusted` list in `ci/lanes.toml`, and for every pull request from a fork
+  ([AGENTS.md](../../AGENTS.md)).
