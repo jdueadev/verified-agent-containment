@@ -1092,8 +1092,7 @@ def landed_tree_matches(previous, commit, head_sha):
     if not head_sha:
         return False
     try:
-        merge_base = git("merge-base", previous, head_sha).strip()
-        tree = git("merge-tree", "--write-tree", "--merge-base", merge_base, previous, head_sha).split()[0]
+        tree = git("merge-tree", "--write-tree", previous, head_sha).split()[0]
         return tree == git("rev-parse", f"{commit}^{{tree}}").strip()
     except (subprocess.CalledProcessError, IndexError):
         return False
