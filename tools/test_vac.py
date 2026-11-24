@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
-"""Unit tests for the no-root driver, tools/vac.py.
-
-No network and no cargo: the root-command refusals and --help are subprocesses
-of vac itself, and the summary is rendered in-process. Nothing here starts a
-build, a test suite, or scripts/check.sh.
-"""
+import argparse
 import contextlib
+import importlib
 import importlib.util
 import io
 import json
@@ -55,13 +51,14 @@ class Refusals(unittest.TestCase):
     def test_refused_commands_are_exactly_the_root_set(self):
         self.assertEqual(vac.REFUSED, ROOT_COMMANDS)
 
-    def test_root_commands_exit_2_citing_inv_11(self):
+    def test_root_commands_exit_2_citing_the_lab_restriction(self):
         for name in ROOT_COMMANDS:
             with self.subTest(name=name):
                 child = run_vac(name)
                 self.assertEqual(child.returncode, 2, child.stdout + child.stderr)
                 self.assertEqual(child.stdout, "")
-                self.assertIn("INV-11", child.stderr)
+                self.assertIn("LAB-THROWAWAY", child.stderr)
+                self.assertNotIn("INV-", child.stderr)
                 self.assertIn("AGENTS.md", child.stderr)
                 self.assertIn("throwaway", child.stderr)
                 self.assertNotIn("Traceback", child.stderr)
@@ -116,90 +113,11 @@ class Summary(unittest.TestCase):
         self.assertIn("tier: T0 (checks run: none)", text)
         self.assertNotRegex(text, r"T[12]")
 
-    def test_check_names_do_not_look_like_a_higher_tier(self):
-        for check in vac.CHECKS:
-            self.assertNotRegex(check.name, r"T[12]")
-
-
 class Checks(unittest.TestCase):
-    def test_t0_commands_match_the_no_root_set(self):
-        by_name = {check.name: check.argv for check in vac.CHECKS}
-        self.assertEqual(
-            list(by_name),
-            ["policy", "claims", "kernel", "differential", "unittest"],
-        )
-        self.assertEqual(by_name["policy"], ("python3", "tools/policy_check.py", "invariants"))
-        self.assertEqual(
-            by_name["claims"],
-            ("python3", "tools/claims_check.py", "--affected", "origin/main"),
-        )
-        self.assertEqual(
-            by_name["kernel"],
-            ("cargo", "test", "-q", "--locked", "-p", "containment-kernel"),
-        )
-        self.assertEqual(
-            by_name["differential"],
-            ("target/debug/containment-lab", "differential-cases", "3", "24301"),
-        )
-        self.assertEqual(
-            by_name["unittest"],
-            ("python3", "-m", "unittest", "discover", "-s", "tools", "-p", "test_*.py"),
-        )
-        blob = " ".join(" ".join(check.argv) for check in vac.CHECKS)
-        self.assertNotIn("check.sh", blob)
-        self.assertNotIn("scripts/", blob)
-        self.assertEqual(vac.BUILD_ARGV, ("cargo", "build", "-q", "--locked", "-p", "containment-host"))
-
-    def test_a_failure_does_not_stop_the_later_checks(self):
-        seen = []
-
-        def fake(check):
-            seen.append(check.name)
-            if check.name == "policy":
-                return "FAIL", 0.1
-            if check.name == "claims":
-                return "SKIPPED", 0.0
-            return "PASS", 0.2
-
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rows, code = vac.run_selected(vac.CHECKS, fake)
-        self.assertEqual(seen, [check.name for check in vac.CHECKS])
-        self.assertEqual(code, 1)
-        text = vac.format_summary(rows)
-        self.assertIn("tier: T0 (checks run: kernel, differential, unittest)", text)
-        self.assertNotRegex(text, r"T[12]")
-        self.assertNotIn("tier:", buf.getvalue())
-
-    def test_skips_are_not_failures(self):
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rows, code = vac.run_selected(
-                (vac.Check("claims", ()),),
-                lambda check: ("SKIPPED", 0.0),
-            )
-        self.assertEqual(code, 0)
-        self.assertEqual(rows, [("claims", "SKIPPED", 0.0)])
-        text = vac.format_summary(rows)
-        self.assertIn("tier: T0 (checks run: none)", text)
-        self.assertNotRegex(text, r"T[12]")
-
-    def test_claims_is_skipped_when_origin_main_is_missing(self):
-        check = next(item for item in vac.CHECKS if item.name == "claims")
-        original = vac.git_ref_exists
-        vac.git_ref_exists = lambda ref: False
-        out = io.StringIO()
-        try:
-            with contextlib.redirect_stdout(out):
-                status, _seconds = vac.run_one(check)
-        finally:
-            vac.git_ref_exists = original
-        self.assertEqual(status, "SKIPPED")
-        self.assertIn("SKIPPED claims: origin/main is missing", out.getvalue())
-
     def test_a_missing_driver_fails_with_a_clear_message(self):
         original = vac.DRIVER_REL
-        vac.DRIVER_REL = Path(".claude/skills/run-verified-agent-containment/missing-driver.mjs")
+        missing = Path(".claude/skills/run-verified-agent-containment/missing-driver.mjs")
+        vac.DRIVER_REL = missing
         err = io.StringIO()
         try:
             with contextlib.redirect_stderr(err):
@@ -209,15 +127,62 @@ class Checks(unittest.TestCase):
         self.assertEqual(code, 1)
         message = err.getvalue()
         self.assertIn("absent", message)
-        self.assertIn(str(vac.DRIVER_REL), message)
+        self.assertIn(str(missing), message)
         self.assertNotIn("Traceback", message)
+
+
+class VerifyRecord(unittest.TestCase):
+    def record(self, answers):
+        core, registry = vac.load_registry()
+        verify = importlib.import_module("vac_verify")
+        queued, recorded = list(answers), []
+        saved = (vac.git, core.run, core.render_text, verify.record)
+        vac.git = lambda args, cwd=None: queued.pop(0)
+        core.run = lambda rules, stage, ctx: [core.Outcome(registry.RULES[0], "PASS", (), ())]
+        core.render_text = lambda *args, **kwargs: None
+        verify.record = lambda root, head: recorded.append(head) or ["C-1"]
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                code = vac.cmd_verify(argparse.Namespace(action="record", base="origin/main"))
+        finally:
+            vac.git, core.run, core.render_text, verify.record = saved
+        return code, err.getvalue(), recorded
+
+    def test_a_stable_head_is_recorded(self):
+        head = (0, "a" * 40 + "\n", "")
+        code, err, recorded = self.record([(0, "", ""), head, (0, "", ""), head])
+        self.assertEqual((code, err, recorded), (0, "", ["a" * 40]))
+
+    def test_a_tracked_file_the_t1_run_changed_refuses_the_record(self):
+        head = (0, "a" * 40 + "\n", "")
+        for changed in (" M formal/PROOF.bend\n", " M results/mutation-check.json\n"):
+            with self.subTest(changed=changed):
+                code, err, recorded = self.record([(0, "", ""), head, (0, changed, ""), head])
+                self.assertEqual((code, recorded), (2, []))
+                self.assertIn("changed during the T1 run", err)
+
+    def test_any_uncommitted_change_refuses_the_record(self):
+        code, err, recorded = self.record([(0, " M Cargo.toml\n", "")])
+        self.assertEqual((code, recorded), (2, []))
+        self.assertIn("commit every change first", err)
+
+    def test_a_failed_git_status_is_no_clean_checkout(self):
+        code, err, recorded = self.record([(1, "", "fatal: not a git repository\n")])
+        self.assertEqual((code, recorded), (2, []))
+        self.assertIn("git status failed", err)
+
+    def test_a_head_that_moves_during_the_run_is_never_recorded(self):
+        code, err, recorded = self.record([(0, "", ""), (0, "a" * 40 + "\n", ""), (0, "", ""), (0, "b" * 40 + "\n", "")])
+        self.assertEqual((code, recorded), (2, []))
+        self.assertIn("HEAD moved from aaaaaaaaaaaa to bbbbbbbbbbbb", err)
 
 
 class Shape(unittest.TestCase):
     def test_shebang_and_executable_bit(self):
-        text = VAC_PATH.read_text(encoding="utf-8")
-        self.assertTrue(text.startswith("#!/usr/bin/env python3\n"))
-        self.assertNotIn("\r", text)
+        raw = VAC_PATH.read_bytes()
+        self.assertTrue(raw.startswith(b"#!/usr/bin/env python3\n"))
+        self.assertNotIn(b"\r", raw)
         self.assertTrue(VAC_PATH.stat().st_mode & 0o111)
 
 
@@ -229,8 +194,6 @@ CLAIMS = [
 
 
 class Preflight(unittest.TestCase):
-    """vac preflight and vac lab plan (#178 follow-up): no root, nothing recorded."""
-
     def test_engine_choice(self):
         has = lambda names: (lambda name: f"/usr/bin/{name}" if name in names else None)
         self.assertEqual(vac.pick_engine("auto", has({"podman", "docker"}), True), "podman")
@@ -266,7 +229,6 @@ class Preflight(unittest.TestCase):
         for stale, problem in (([("L-ISO-02", ["scenario:sandbox_escape"], ["wsl2-6.18.58"])], None),
                                ([], None), (None, "boom")):
             text = vac.format_not_exercised(stale, problem)
-            # Scan finding: never "nothing"; a preflight exercises no lab evidence.
             self.assertTrue(text.startswith("not exercised: any lab evidence"), text)
             self.assertNotIn("not exercised: nothing", text)
         self.assertIn("L-ISO-02: scenario:sandbox_escape", vac.format_not_exercised(
@@ -281,13 +243,13 @@ class Preflight(unittest.TestCase):
 
     def test_lab_plan_is_text_for_the_maintainer(self):
         text = vac.lab_plan_text("0babf9e", [("L-ISO-02", ["scenario:sandbox_escape"], ["wsl2-6.18.58"])])
-        for needle in ("the maintainer runs this, never an agent", "INV-11", "git checkout --detach 0babf9e",
+        for needle in ("the maintainer runs this, never an agent", "LAB-THROWAWAY", "git checkout --detach 0babf9e",
                        "git bundle create repo.bundle HEAD", "rev-parse HEAD",
-                       "run-lab.cmd -Only suites", "throwaway WSL2 distro", "INV-1: an agent never writes these",
+                       "run-lab.cmd -Only suites", "throwaway WSL2 distro", "An agent never writes these",
                        "claims_check.py --strict", "L-ISO-02"):
             self.assertIn(needle, text)
+        self.assertNotIn("INV-", text)
         self.assertNotIn("\r", text)
-        # Scan finding: an unreadable strict check is "unknown", never "none".
         unknown = vac.lab_plan_text("0babf9e", None, "the strict claims check failed")
         self.assertIn("unknown: the strict claims check failed", unknown)
         self.assertNotIn("none: the strict claims check reports no stale claim", unknown)
@@ -314,18 +276,25 @@ class Preflight(unittest.TestCase):
 
     def test_lab_plan_runs_nothing_but_the_read_only_check(self):
         calls = []
+        strict = [sys.executable, "tools/claims_check.py", "--strict"]
         real_run, real_git = vac.subprocess.run, vac.git
+
+        class Done:
+            returncode, stdout = 0, json.dumps({"errors": []})
+
         def spy(argv, *args, **kwargs):
             calls.append(list(argv))
-            return real_run(argv, *args, **kwargs)
+            if list(argv) != strict:
+                raise AssertionError(f"vac lab plan started {argv}")
+            return Done()
         vac.subprocess.run = spy
+        vac.git = lambda argv: (0, "f" * 40 + "\n", "")
         try:
             with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
                 vac.cmd_lab(None)
         finally:
-            vac.subprocess.run = real_run
-        ran = [argv for argv in calls if argv[:1] != ["git"]]
-        self.assertEqual(ran, [[sys.executable, "tools/claims_check.py", "--strict"]])
+            vac.subprocess.run, vac.git = real_run, real_git
+        self.assertEqual(calls, [strict])
         self.assertIn("Root lab run (T2)", out.getvalue())
 
 

@@ -1,0 +1,9 @@
+repository_id = "1464539531"
+workflow = ".github/workflows/lab.yaml"
+environment = "evidence"
+refs = ["refs/heads/main"]
+audience_prefix = "lab-evidence:"
+legacy = [
+  "results/ci/lab-9263878b598c472f65aa58b3116ed959323b98fa",
+  "results/ci/lab-a38ad0086aec46c6b33229f43da52065e8c76e11",
+]

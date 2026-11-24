@@ -27,7 +27,15 @@
 /tools/generate_proof.py @jdueadev
 /tools/merge_digest.py @jdueadev
 /tools/vac.py @jdueadev
+/tools/vac_core.py @jdueadev
+/tools/vac_rules.py @jdueadev
+/tools/vac_verify.py @jdueadev
+/tools/vac_safety.py @jdueadev
+/tools/vac_gen.py @jdueadev
+/tools/results_ratchet.py @jdueadev
+/tools/vac_comments.py @jdueadev
 /tools/lab_record.py @jdueadev
+/tools/lab_attest.py @jdueadev
 /crates/containment-host/src/harness.rs @jdueadev
 /crates/containment-host/src/live_suite.rs @jdueadev
 /crates/containment-host/src/redteam.rs @jdueadev

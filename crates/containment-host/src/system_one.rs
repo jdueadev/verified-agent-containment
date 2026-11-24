@@ -155,9 +155,10 @@ fn probe_isolation(private_file: &str) -> Value {
         (unix, inet, x32, uring, userns, tgkill, kill_self, fork)
     };
     let refused = |r: (i32, i32)| if r.0 >= 0 { 0 } else { r.1 };
-    // SAFETY: getuid has no preconditions; PR_GET_PDEATHSIG writes one int.
+    // SAFETY: getuid has no preconditions.
     let uid = unsafe { libc::getuid() };
     let mut death_signal = 0_i32;
+    // SAFETY: PR_GET_PDEATHSIG writes one int to a live local.
     unsafe { libc::prctl(libc::PR_GET_PDEATHSIG, &mut death_signal as *mut i32) };
     let interfaces = std::fs::read_to_string("/proc/net/dev").ok().map(|t| t.lines().skip(2).count());
     // Open descriptors other than the one read_dir itself uses.
@@ -176,8 +177,9 @@ fn probe_isolation(private_file: &str) -> Value {
 
 pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let [profile, scenario, private_file] = args else { return Err("system-one arguments are invalid".into()) };
-    // SAFETY: the controller passes these descriptors open; nothing else owns them.
+    // SAFETY: the controller passes this descriptor open; nothing else owns it.
     let trace = unsafe { File::from_raw_fd(TRACE_FD) };
+    // SAFETY: the controller passes this descriptor open; nothing else owns it.
     let out = unsafe { UnixDatagram::from_raw_fd(VERDICT_FD) };
     let started = Instant::now();
     let send = |v: Value| out.send(v.to_string().as_bytes()).is_ok();
