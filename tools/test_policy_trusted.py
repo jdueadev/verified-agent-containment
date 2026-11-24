@@ -134,11 +134,11 @@ class TrustedCommitsTests(unittest.TestCase):
 
     def test_a_trusted_change_needs_a_trusted_author_trusted_commits_and_no_fork(self):
         good = [commit("claude")]
-        self.assertEqual(pc.trusted_change("jdueadev", good, self.TRUSTED, False), (True, None))
-        self.assertFalse(pc.trusted_change("jdueadev", good, self.TRUSTED, True)[0])
-        self.assertFalse(pc.trusted_change("outside-person", good, self.TRUSTED, False)[0])
-        self.assertFalse(pc.trusted_change(None, good, self.TRUSTED, False)[0])
-        self.assertFalse(pc.trusted_change("jdueadev", [commit("outside-person")], self.TRUSTED, False)[0])
+        self.assertEqual(pc.approval_exempt("jdueadev", good, self.TRUSTED, False), (True, None))
+        self.assertFalse(pc.approval_exempt("jdueadev", good, self.TRUSTED, True)[0])
+        self.assertFalse(pc.approval_exempt("outside-person", good, self.TRUSTED, False)[0])
+        self.assertFalse(pc.approval_exempt(None, good, self.TRUSTED, False)[0])
+        self.assertFalse(pc.approval_exempt("jdueadev", [commit("outside-person")], self.TRUSTED, False)[0])
 
 
 if __name__ == "__main__":

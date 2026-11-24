@@ -149,7 +149,7 @@ def untrusted_commits(commits, trusted):
     return None
 
 
-def trusted_change(author, commits, trusted, fork):
+def approval_exempt(author, commits, trusted, fork):
     """(True, None) when a lane C change needs no approval: it is not from a fork, its
     author is trusted, and so is every commit (untrusted_commits). Otherwise (False, why).
     `policy`, the gate and the merge digest all decide with this one rule (#235)."""
@@ -1199,20 +1199,20 @@ def run(parser, args):
                      earlier_handovers(args.base))
         result = classify(paths, base_get, head_get, lanes, spec_links(args.head, paths), handovers)
         commits = json.loads(Path(args.commits).read_text(encoding="utf-8")) if args.commits else None
-        change_trusted, not_trusted_why = trusted_change(args.author, commits, trusted, args.fork)
-        needs_owner = (result["lane"] == "C" and not change_trusted) or args.fork
+        exempt, exempt_why = approval_exempt(args.author, commits, trusted, args.fork)
+        needs_owner = (result["lane"] == "C" and not exempt) or args.fork
         reviews = json.loads(Path(args.reviews).read_text(encoding="utf-8")) if args.reviews else []
         result["fork"] = args.fork
         result["author"] = args.author
-        result["trusted"] = change_trusted
-        result["not_trusted_because"] = not_trusted_why
+        result["trusted"] = exempt
+        result["not_trusted_because"] = exempt_why
         result["needs_maintainer"] = needs_owner
         result["approved"] = approved(reviews, owner, args.head_sha) if needs_owner else None
         result["enforced"] = args.enforce
         print(json.dumps(result, indent=2))
         if needs_owner and not result["approved"]:
             why = "it comes from a fork" if args.fork and result["lane"] != "C" \
-                else f"it is lane C and {not_trusted_why}"
+                else f"it is lane C and {exempt_why}"
             print(f"policy: this change needs {owner}'s approval of the head commit because {why}.", file=sys.stderr)
             return 1 if args.enforce else 0
         return 0

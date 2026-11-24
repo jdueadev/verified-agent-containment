@@ -158,8 +158,8 @@ def analyze(merge):
         state = "not needed"
     elif policy_check.approved(pr.get("reviews", []), owner, pr.get("head_sha")):
         state = "approved"
-    elif policy_check.trusted_change(pr.get("author"), pr.get("commits"), policy_check.load_trusted(lanes_text),
-                                     pr.get("fork", True))[0]:
+    elif policy_check.approval_exempt(pr.get("author"), pr.get("commits"), policy_check.load_trusted(lanes_text),
+                                      pr.get("fork", True))[0]:
         state = "trusted author and commits"
     elif (pr.get("author") or "").lower() == login and (pr.get("merged_by") or "").lower() == login:
         state = ("maintainer merge (bypass)" if owner_commits_only(pr.get("commits"), login)
