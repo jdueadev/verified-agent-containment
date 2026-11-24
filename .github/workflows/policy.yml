@@ -33,7 +33,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          # main's tip now, not the event's base.sha: a re-run (policy-refresh) replays
+          # the old event, and would judge with the rules and trusted list of that day.
+          ref: main
           persist-credentials: false
           fetch-depth: 0
 
@@ -42,7 +44,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
           ENFORCE: ${{ vars.POLICY_ENFORCE }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -55,6 +56,7 @@ jobs:
             echo "policy: only pull requests into main are classified (base is '$BASE_REF')." >&2
             exit 1
           fi
+          BASE_SHA="$(git rev-parse HEAD)"
           if [ ! -f tools/policy_check.py ]; then
             echo "The base branch has no policy check yet; nothing to classify."
             exit 0
