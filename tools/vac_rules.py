@@ -192,6 +192,8 @@ def waivers_cover(ctx):
             out.append(Finding("WAIVE-1", str(receipt_path.relative_to(ctx.root)), 0, f"{row['reason']}: receipt digest does not match"))
         elif not receipt.get("ok") or row["reason"] not in receipt.get("waivable", []):
             out.append(Finding("WAIVE-1", str(receipt_path.relative_to(ctx.root)), 0, f"{row['reason']}: the safety loop did not pass for it"))
+        elif receipt.get("base") != base_ref(ctx):
+            out.append(Finding("WAIVE-1", vac_safety.WAIVERS_FILE, 0, f"{row['reason']}: its receipt judged from base {str(receipt.get('base'))[:12]}, the gate judges from {base_ref(ctx)[:12]}; run vac waive again"))
         elif row["head"] != receipt.get("head"):
             out.append(Finding("WAIVE-1", vac_safety.WAIVERS_FILE, 0, f"{row['reason']}: the waiver names head {row['head'][:12]}, its receipt ran at {str(receipt.get('head'))[:12]}"))
         else:

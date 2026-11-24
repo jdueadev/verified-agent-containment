@@ -186,7 +186,7 @@ class WaiverRowTests(unittest.TestCase):
 
     def check(self, root, rows, waivable=("r",)):
         text = __import__("vac_safety").waiver_toml(rows)
-        ctx = core.Ctx(root=root)
+        ctx = core.Ctx(root=root, base="b" * 40)
         ctx.memo["escalations"] = ([], list(waivable), lambda p: None, lambda p: text if p == "ci/waivers.toml" else None)
         return [f.message for f in registry.waivers_cover(ctx)]
 
@@ -196,6 +196,19 @@ class WaiverRowTests(unittest.TestCase):
         found = self.check(root, [{"reason": "r", "issue": 1, "receipt": digest, "head": head}])
         self.assertEqual(len(found), 1)
         self.assertIn("its receipt ran at", found[0])
+
+    def test_a_receipt_judged_from_another_base_is_refused(self):
+        root, head = self.repo()
+        digest = self.receipt(root, head)
+        receipt = root / f"ci/waiver-receipts/{digest}.json"
+        data = json.loads(receipt.read_text(encoding="utf-8"))
+        body = {k: v for k, v in data.items() if k != "digest"}
+        body["base"] = "c" * 40
+        digest = __import__("hashlib").sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+        (root / f"ci/waiver-receipts/{digest}.json").write_text(json.dumps({**body, "digest": digest}), encoding="utf-8")
+        found = self.check(root, [{"reason": "r", "issue": 1, "receipt": digest, "head": head}])
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("judged from base", found[0])
 
     def test_a_newer_row_supersedes_an_obsolete_one_for_the_same_reason(self):
         root, head = self.repo()
