@@ -916,8 +916,15 @@ class Tree:
     def spans(self, path):
         if path not in self.cache:
             target = self.root / path
-            data = target.read_bytes() if target.is_file() and not target.is_symlink() else None
-            self.cache[path] = [] if data is None else counted(path, data, self.frozen)
+            if not target.is_file() or target.is_symlink():
+                self.cache[path] = []
+            else:
+                try:
+                    data = target.read_bytes()
+                except OSError as error:
+                    self.cache[path] = [Span(path, 1, UNREADABLE, f"cannot be read ({error})")]
+                else:
+                    self.cache[path] = counted(path, data, self.frozen)
         return self.cache[path]
 
     def debt(self):
@@ -1027,7 +1034,16 @@ def debt_write(root, out=sys.stdout):
             return 1
         candidates = old
     else:
-        old, candidates = [], tree.checked()
+        try:
+            where, ceiling, start = tree.debt_ceiling()
+        except ValueError as error:
+            print(f"vac: {error}", file=out)
+            return 1
+        old = []
+        candidates = tree.checked() if start is not None else ceiling
+        if start is None:
+            print(f"vac: {DEBT_FILE} is absent; the ceiling is {where}, so only the files it lists can be listed again",
+                  file=out)
     blocked = [s for p in candidates for s in tree.spans(p) if s.kind == UNREADABLE]
     if blocked:
         for span in blocked:

@@ -497,6 +497,44 @@ class CommandTests(unittest.TestCase):
         comments.debt_write(repo.root, out=io.StringIO())
         self.assertEqual(comments.load_debt((repo.root / DEBT).read_text()), ["a.py"])
 
+    def test_debt_write_lists_nothing_after_the_list_was_deleted_upstream(self):
+        repo = Repo(self)
+        repo.commit({"a.py": "# a\n", DEBT: comments.debt_text(["a.py"])})
+        repo.commit({DEBT: None})
+        repo.main_here()
+        out = io.StringIO()
+        self.assertEqual(comments.debt_write(repo.root, out=out), 0)
+        self.assertEqual(comments.load_debt((repo.root / DEBT).read_text(encoding="utf-8")), [])
+        self.assertIn("which deleted it", out.getvalue())
+        self.assertEqual(repo.check("NC-2"), [])
+
+    def test_debt_write_rebuilds_an_absent_list_from_the_upstream_ceiling(self):
+        repo = Repo(self)
+        repo.commit({"a.py": "# a\n", "b.py": "# b\n", DEBT: comments.debt_text(["a.py"])})
+        repo.main_here()
+        (repo.root / DEBT).unlink()
+        comments.debt_write(repo.root, out=io.StringIO())
+        self.assertEqual(comments.load_debt((repo.root / DEBT).read_text(encoding="utf-8")), ["a.py"])
+
+    def test_a_file_that_cannot_be_read_is_an_unreadable_span(self):
+        repo = Repo(self)
+        repo.commit({"a.py": "# a\n"})
+        repo.main_here()
+        real = Path.read_bytes
+
+        def refuse(target, *args, **kwargs):
+            if target.name == "a.py":
+                raise PermissionError(13, "Permission denied")
+            return real(target, *args, **kwargs)
+
+        with __import__("unittest.mock").mock.patch.object(Path, "read_bytes", refuse):
+            found = repo.check("NC-1")
+            out = io.StringIO()
+            self.assertEqual(comments.debt_write(repo.root, out=out), 1)
+        self.assertEqual(where(found), [("a.py", 1)])
+        self.assertIn("unreadable: cannot be read", found[0].message)
+        self.assertIn("cannot be read", out.getvalue())
+
     def test_debt_write_refuses_a_symlink_in_place_of_the_list(self):
         repo = Repo(self)
         repo.commit({"a.py": "# a\n"})
