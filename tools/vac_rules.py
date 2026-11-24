@@ -500,9 +500,9 @@ UNENFORCED = (
     ("PR-BODY", "The pull request body is written by vac pr and carries a receipt for its head", 212),
     ("WF-THIN", "Every workflow run: is one line, python3 tools/vac.py ci <job>", 206),
     ("WF-TRIG", "No schedule except the weekly digest, no workflow_run, no push to main", 206),
-    ("RS-UNWRAP", "No new unwrap or expect on input an agent can influence in the host", 209),
-    ("LAB-THROWAWAY", "The root lab runs only in a disposable Linux or WSL2 machine; vac refuses its commands", 209),
+    ("RS-UNWRAP", "No new unwrap or expect on input an agent can influence in the host", 227),
+    ("LAB-THROWAWAY", "The root lab runs only in a disposable Linux or WSL2 machine; vac refuses its commands", 228),
     ("CLAUDE-REVIEW", "Review a branch that touches agent configuration by its diff, or with claude --bare --setting-sources user", 169),
-    ("EV-REPRO", "At a release candidate, check outputs are regenerated and compared byte for byte with results/", 209),
-    ("SAFE-ATTEST", "At a release candidate, the safety loop runs in CI and is attested; a waiver without it blocks the tag", 209),
+    ("EV-REPRO", "At a release candidate, check outputs are regenerated and compared byte for byte with results/", 229),
+    ("SAFE-ATTEST", "At a release candidate, the safety loop runs in CI and is attested; a waiver without it blocks the tag", 230),
 )
