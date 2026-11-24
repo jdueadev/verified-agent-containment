@@ -92,16 +92,24 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(lines[-1]["summary"]["failed"], 1)
 
 
+def temp_repo(test):
+    tmp = Path(tempfile.mkdtemp())
+    test.addCleanup(__import__("shutil").rmtree, tmp)
+
+    def run(*args):
+        return subprocess.run(["git", "-C", str(tmp), "-c", "user.name=t", "-c", "user.email=t@t.invalid",
+                               "-c", "commit.gpgsign=false", *args],
+                              check=True, capture_output=True, text=True, env=core.git_env()).stdout
+    run("init", "-q", "-b", "work")
+    return tmp, run
+
+
 class GitWrapperTests(unittest.TestCase):
     def repo(self):
-        tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(__import__("shutil").rmtree, tmp)
-        run = lambda *a: subprocess.run(["git", "-C", str(tmp), *a], check=True, capture_output=True, text=True,
-                                        env=core.git_env()).stdout
-        run("init", "-q", "-b", "work")
+        tmp, run = temp_repo(self)
         (tmp / "a.py").write_text("x = 1\n", encoding="utf-8")
         run("add", "-A")
-        run("-c", "user.name=t", "-c", "user.email=t@t.invalid", "commit", "-q", "-m", "c")
+        run("commit", "-q", "-m", "c")
         return tmp, run
 
     def test_changed_paths_names_a_non_ascii_path_unquoted(self):
@@ -207,6 +215,47 @@ class RustRuleTests(unittest.TestCase):
     def test_allow_attributes_are_counted_inner_and_outer(self):
         files = {"a.rs": "#[allow(x)]\n#![allow(y)]\n# [ allow (z)]\n", "b.rs": "#[deny(x)]\nallow\n"}
         self.assertEqual(registry.allow_count(files.get, ["a.rs", "b.rs", "gone.rs"]), 3)
+        self.assertEqual(registry.allow_lints("#[allow(a, b)]\n#[allow(clippy::c)]\n"), ["a", "b", "clippy::c"])
+
+    def added(self, base, head):
+        paths = sorted(set(base) | set(head))
+        return registry.allow_added(registry.allow_places(base.get, paths),
+                                    registry.allow_places(head.get, paths))
+
+    def test_an_allow_that_moves_file_or_lint_is_still_an_addition(self):
+        base = {"crates/a.rs": "#[allow(dead_code)]\nfn a() {}\n", "crates/b.rs": "fn b() {}\n"}
+        self.assertEqual(self.added(base, base), [])
+        self.assertEqual(self.added(base, {"crates/a.rs": "fn a() {}\n",
+                                           "crates/b.rs": "#[allow(dead_code)]\nfn b() {}\n"}),
+                         [("crates/b.rs", "dead_code")])
+        self.assertEqual(self.added(base, {"crates/a.rs": "#[allow(unused)]\nfn a() {}\n",
+                                           "crates/b.rs": "fn b() {}\n"}),
+                         [("crates/a.rs", "unused")])
+        self.assertEqual(self.added(base, {"crates/a.rs": "#[allow(dead_code)]\n#[allow(dead_code)]\nfn a() {}\n",
+                                           "crates/b.rs": "fn b() {}\n"}),
+                         [("crates/a.rs", "dead_code")])
+
+    def test_removing_an_allow_is_accepted(self):
+        base = {"crates/a.rs": "#[allow(dead_code)]\nfn a() {}\n"}
+        self.assertEqual(self.added(base, {"crates/a.rs": "fn a() {}\n"}), [])
+        self.assertEqual(self.added(base, {}), [])
+
+
+class LineEndingTests(unittest.TestCase):
+    def test_a_mixed_or_crlf_file_is_refused_unless_it_is_a_cmd(self):
+        tmp, run = temp_repo(self)
+        run("config", "core.autocrlf", "false")
+        (tmp / ".gitattributes").write_text("* -text\n", encoding="utf-8")
+        (tmp / "mixed.sh").write_bytes(b"a\r\nb\n")
+        (tmp / "crlf.sh").write_bytes(b"a\r\nb\r\n")
+        (tmp / "ok.cmd").write_bytes(b"a\r\nb\r\n")
+        (tmp / "lf.sh").write_bytes(b"a\nb\n")
+        run("add", "-A")
+        run("commit", "-q", "-m", "c")
+        found = registry.line_endings(core.Ctx(root=tmp))
+        self.assertEqual(sorted((f.path, f.message.split(";")[0]) for f in found),
+                         [("crlf.sh", "committed with crlf line endings"),
+                          ("mixed.sh", "committed with mixed line endings")])
 
 
 class WaiverRowTests(unittest.TestCase):

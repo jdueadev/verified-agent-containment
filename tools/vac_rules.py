@@ -242,11 +242,31 @@ def panic_aborts(ctx):
     return []
 
 
-ALLOW_ATTR = re.compile(r"#\s*!?\s*\[\s*allow\s*\(")
+ALLOW_ATTR = re.compile(r"#\s*!?\s*\[\s*allow\s*\(([^)]*)\)")
+CRLF_EOL = ("i/crlf", "i/mixed")
+
+
+def allow_lints(text):
+    found = []
+    for attribute in ALLOW_ATTR.finditer(text or ""):
+        found += [name.strip() for name in attribute.group(1).split(",") if name.strip()] or [""]
+    return found
 
 
 def allow_count(get, paths):
-    return sum(len(ALLOW_ATTR.findall(get(p) or "")) for p in paths)
+    return sum(len(allow_lints(get(p))) for p in paths)
+
+
+def allow_places(get, paths):
+    places = {}
+    for path in paths:
+        for lint in allow_lints(get(path)):
+            places[(path, lint)] = places.get((path, lint), 0) + 1
+    return places
+
+
+def allow_added(before, after):
+    return sorted(place for place, count in after.items() if count > before.get(place, 0))
 
 
 def allow_not_added(ctx):
@@ -254,20 +274,19 @@ def allow_not_added(ctx):
     head_paths = [p for p in vac_core.git(ctx, "ls-files", "--", "crates").splitlines() if p.endswith(".rs")]
     base_paths = [p for p in vac_core.git(ctx, "ls-tree", "-r", "--name-only", base, "--", "crates").splitlines()
                   if p.endswith(".rs")]
-    before = allow_count(policy_check.reader(base), base_paths)
-    after = allow_count(lambda p: (ctx.root / p).read_text(encoding="utf-8") if (ctx.root / p).exists() else None,
-                        head_paths)
-    if after > before:
-        return [Finding("RS-ALLOW", "crates", 0, f"#[allow] attributes rose from {before} to {after}")]
-    return []
+    before = allow_places(policy_check.reader(base), base_paths)
+    after = allow_places(lambda p: (ctx.root / p).read_text(encoding="utf-8") if (ctx.root / p).exists() else None,
+                         head_paths)
+    return [Finding("RS-ALLOW", path, 0, f"#[allow({lint})] is new here; it was not at {base[:12]}")
+            for path, lint in allow_added(before, after)]
 
 
 def line_endings(ctx):
     out = []
     for line in vac_core.git(ctx, "ls-files", "--eol").splitlines():
         fields = line.split(None, 3)
-        if len(fields) == 4 and fields[0] == "i/crlf" and not fields[3].endswith(".cmd"):
-            out.append(Finding("EOL-1", fields[3], 0, "committed with CRLF; only *.cmd may be"))
+        if len(fields) == 4 and fields[0] in CRLF_EOL and not fields[3].endswith(".cmd"):
+            out.append(Finding("EOL-1", fields[3], 0, f"committed with {fields[0][2:]} line endings; only *.cmd may hold CRLF"))
     return out
 def comment_tree(ctx):
     return ctx.once("comment-tree", lambda: vac_comments.Tree(ctx.root, ctx.base or vac_comments.MAIN))
