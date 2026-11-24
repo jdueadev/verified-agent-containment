@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""Tests for tools/lab_attest.py and CI-10 (#209): lab evidence counts only with a GitHub
-OIDC token from main's lab.yaml whose audience binds every committed byte.
-
-Tokens here are signed with a fixed test key (TEST_KEYS), never GitHub's. Each test
-that rejects a token changes one claim or one byte, so each check is seen to bite.
-"""
 import base64
 import hashlib
 import json
@@ -22,7 +16,6 @@ ROOT = Path(__file__).resolve().parent.parent
 COMMIT = "1" * 40
 WHERE = f"results/ci/lab-{COMMIT}"
 
-# A 2048-bit RSA key made for these tests only.
 N = int(
     "cca71ffc164ff46b0bd65363cc01ad29e9b77ad17a826e5872aa64b5a57c88b80bf9dcef2e974912bec78928"
     "b13a479042453239e2362adcc98888cba8aab1f8284344a86cdf58e8dff59fb7f6923aaa8c5d016a3d49cf0c"
@@ -100,7 +93,6 @@ def good_claims(files=FILES, **changes):
 
 
 def recorded(claims=None, files=FILES, token=None, prov_manifest=None):
-    """The files of one recorded directory, provenance.json included."""
     token = token if token is not None else sign(claims if claims is not None else good_claims(files))
     prov = {"manifest": prov_manifest if prov_manifest is not None else manifest(files),
             "token": token, "run_id": "42", "run_attempt": "1"}
