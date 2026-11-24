@@ -8,7 +8,7 @@ base="$(sed -n 's/^FACTORY_BASE_IMAGE=//p' ci/pins.env)"
 [ -n "$base" ] || { echo "factory: ci/pins.env has no FACTORY_BASE_IMAGE" >&2; exit 1; }
 
 usage() {
-  echo "usage: scripts/factory.sh build | shell | check [check.sh options] | verdict | lab" >&2
+  echo "usage: scripts/factory.sh build | shell | check [check.sh options] | verdict | lab [repeat]" >&2
   echo "  build    build the check and dev images from ci/factory.Dockerfile" >&2
   echo "  shell    open a shell in the dev image with this checkout mounted at /work" >&2
   echo "  check    run scripts/check.sh in the check image" >&2
@@ -48,12 +48,8 @@ case "${1:-}" in
       exit 1
     fi
     build check
-    exec "$engine" run --rm --privileged --cgroupns=private "${mounts[@]}" "$image:check" bash -euo pipefail -c '
-      mkdir -p target/verify
-      cargo build --release --locked -p containment-host
-      target/release/containment-lab attack-suite --repeat 30 --out target/verify/attack-suite.json
-      target/release/containment-lab live-suite --out target/verify/live-suite.json
-    '
+    shift
+    exec "$engine" run --rm --privileged --cgroupns=private "${mounts[@]}" "$image:check" scripts/factory-lab.sh "$@"
     ;;
   *)
     usage
