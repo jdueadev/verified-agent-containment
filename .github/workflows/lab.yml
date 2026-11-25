@@ -27,7 +27,7 @@ jobs:
     steps:
       - id: list
         env:
-          COPIES: ${{ inputs.copies || '20' }}
+          COPIES: ${{ inputs.copies || '1' }}
         run: |
           [[ "$COPIES" =~ ^([1-9]|1[0-9]|20)$ ]] || { echo "copies must be 1 to 20, not $COPIES" >&2; exit 1; }
           echo "list=[$(seq -s, 1 "$COPIES")]" >> "$GITHUB_OUTPUT"
@@ -172,37 +172,3 @@ jobs:
         run: |
           echo "verify: $VERIFY"
           [ "$VERIFY" = success ]
-
-  # Temporary: the same manifest signed with cosign keyless, for comparison.
-  cosign-prototype:
-    needs: run
-    if: ${{ !cancelled() }}
-    permissions:
-      contents: read
-      id-token: write
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: lab-1
-          path: lab
-      - run: |
-          time curl -sSLf -o cosign https://github.com/sigstore/cosign/releases/download/v3.1.5/cosign-linux-amd64
-          echo "912502def4baf810eaf36b210a4f51e1da214f9f6d664e2a9a2154cfc67ee0d6  cosign" | sha256sum -c -
-          chmod +x cosign && export PATH="$PWD:$PATH"
-          cosign version
-          time cosign sign-blob --yes --bundle manifest.sigstore.json lab/manifest.json
-          ls -l manifest.sigstore.json
-          identity="https://github.com/$GITHUB_REPOSITORY/.github/workflows/lab.yml@$GITHUB_REF"
-          time cosign verify-blob --bundle manifest.sigstore.json --certificate-identity "$identity" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --certificate-github-workflow-sha "$GITHUB_SHA" lab/manifest.json
-          echo "--- same bundle, asked whether main signed it"
-          if cosign verify-blob --bundle manifest.sigstore.json \
-            --certificate-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/lab.yml@refs/heads/main" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com lab/manifest.json; then exit 1; fi
-          echo "--- one byte changed"
-          printf ' ' >> lab/manifest.json
-          if cosign verify-blob --bundle manifest.sigstore.json --certificate-identity "$identity" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com lab/manifest.json; then exit 1; fi
