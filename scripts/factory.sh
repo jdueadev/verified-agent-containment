@@ -17,6 +17,7 @@ usage() {
   echo "  verdict  run scripts/verdict.sh (the Lean recheck) in the proofs image" >&2
   echo "  lab      run the root attack and live suites in a privileged container" >&2
   echo "           only on a disposable machine: set FACTORY_LAB_DISPOSABLE=1 to confirm" >&2
+  echo "           FACTORY_LAB_OUT=<dir> keeps the results in <dir>; FACTORY_LAB_IMAGE_ID=<file> records the image id" >&2
 }
 
 build() {
@@ -52,7 +53,13 @@ case "${1:-}" in
     fi
     build check
     shift
-    exec "$engine" run --rm --privileged --cgroupns=private "${mounts[@]}" "$image:check" scripts/factory-lab.sh "$@"
+    lab=(-e "FACTORY_LAB_COMMIT=$(git rev-parse HEAD)")
+    if [ -n "${FACTORY_LAB_OUT:-}" ]; then
+      mkdir -p "$FACTORY_LAB_OUT"
+      lab+=(-v "$(cd "$FACTORY_LAB_OUT" && pwd):/work/target/verify/lab")
+    fi
+    "$engine" image inspect --format '{{.Id}}' "$image:check" > "${FACTORY_LAB_IMAGE_ID:-/dev/null}"
+    exec "$engine" run --rm --privileged --cgroupns=private "${mounts[@]}" "${lab[@]}" "$image:check" scripts/factory-lab.sh "$@"
     ;;
   *)
     usage

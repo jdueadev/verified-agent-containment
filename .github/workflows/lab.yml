@@ -1,0 +1,171 @@
+name: lab
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+    inputs:
+      copies:
+        description: How many copies of the lab to run side by side (1 to 20)
+        default: "1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lab-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  copies:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - id: list
+        env:
+          COPIES: ${{ inputs.copies || '1' }}
+        run: |
+          [[ "$COPIES" =~ ^([1-9]|1[0-9]|20)$ ]] || { echo "copies must be 1 to 20, not $COPIES" >&2; exit 1; }
+          echo "list=[$(seq -s, 1 "$COPIES")]" >> "$GITHUB_OUTPUT"
+
+  # Runs the code under test as root in a privileged container, so this job
+  # holds no token that can sign anything.
+  run:
+    needs: copies
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: ${{ fromJSON(needs.copies.outputs.list) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: What the runner offers
+        run: |
+          echo "kernel: $(uname -r), $(uname -m), $(nproc) cpus"
+          echo "cgroup filesystem: $(stat -fc %T /sys/fs/cgroup)"
+          echo "cgroup controllers: $(cat /sys/fs/cgroup/cgroup.controllers)"
+
+      - name: Root lab in a privileged container
+        env:
+          FACTORY_LAB_DISPOSABLE: "1"
+          FACTORY_LAB_OUT: ${{ runner.temp }}/lab
+          FACTORY_LAB_IMAGE_ID: ${{ runner.temp }}/image-id
+        run: scripts/factory.sh lab
+
+      - name: Seal the results
+        if: ${{ !cancelled() }}
+        run: |
+          python3 -I tools/lab_evidence.py manifest "$RUNNER_TEMP/lab" \
+            --commit "$GITHUB_SHA" --image "$(cat "$RUNNER_TEMP/image-id")" \
+            --run "repository=$GITHUB_REPOSITORY" --run "run_id=$GITHUB_RUN_ID" \
+            --run "run_attempt=$GITHUB_RUN_ATTEMPT" --run "event=$GITHUB_EVENT_NAME" \
+            --run "ref=$GITHUB_REF" --run "copy=${{ matrix.copy }}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: ${{ !cancelled() }}
+        with:
+          name: lab-${{ matrix.copy }}
+          path: ${{ runner.temp }}/lab
+          if-no-files-found: error
+
+  # Signs the manifest and runs nothing from the checkout.
+  attest:
+    needs: [copies, run]
+    if: ${{ !cancelled() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: ${{ fromJSON(needs.copies.outputs.list) }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: lab-${{ matrix.copy }}
+          path: lab
+
+      - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with:
+          subject-path: lab/manifest.json
+
+  verify:
+    needs: [copies, attest]
+    if: ${{ !cancelled() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: ${{ fromJSON(needs.copies.outputs.list) }}
+    permissions:
+      contents: read
+      attestations: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SIGNER: ${{ github.repository }}/.github/workflows/lab.yml
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: lab-${{ matrix.copy }}
+          path: ${{ runner.temp }}/lab
+
+      - name: The results are a full pass, unchanged, and signed for this commit and ref
+        run: |
+          python3 -I tools/lab_evidence.py verify "$RUNNER_TEMP/lab" --commit "$GITHUB_SHA" \
+            --repo "$GITHUB_REPOSITORY" --signer-workflow "$SIGNER" --source-ref "$GITHUB_REF"
+
+      - name: The same results with one byte changed are refused
+        run: |
+          cp -r "$RUNNER_TEMP/lab" "$RUNNER_TEMP/changed"
+          printf ' ' >> "$RUNNER_TEMP/changed/environment.txt"
+          if python3 -I tools/lab_evidence.py verify "$RUNNER_TEMP/changed" --commit "$GITHUB_SHA" \
+            --repo "$GITHUB_REPOSITORY" --signer-workflow "$SIGNER" --source-ref "$GITHUB_REF"; then
+            echo "changed results were accepted" >&2; exit 1
+          fi
+
+      - name: A manifest nobody signed is refused
+        run: |
+          cp -r "$RUNNER_TEMP/lab" "$RUNNER_TEMP/resealed"
+          python3 -I tools/lab_evidence.py manifest "$RUNNER_TEMP/resealed" --commit "$GITHUB_SHA" \
+            --image "sha256:$(printf forged | sha256sum | cut -d' ' -f1)" --run "run_id=forged"
+          if python3 -I tools/lab_evidence.py verify "$RUNNER_TEMP/resealed" --commit "$GITHUB_SHA" \
+            --repo "$GITHUB_REPOSITORY" --signer-workflow "$SIGNER" --source-ref "$GITHUB_REF"; then
+            echo "an unsigned manifest was accepted" >&2; exit 1
+          fi
+
+      - name: Results signed for another ref are refused as main's
+        if: ${{ github.ref != 'refs/heads/main' }}
+        run: |
+          if python3 -I tools/lab_evidence.py verify "$RUNNER_TEMP/lab" --commit "$GITHUB_SHA" \
+            --repo "$GITHUB_REPOSITORY" --signer-workflow "$SIGNER" --source-ref refs/heads/main; then
+            echo "this ref's results were accepted as main's" >&2; exit 1
+          fi
+
+  # One name to require: it passes only when every copy was verified.
+  evidence:
+    needs: verify
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          VERIFY: ${{ needs.verify.result }}
+        run: |
+          echo "verify: $VERIFY"
+          [ "$VERIFY" = success ]
