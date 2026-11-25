@@ -494,9 +494,12 @@ fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn
             let counted = report["live"]["used"][write.url()]["requests"].as_u64().unwrap_or(0);
             checks.add("granted_request_arrived_through_gate", through_gate && counted >= 1, json!({"server": writes, "counted": counted}));
             let probe = transcript.iter().find(|e| e["event"] == "probe_root").map_or(Value::Null, |e| e["value"].clone());
-            // What was supplied, less the names the sandbox keeps for itself, plus those.
+            // What was supplied, less the names the sandbox keeps for itself, plus the
+            // ones it creates. Written out here rather than taken from the sandbox, so a
+            // name dropped from the sandbox's list shows up as a supplied entry.
+            let kept = ["proc", "tmp", "workspace", "gateway.sock", ".old", "agent"];
             let mut expected: Vec<String> = fs::read_dir(dir.join("root"))?.flatten().map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|n| !crate::sandbox::RESERVED.contains(&n.as_str())).chain(["proc", "tmp", "workspace", "gateway.sock"].map(String::from)).collect();
+                .filter(|n| !kept.contains(&n.as_str())).chain(["proc", "tmp", "workspace", "gateway.sock"].map(String::from)).collect();
             expected.sort();
             checks.add("program_saw_supplied_root", probe["root"] == json!(expected), json!({"seen": probe["root"], "expected": expected}));
             checks.add("sandbox_entries_win_over_supplied", probe["tmp"].as_array().is_some_and(|t| !t.contains(&json!("decoy"))), probe["tmp"].clone());
