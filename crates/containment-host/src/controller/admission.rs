@@ -78,7 +78,7 @@ impl Limit {
     pub(super) fn admits(&self, used: &Cost, cost: &Cost) -> Option<Cost> {
         Some(Cost {
             requests: within(self.requests, used.requests, cost.requests)?,
-            bytes: within(self.bytes, used.bytes, cost.bytes)?,
+            bytes: within(None, used.bytes, cost.bytes)?,
             tokens: within(self.tokens, used.tokens, cost.tokens)?,
         })
     }
@@ -118,7 +118,7 @@ pub(super) fn decide(grant: Option<&Grant>, control: Control, now_ms: u64, autho
     let Some(grant) = covered else {
         return Verdict::Refuse { by: Layer::Policy, raise: None };
     };
-    if !(kernel_allows(control, now_ms, grant, attempt.kind)) {
+    if !(authority_ready && kernel_allows(control, now_ms, grant, attempt.kind)) {
         return Verdict::Refuse { by: Layer::Kernel, raise: None };
     }
     match grant.limit.admits(used, &attempt.cost) {
