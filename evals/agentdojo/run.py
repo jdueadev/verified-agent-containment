@@ -123,20 +123,28 @@ def run_sandbox(args, command, env, case_dir, timeout):
         try:
             rc = child.wait(timeout=timeout)
             timed_out = False
-        except subprocess.TimeoutExpired:
+        except BaseException as stop:
+            # A timeout, or the runner itself being stopped: end the run's whole process group.
             os.killpg(child.pid, signal.SIGTERM)
             try:
                 child.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 os.killpg(child.pid, signal.SIGKILL)
                 child.wait()
+            if not isinstance(stop, subprocess.TimeoutExpired):
+                clean_up(run_id_in(log), case_dir)
+                raise
             rc, timed_out = None, True
     ended = time.time()
     locked = float(stamp.read_text()) if stamp.exists() else None
-    text = log.read_text(errors="replace")
-    match = re.search(r"run (live-\d+-\d+) started", text)
     return {"rc": rc, "timed_out": timed_out, "wall_seconds": round(ended - (locked or began), 3),
-            "lock_wait_seconds": round(locked - began, 3) if locked else None, "run_id": match.group(1) if match else None, "log_tail": text[-2000:]}
+            "lock_wait_seconds": round(locked - began, 3) if locked else None, "run_id": run_id_in(log),
+            "log_tail": log.read_text(errors="replace")[-2000:]}
+
+
+def run_id_in(log):
+    match = re.search(r"run (live-\d+-\d+) started", log.read_text(errors="replace"))
+    return match.group(1) if match else None
 
 
 def clean_up(run_id, case_dir):
@@ -398,6 +406,8 @@ def main():
     parser.add_argument("--lock", default="/tmp/vac-lab.lock")
     parser.add_argument("--retry-errors", action="store_true")
     args = parser.parse_args()
+    # Stopped from outside, still stop the sandbox run and the fixture servers.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
 
     out = args.out.resolve()
     if out == REPO / "results" or REPO / "results" in out.parents:
