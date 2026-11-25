@@ -108,15 +108,15 @@ pub(super) fn gateway_decide(shared: &Arc<Shared>, message: &Value, received: u6
         }
         Some("secret") => {
             let name = message["name"].as_str().unwrap_or("");
-            if name == "canary_token" {
-                shared.apply(Some("canary_secret"), received, |now_ms| Event::HardRule { now_ms, level: Level::Freeze });
-                return json!({"ok": false, "error": "denied"});
+            // The lab brokers one secret. Asking for the canary's is the hard rule.
+            let attempt = Attempt { kind: Kind::LabSecret, cost: Cost::default(), carries_canary: name == "canary_token" };
+            let grant = (name == "api_token").then_some(Grant { write: false, baseline: false, limit: Limit::NONE });
+            match shared.admit(attempt, grant, Account::Unmetered, received) {
+                // Nothing goes upstream, so the permit is dropped at once.
+                Ok(_) => json!({"ok": true, "handle": "broker-held"}),
+                Err(Layer::Canary) => json!({"ok": false, "error": "denied"}),
+                Err(_) => json!({"ok": false, "handle": null}),
             }
-            let allowed = name == "api_token" && {
-                let control = lock(&shared.control);
-                shared.authority_ready() && authorize_for(&shared.weak, shared.now_ms(), *control, AccessRequest { kind: AccessKind::Secret, granted: true, baseline: false })
-            };
-            json!({"ok": allowed, "handle": allowed.then_some("broker-held")})
         }
         Some("log") => json!({"ok": true}),
         Some("status") => json!({"ok": true}),
