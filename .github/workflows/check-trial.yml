@@ -1,0 +1,39 @@
+name: check-trial
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/check-trial.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-trial-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/vac-dev-team/vac-factory@sha256:CHECK_DIGEST
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Run the checks
+        run: scripts/check.sh --no-strict
+
+  proofs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/vac-dev-team/vac-factory@sha256:PROOFS_DIGEST
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Recheck the proofs with Lean
+        run: scripts/verdict.sh
