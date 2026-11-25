@@ -55,7 +55,9 @@ or overflow, nor `Gate::admit` or `Charge::settle` within the gate harnesses' sc
   through libc), and the gate and the permit are never dropped (`std::mem::forget`, because
   the BTreeMap drop code exhausts CBMC's memory). Nothing about slots or drops is proved.
 - **One reset between admission and settling.** The settle harness starts one lease with an
-  arbitrary number before settling.
+  arbitrary number before settling. The lease a gate harness starts from has a free number
+  and spend too, including a number past the kernel's reset counter, which the product never
+  reaches; that only widens what is proved.
 - **Default build only.** Kani builds without the `sabotage` feature, so `Gate::sabotaged`
   is the identity, as in every binary that contains a real agent.
 - **Loops are unwound at most 3 or 4 times**, with Kani's unwinding assertions on: a
@@ -82,14 +84,14 @@ Coverage record. Each harness runs exactly this product code:
 | | `crates/containment-host/src/controller/weakness.rs`, `controller.rs` | `Weakness` in the default build, `lock` |
 | | `crates/containment-kernel/src/lib.rs` | `authorize`, `effective_time` |
 
-**Sync commit: `432d08d19c7ab4c78aa2d50453e874964a1245e8`** ("Prove the gate's lease
-handling with Kani"). At that commit the harnesses were confirmed to describe the code
+**Sync commit: `38c1cc5c45ab523e057a4482c5de1b5b8c75d8d4`** ("Catch a gate mutant in a
+state the gate can reach, and pin Kani's bundles"). At that commit the harnesses were confirmed to describe the code
 above, and `scripts/kani.sh` and `scripts/kani.sh mutants` both passed. If the branch was
 rebased after this was written, the hash may name nothing: use the commit with that subject
 instead. To see whether the covered code has changed since:
 
 ```bash
-git diff --stat 432d08d19c7ab4c78aa2d50453e874964a1245e8 -- crates/containment-host/src/controller/admission.rs \
+git diff --stat 38c1cc5c45ab523e057a4482c5de1b5b8c75d8d4 -- crates/containment-host/src/controller/admission.rs \
   crates/containment-host/src/controller/gate.rs crates/containment-host/src/controller/weakness.rs \
   crates/containment-host/src/controller.rs crates/containment-kernel/src/lib.rs formal/kani
 ```
@@ -105,13 +107,22 @@ the new commit.
 
 ## Run it
 
-Install Kani once, at the version in `ci/pins.env` (`KANI_VERSION`). The setup downloads
-Kani's bundle and its own nightly toolchain into `~/.kani` (or `KANI_HOME`):
+Install Kani once, at the version in `ci/pins.env` (`KANI_VERSION`). A plain `cargo kani
+setup` downloads Kani's bundle unchecked, so fetch the bundle yourself and check it against
+the sum in `ci/pins.env` (on arm64, `aarch64-unknown-linux-gnu` and
+`FACTORY_KANI_SHA256_ARM64`). The setup unpacks it into `~/.kani` (or `KANI_HOME`) and
+installs the nightly toolchain Kani is built for through rustup:
 
 ```bash
-cargo install --locked kani-verifier --version 0.68.0
-cargo kani setup
+source <(grep -E '^(KANI_VERSION|FACTORY_KANI_SHA256_AMD64)=' ci/pins.env)
+curl -fsSL -o /tmp/kani.tar.gz "https://github.com/model-checking/kani/releases/download/kani-$KANI_VERSION/kani-$KANI_VERSION-x86_64-unknown-linux-gnu.tar.gz"
+echo "$FACTORY_KANI_SHA256_AMD64  /tmp/kani.tar.gz" | sha256sum --check --strict
+cargo install --locked kani-verifier --version "$KANI_VERSION"
+cargo kani setup --use-local-bundle /tmp/kani.tar.gz
 ```
+
+Any `cargo kani` command run before setup does the plain setup on its own, so run these
+first.
 
 Then, from the repository root:
 
@@ -120,12 +131,12 @@ scripts/kani.sh
 ```
 
 It prints one line per harness and ends with `kani: all harnesses verified`; the exit code is
-0 only then. It writes `target/verify/kani.json` (versions, the files covered with their
-sha256, each harness's result) and the full Kani output to
+0 only then. It writes `target/verify/kani.json` (the versions, the files covered with one
+sha256 over them, each harness's result) and the full Kani output to
 `target/verify/kani/admission.log` and `target/verify/kani/gate.log`. Measured when this was
-written: 40 seconds with the build cached, 60 seconds with `target/kani` empty (Kani builds
-the host crate), on 4 cores. `cargo kani setup` on a new machine takes longer. Before running anything it checks `formal/kani/mutants.toml` against the
-code, and stops if a mutant no longer fits or a harness has none.
+written, on 4 cores: 40 seconds with the build cached, 60 seconds with `target/kani` empty
+(Kani builds the host crate). Before running anything it checks `formal/kani/mutants.toml`
+against the code, and stops if a mutant no longer fits or a harness has none.
 
 To see every harness fail on the broken variants it guards (do this when you change a
 harness, a restated rule or a mutant):
@@ -209,8 +220,11 @@ workflow do not run it. Run it yourself before pushing a change to the covered c
   guarantees; say so plainly in the pull request.
 - **Mutants**: when a mutant's `old` no longer occurs in the code, the check stops with
   `mutants.toml is out of step with the code`. Rewrite that mutant as the smallest edit that
-  breaks the same promise in the new code. Every harness must keep at least one mutant. A
-  new harness needs a new mutant, and `scripts/kani.sh mutants <name>` must show it caught.
+  breaks the same promise in the new code, in a state the product can reach: the harnesses'
+  inputs are free, so a mutant can be caught only in a state that never happens (a lease
+  numbered past the kernel's reset counter), and that shows nothing. Every harness must
+  keep at least one mutant. A new harness needs a new mutant, and `scripts/kani.sh mutants
+  <name>` must show it caught.
 - **The admission crate** in `formal/kani/` is its own Cargo workspace. It compiles the
   product's own admission.rs through `#[path]` in `formal/kani/lib.rs`; it holds no copy. If
   admission.rs gains a dependency other than the kernel, add it to `formal/kani/Cargo.toml`
