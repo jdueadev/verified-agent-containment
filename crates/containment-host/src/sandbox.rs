@@ -4,7 +4,7 @@ use std::ffi::CString;
 use std::fs;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd};
-use std::os::unix::fs::{symlink, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{symlink, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -16,7 +16,10 @@ pub const AGENT: &str = "/agent";
 const GATEWAY: &str = "/gateway.sock";
 /// Top-level names the sandbox provides itself. A supplied root's entries with
 /// these names are skipped, and no other program may live under them.
-pub const RESERVED: &[&str] = &["proc", "tmp", "workspace", "gateway.sock", ".old", "agent"];
+pub const RESERVED: &[&str] = &["proc", "tmp", "dev", "workspace", "gateway.sock", ".old", "agent"];
+/// The devices in the sandbox's /dev, with their device numbers: the ones ordinary
+/// programs open by name and that give nothing away. No tty, console or disk.
+const DEVICES: &[(&str, u32, u32)] = &[("null", 1, 3), ("zero", 1, 5), ("full", 1, 7), ("random", 1, 8), ("urandom", 1, 9)];
 
 /// What runs inside the sandbox.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -295,6 +298,41 @@ fn supply_root(dir: &str, root: &str, writable: bool) -> Result<(), Box<dyn Erro
     Ok(())
 }
 
+/// Mounts the sandbox's /dev on `dev`: a read-only tmpfs holding the five DEVICES and
+/// `shm`. Each device is the host's own node, bound onto an empty file, as container
+/// runtimes do without CAP_MKNOD. That keeps every filesystem in the sandbox nodev,
+/// the root and this tmpfs included: only these five bind mounts allow opening a
+/// device, and each holds one node, checked by its number, so a host /dev entry that
+/// is not what its name says is refused rather than passed through. Creating nodes
+/// instead would need a tmpfs without nodev, where any node that appeared would open.
+fn provide_dev(dev: &str) -> Result<(), Box<dyn Error>> {
+    let sealed = libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
+    mount("tmpfs", dev, Some("tmpfs"), sealed, Some("mode=755,size=64k"))?;
+    for &(name, major, minor) in DEVICES {
+        let host = format!("/dev/{name}");
+        let opened = fs::OpenOptions::new().read(true).custom_flags(libc::O_PATH | libc::O_NOFOLLOW).open(&host)
+            .map_err(|e| format!("{host}: {e}"))?;
+        let meta = opened.metadata()?;
+        if !meta.file_type().is_char_device() || meta.rdev() != libc::makedev(major, minor) {
+            return Err(format!("{host} is not the character device {major}:{minor}").into());
+        }
+        let target = format!("{dev}/{name}");
+        fs::write(&target, "")?;
+        // Bound from the descriptor that was checked. Read-only blocks changing the
+        // node's attributes; writing to the device itself still works.
+        mount(&format!("/proc/self/fd/{}", opened.as_raw_fd()), &target, None, libc::MS_BIND, None)?;
+        mount("none", &target, None, libc::MS_REMOUNT | libc::MS_BIND | libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NOEXEC, None)?;
+    }
+    // Scratch like /tmp, for POSIX shared memory and semaphores. noexec, so it is no way
+    // to run code that is not in the root; 16 MiB, so with /tmp at most 32 MiB of files
+    // live in memory per generation even without a memory controller. With one, tmpfs
+    // pages are charged to the sandbox's cgroup, so memory.max bounds them as well.
+    let shm = format!("{dev}/shm");
+    fs::create_dir(&shm)?;
+    mount("tmpfs", &shm, Some("tmpfs"), sealed, Some("mode=1777,size=16m"))?;
+    mount("none", dev, None, libc::MS_REMOUNT | libc::MS_BIND | libc::MS_RDONLY | sealed, None)
+}
+
 /// Builds a minimal read-only root. Host paths outside this list do not exist
 /// in the sandbox, including WSL interop paths and Windows drive mounts.
 fn pivot_to_minimal_root(config: &Value) -> Result<(), Box<dyn Error>> {
@@ -346,7 +384,7 @@ fn pivot_to_minimal_root(config: &Value) -> Result<(), Box<dyn Error>> {
             }
         }
     }
-    for dir in ["/proc", "/tmp", "/.old"] {
+    for dir in ["/proc", "/tmp", "/dev", "/.old"] {
         fs::create_dir(under(dir))?;
     }
     if program == AGENT {
@@ -367,6 +405,7 @@ fn pivot_to_minimal_root(config: &Value) -> Result<(), Box<dyn Error>> {
     // Only process directories, and only processes the viewer may ptrace.
     mount("proc", &under("/proc"), Some("proc"), libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC, Some("subset=pid,hidepid=invisible"))?;
     mount("tmpfs", &under("/tmp"), Some("tmpfs"), libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC, Some("mode=1777,size=16m"))?;
+    provide_dev(&under("/dev"))?;
     let new_root = c(root)?;
     let old_root = c(&under("/.old"))?;
     // SAFETY: both paths are live NUL-terminated strings.
@@ -758,7 +797,7 @@ mod tests {
     fn an_outside_program_must_not_hide_under_the_sandboxs_own_entries() {
         let argv = |path: &str| vec![path.to_owned(), "arg".to_owned()];
         assert!(Program::outside(argv("/usr/bin/python3"), None).is_ok());
-        for bad in ["usr/bin/x", "/", "/tmp/x", "/agent", "/workspace/run.sh", "/usr/../tmp/x", "/proc/self/exe"] {
+        for bad in ["usr/bin/x", "/", "/tmp/x", "/dev/shm/x", "/agent", "/workspace/run.sh", "/usr/../tmp/x", "/proc/self/exe"] {
             assert!(Program::outside(argv(bad), None).is_err(), "{bad} was accepted");
         }
         assert!(Program::outside(Vec::new(), None).is_err());
