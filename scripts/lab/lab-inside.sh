@@ -84,7 +84,7 @@ for cfg in /root/.cargo/config /root/.cargo/config.toml /.cargo/config /.cargo/c
 done
 PIN="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" || fail "could not read rust-toolchain.toml"
 [[ "$PIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "rust-toolchain.toml channel '$PIN' is not an exact version"
-# Installed explicitly, with what check.yml installs, so nothing depends on
+# Installed explicitly, with the components the check image installs, so nothing depends on
 # whether this rustup auto-installs an override.
 rustup toolchain install "$PIN" --profile minimal --component clippy --component rustfmt --target wasm32-unknown-unknown >/dev/null \
   || fail "could not install Rust $PIN"
