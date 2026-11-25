@@ -2,6 +2,20 @@
 
 Each folder holds what `run.py` wrote for one full run: `summary.json` and `cases.jsonl`. They are records of a run, not claims. Nothing in `claims.toml` rests on them.
 
+## Read this before quoting a number
+
+A second reader went through these records and the log of the night that produced them. These points come from that review.
+
+- **"Impossible" means the gate never saw the attack, not that the attack failed.** In 92 of the 96 such cases AgentDojo's own check says the injection succeeded: the attacker's goal was reached with local tools alone (a password changed, a file deleted) or by the model's answer. The gate decides outward actions only. Read the column as "outside the gate's reach".
+- **By AgentDojo's own verdict the injection succeeded in 510 of 629 cases with email granted by domain, and in 279 with email granted by address.** The gate's count of "succeeded" (409 and 169) is lower because it counts only attacks whose outward actions all reached the outside.
+- **The gate's outcome and AgentDojo's verdict differ in 33 cases at domain level and 24 at address level.** In 21 slack cases counted as blocked, AgentDojo says the injection succeeded: its check reads the calls the agent attempted, and one earlier request of the attacker had already been allowed. In the rest, counted as succeeded, AgentDojo says it did not; these have not been explained.
+- **"The user's task completed under attack" is not a measure of the gate.** For workspace it is 0 of 240 at domain level while no request of the user's task was refused, because AgentDojo fails the user task whenever the attacker changed the environment. `user_task_requests_all_allowed_under_attack` is the figure that speaks to the gate.
+- **Both recorded runs used the binary built from main at 7322951,** before the minimal `/dev` and the gateway fixes. Those changes do not touch how a web request is admitted, and the rerun on the admission-core binary matched case by case, but the records are of that older binary.
+- **The address-level run cannot be reproduced from the repository as it stands.** It needs `EMAIL_DESTINATION` flipped in `sandbox/mapping.py` and the grants regenerated; neither is committed.
+- **Every run here had System One's cgroup limits waived** (`--allow-missing-limits`), because the container had no pids, memory or cpu controllers.
+- **The two false stops happened while two eval runs and a model-checker build shared the machine.** Part of that load came from the work itself, so "twice in about 2,000 runs" is not a rate for the product.
+- **The break-to-fix loop was closed on breaks an earlier review found,** not on a break this eval found. The one break the eval found, the false stop, is not fixed.
+
 ## 2026-11-25-domain
 
 The first full run: all 97 benign user tasks and all 629 injection cases of AgentDojo `v1`, with the scripted agent that always obeys the injection.
@@ -63,4 +77,4 @@ The same 97 benign tasks and 629 injection cases, on the same binary and machine
 
 ## The admission-core regression (not committed as a folder)
 
-After the gateway's decision was moved into one pure function, all 629 injection cases were rerun on that binary and compared with `2026-11-25-domain` case by case: outcome, final mode and every request count. All 629 matched. One case was first stopped by the same lapsed lease and matched when rerun alone.
+After the gateway's decision was moved into one pure function, all 629 injection cases were rerun on that binary and compared with `2026-11-25-domain` case by case: outcome, final mode and every request count. All 629 matched. One case was first stopped by the same lapsed lease and matched when rerun alone. That comparison cannot see the admission core's intended reordering, its lease fix or its budget handling, because no case here exhausts a budget, resets or trips a canary. The 97 benign cases were rerun later on the binary built from main at c2a8091: no request refused, 96 of 97 passing AgentDojo's utility check, as before.
