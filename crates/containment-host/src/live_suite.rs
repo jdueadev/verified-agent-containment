@@ -27,6 +27,7 @@ impl Checks {
 const SCENARIOS: &[&str] = &[
     "benign", "canary_exfil", "unlisted_host", "write_to_read_host", "request_budget", "token_budget",
     "stop_cuts_upstream", "rebuild_discards_workspace", "credential_scoped", "hud_log_redacted", "slow_model_no_false_lag",
+    "failed_start_leaves_nothing",
 ];
 /// (weakness, scenario, the check it must break, checks that must still pass).
 /// A sabotage counts as caught only when its own target check fails while the
@@ -41,6 +42,7 @@ const SABOTAGE: &[(&str, &str, &str, &[&str])] = &[
         &["taint_written_in_first_generation", "signed_reset_accepted", "second_generation_listed_workspace", "rebuilt_workspace_was_seeded"]),
     ("hud_log_unredacted", "hud_log_redacted", "hud_log_has_no_secrets", &["canary_url_refused"]),
     ("lag_from_receipt", "slow_model_no_false_lag", "no_classifier_signal", &["agent_finished_slowly"]),
+    ("start_leak", "failed_start_leaves_nothing", "late_failure_left_nothing", &["rejected_policy_start_failed", "late_failure_start_failed"]),
 ];
 
 /// Small enough that the budget runs out within the script's ten calls.
@@ -134,9 +136,75 @@ fn transitions(report: &Value) -> Vec<(String, String, u64)> {
         .map(|t| (t["event"].as_str().unwrap_or("").to_owned(), t["to"].as_str().unwrap_or("").to_owned(), t["commit_ns"].as_u64().unwrap_or(0))).collect()
 }
 
+/// What this process's live runs have on the host right now: run directories,
+/// cgroups, and processes running a binary from a run directory.
+fn run_traces() -> Vec<String> {
+    let runs = Path::new("/run/verified-agent-containment");
+    let prefix = format!("live-{}-", std::process::id());
+    let names = |dir: &Path, prefix: &str| -> Vec<String> {
+        fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path())
+            .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(prefix)))
+            .map(|p| p.display().to_string()).collect()
+    };
+    let mut found = names(runs, &prefix);
+    if let Ok(base) = cgroup_root() {
+        let cgroups = names(&base, &format!("verified-agent-containment-{prefix}"));
+        // A cgroup's children (the sandbox generations) are traces too.
+        found.extend(cgroups.iter().flat_map(|c| names(Path::new(c), "g")));
+        found.extend(cgroups);
+    }
+    let run_prefix = runs.join(&prefix).display().to_string();
+    found.extend(run_live::processes_under(runs).into_iter().filter_map(|pid| {
+        let exe = fs::read_link(format!("/proc/{pid}/exe")).ok()?.display().to_string();
+        exe.starts_with(&run_prefix).then(|| format!("process {pid}: {exe}"))
+    }));
+    found
+}
+
+/// A controller that fails during start must leave no process, no cgroup and no
+/// run directory. Two failures: a policy the loader rejects (the model endpoint's
+/// origin is also a host), and one that only fails once the cgroups, the sink,
+/// the monitor and System One exist (the workspace seed is missing).
+fn failed_start(weakness: &str, dir: &Path) -> Result<Value, Box<dyn Error>> {
+    let model = "http://127.0.0.1:9";
+    let head = format!("[model]\nendpoint = \"{model}/v1/chat/completions\"\nname = \"none\"\ntoken_budget = 1000\nmax_tokens_per_call = 100\n");
+    let cases = [
+        ("rejected_policy", format!("{head}\n[[host]]\nurl = \"{model}\"\naccess = \"read\"\n")),
+        ("late_failure", format!("{head}\n[workspace]\nseed = \"{}\"\n", dir.join("no-such-seed").display())),
+    ];
+    let mut checks = Checks(Vec::new());
+    for (name, policy) in cases {
+        let path = dir.join(format!("{name}.toml"));
+        fs::write(&path, policy)?;
+        let before = run_traces();
+        let started = run_live::start(&path, "t", &[], weakness);
+        let failed = started.is_err();
+        let left: Vec<String> = run_traces().into_iter().filter(|t| !before.contains(t)).collect();
+        checks.add(&format!("{name}_start_failed"), failed, json!(started.as_ref().err().map(ToString::to_string)));
+        checks.add(&format!("{name}_left_nothing"), failed && left.is_empty(), json!(left));
+        // Whatever was left is removed here, so one leak does not become the next case's.
+        if let Ok(mut run) = started {
+            let _ = run.child.kill();
+            let _ = run.child.wait();
+        }
+        let runs = Path::new("/run/verified-agent-containment");
+        for entry in fs::read_dir(runs).into_iter().flatten().flatten() {
+            let id = entry.file_name().to_string_lossy().into_owned();
+            if id.starts_with(&format!("live-{}-", std::process::id())) && !before.contains(&entry.path().display().to_string()) {
+                run_live::sweep(&entry.path(), &id);
+            }
+        }
+    }
+    Ok(json!({"scenario": "failed_start_leaves_nothing", "weakness": weakness, "passed": checks.passed(), "final_mode": null, "checks": checks.0, "live": null}))
+}
+
 fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn Error>> {
     let dir = work.join(format!("{scenario}-{weakness}"));
     let _ = fs::remove_dir_all(&dir);
+    if scenario == "failed_start_leaves_nothing" {
+        fs::create_dir_all(&dir)?;
+        return failed_start(weakness, &dir);
+    }
     fs::create_dir_all(dir.join("site"))?;
     fs::create_dir_all(dir.join("seed"))?;
     fs::write(dir.join("site/index.html"), "<h1>Fixture</h1><p>Nothing to see.</p>")?;
