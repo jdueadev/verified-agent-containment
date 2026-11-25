@@ -118,7 +118,7 @@ pub(super) fn decide(grant: Option<&Grant>, control: Control, now_ms: u64, autho
     let Some(grant) = covered else {
         return Verdict::Refuse { by: Layer::Policy, raise: None };
     };
-    if !(authority_ready && kernel_allows(control, now_ms, grant, attempt.kind)) {
+    if !(kernel_allows(control, now_ms, grant, attempt.kind)) {
         return Verdict::Refuse { by: Layer::Kernel, raise: None };
     }
     match grant.limit.admits(used, &attempt.cost) {
