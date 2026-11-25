@@ -6,6 +6,7 @@ and reset. Family lemmas split over the finite modes and severity levels and sta
 generic in time, deadlines and counters.
 """
 import re
+import sys
 from pathlib import Path
 
 RUN, RES, HOLD, FRZ, KILL = [f"K.Mode{x}{{}}" for x in ("Run", "Restrict", "Hold", "Freeze", "Kill")]
@@ -488,4 +489,9 @@ def Laws.restrict_denies_secrets(now, d, clock, counter, g, b):
 def Laws.restrict_egress_needs_baseline(now, d, clock, counter, g, b):
   restrict_baseline({IN}, g, b)
 """)
-Path(__file__).resolve().parents[1].joinpath("formal/PROOF.bend").write_text("".join(out))
+target = Path(__file__).resolve().parents[1].joinpath("formal/PROOF.bend")
+if "--check" in sys.argv[1:]:
+    if not target.exists() or target.read_text() != "".join(out):
+        sys.exit("generate_proof: formal/PROOF.bend is not what this script writes; run `uv run tools/generate_proof.py` and commit the result")
+else:
+    target.write_text("".join(out))

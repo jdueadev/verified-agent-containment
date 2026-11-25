@@ -48,11 +48,11 @@ jobs:
 
       - name: Tool versions in the proofs and dev images
         run: |
-          docker run --rm vac-factory:proofs bash -euo pipefail -c 'bun --version; lean --version; command -v bend'
+          docker run --rm vac-factory:proofs bash -euo pipefail -c 'bun --version; lean --version; command -v bend; for tool in java gcc python3; do if command -v "$tool"; then echo "the proofs image contains $tool" >&2; exit 1; fi; done'
           docker run --rm vac-factory:dev bash -euo pipefail -c 'cargo --version; lean --version; gh --version'
 
-      - name: Run the checks in the image
-        run: docker run --rm -v "$PWD:/work" vac-factory:check scripts/check.sh
+      - name: Run the checks in the image, with no network
+        run: docker run --rm --network=none -e CARGO_NET_OFFLINE=true -v "$PWD:/work" vac-factory:check scripts/check.sh
 
       - name: Lean recheck in the proofs image
         run: docker run --rm -v "$PWD:/work" vac-factory:proofs scripts/verdict.sh

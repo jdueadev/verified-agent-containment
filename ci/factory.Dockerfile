@@ -24,8 +24,7 @@ COPY rust-toolchain.toml /opt/factory/rust-toolchain.toml
 RUN source <(grep -E '^[A-Z0-9_]+=' /opt/factory/pins.env); \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-      ca-certificates curl git gcc libc6-dev unzip xz-utils zstd \
-      "openjdk-${JAVA_VERSION}-jre-headless"; \
+      ca-certificates curl git unzip xz-utils zstd; \
     rm -rf /var/lib/apt/lists/*; \
     git config --system --add safe.directory '*'
 
@@ -71,6 +70,11 @@ CMD ["scripts/verdict.sh"]
 
 FROM base AS check
 ARG TARGETARCH
+
+RUN source <(grep -E '^[A-Z0-9_]+=' /opt/factory/pins.env); \
+    apt-get update; \
+    apt-get install -y --no-install-recommends gcc libc6-dev "openjdk-${JAVA_VERSION}-jre-headless"; \
+    rm -rf /var/lib/apt/lists/*
 
 RUN source <(grep -E '^[A-Z0-9_]+=' /opt/factory/pins.env); \
     case "$TARGETARCH" in \
@@ -128,6 +132,8 @@ COPY Cargo.toml Cargo.lock /tmp/prefetch/
 COPY .cargo /tmp/prefetch/.cargo
 COPY crates /tmp/prefetch/crates
 RUN cd /tmp/prefetch; \
+    mkdir -p crates/containment-kernel/src crates/containment-wasm/src crates/containment-host/src; \
+    touch crates/containment-kernel/src/lib.rs crates/containment-wasm/src/lib.rs crates/containment-host/src/main.rs; \
     cargo fetch --locked; \
     rm -rf /tmp/prefetch
 
