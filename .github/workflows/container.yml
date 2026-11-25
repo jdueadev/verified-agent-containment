@@ -9,7 +9,6 @@ on:
       - rust-toolchain.toml
       - Cargo.lock
       - scripts/factory.sh
-      - scripts/factory-lab.sh
       - .github/workflows/container.yml
       - .python-version
       - pyproject.toml
@@ -56,19 +55,6 @@ jobs:
 
       - name: Lean recheck in the proofs image
         run: docker run --rm -v "$PWD:/work" vac-factory:proofs scripts/verdict.sh
-
-  lab:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-
-      - name: Root lab in a privileged container
-        env:
-          FACTORY_LAB_DISPOSABLE: "1"
-        run: scripts/factory.sh lab
 
   publish:
     if: github.repository_owner == 'vac-dev-team' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'

@@ -30,6 +30,30 @@ The claims in [`claims.toml`](../claims.toml) are frozen at tag `pre-factory`; s
 - **Reset:** signature, fresh counter, matching mode and expiry are all required. A counter is consumed and cannot be replayed. The new lease is bounded, and the recovery plan is exact: Kill is rebuilt, never thawed.
 - **Access:** access requires a grant. An expired lease or a stopped mode denies it, and Restrict denies secrets and non-baseline egress.
 
+## Lab results from a runner
+
+The `lab` workflow runs the attack and live suites on a GitHub runner for every pull request and every push to `main`. It has four steps, each a separate job:
+
+1. **Run.** `scripts/factory.sh lab` in a privileged container. Each suite's JSON and its printed log go to one directory.
+2. **Seal.** `tools/lab_evidence.py manifest` writes `manifest.json`: the commit, the id of the image the suites ran in, the run, and the sha256 of every other file.
+3. **Sign.** GitHub signs the manifest (an artifact attestation). This job runs nothing from the checkout.
+4. **Verify.** `tools/lab_evidence.py verify` refuses the run unless every file matches the manifest, every scenario passed, every sabotage control was caught, no cgroup limit was waived, and GitHub's signature names this repository's `lab.yml`, the commit and the ref. The job then checks that three spoiled copies are refused: one byte changed, a manifest nobody signed, and this ref's results offered as `main`'s.
+
+To check a run from a clean machine, with `gh` signed in and Python 3:
+
+```bash
+gh run download <run id> --repo vac-dev-team/verified-agent-containment --name lab-1 --dir lab
+python3 -I tools/lab_evidence.py verify lab --commit <commit> \
+  --repo vac-dev-team/verified-agent-containment \
+  --signer-workflow vac-dev-team/verified-agent-containment/.github/workflows/lab.yml \
+  --source-ref refs/heads/main
+```
+
+What the signature shows: these bytes came from `lab.yml` on a GitHub-hosted runner, for that commit and ref. What it does not show:
+
+- **That the suites are honest.** On a pull request the author controls the suites and `lab.yml` itself. Only results signed for `refs/heads/main` say anything about merged code, which is why the verify command above names that ref.
+- **That the image is reproducible.** The image id names what ran. The image is built in the job from pinned inputs, and a second build has another id.
+
 ## Linux or WSL2 attack suite
 
 Run as root in a disposable distribution:

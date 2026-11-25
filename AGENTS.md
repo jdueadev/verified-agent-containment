@@ -12,7 +12,7 @@ It builds the pinned image and runs `scripts/check.sh` inside it: the kernel-pur
 
 A change to `crates/containment-host/src/controller/admission.rs`, `controller/gate.rs` or the kernel's `authorize` also needs `scripts/kani.sh`, the Kani proofs of the gateway's admission (`.claude/skills/verify-gateway-admission/SKILL.md`). Kani is not in the image yet, so `check` does not run it.
 
-`scripts/factory.sh verdict` rechecks the proofs with Lean. `scripts/factory.sh lab` runs the root attack and live suites in a privileged container; only on a disposable machine.
+`scripts/factory.sh verdict` rechecks the proofs with Lean. `scripts/factory.sh lab` runs the root attack and live suites in a privileged container; only on a disposable machine. The `lab` workflow runs it on a GitHub runner for every pull request and push to `main`, and signs the results; `docs/verification.md` says how to check a run.
 
 On a pull request, the required `check` workflow runs the same checks. It lives in the organization's `.github` repository, not here, so a pull request cannot change it.
 
@@ -23,6 +23,7 @@ On a pull request, the required `check` workflow runs the same checks. It lives 
 - The `sabotage` feature is never a default feature.
 - `formal/PROOF.bend` is generated. Change `tools/generate_proof.py` or the laws, run it, commit the result.
 - Do not write under `results/` by hand. Checks write to `target/verify/`.
+- Lab results count only when `tools/lab_evidence.py verify` accepts them: a full pass, sealed and signed by the `lab` workflow. A lab run on your own machine is for finding out, not for proving.
 - Do not weaken or delete a check, law, mutant or scenario to make something pass. If one is wrong, say so in the pull request.
 - Python is run with `uv` (`uv run tools/<name>.py`). The Python version is in `.python-version`; every other tool version is in `ci/pins.env` and `rust-toolchain.toml`.
 - Run the root lab only in a disposable Linux or WSL2 machine.

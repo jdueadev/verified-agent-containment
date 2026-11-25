@@ -5,6 +5,7 @@ cd "$(dirname "$0")/.."
 repeat="${1:-30}"
 out=target/verify/lab
 mkdir -p "$out"
+find "$out" -mindepth 1 -delete
 
 if [ "$(stat -fc %T /sys/fs/cgroup)" != "cgroup2fs" ]; then
   echo "factory-lab: /sys/fs/cgroup is $(stat -fc %T /sys/fs/cgroup), not cgroup v2; the suites cannot enforce limits here" >&2
@@ -38,7 +39,7 @@ if cmp -s "$default" "$sabotage"; then
 fi
 
 {
-  echo "commit id: $(git rev-parse HEAD 2>/dev/null || echo unknown)"
+  echo "commit id: ${FACTORY_LAB_COMMIT:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"
   echo "where: container on kernel $(uname -r), $(uname -m)"
   echo "cgroup v2 controllers: $(cat /sys/fs/cgroup/cgroup.controllers)"
   echo "cgroup v2 delegated: $(cat /sys/fs/cgroup/cgroup.subtree_control)"
@@ -51,10 +52,10 @@ fi
 
 status=0
 step() {
-  local name="$1"
-  shift
+  local name="$1" log="$out/$2.log"
+  shift 2
   local start=$SECONDS
-  if "$@"; then
+  if "$@" 2>&1 | tee "$log"; then
     echo "factory-lab: PASS $name ($((SECONDS - start)) s)"
   else
     echo "factory-lab: FAIL $name ($((SECONDS - start)) s)"
@@ -62,11 +63,11 @@ step() {
   fi
 }
 
-step "attack suite, honest (repeat $repeat)" "$default" attack-suite --repeat "$repeat" --out "$out/attack-suite-honest.json"
-step "live suite, honest" "$default" live-suite --out "$out/live-suite-honest.json"
+step "attack suite, honest (repeat $repeat)" attack-suite-honest "$default" attack-suite --repeat "$repeat" --out "$out/attack-suite-honest.json"
+step "live suite, honest" live-suite-honest "$default" live-suite --out "$out/live-suite-honest.json"
 if [ "$status" -eq 0 ]; then
-  step "attack suite, sabotage controls" "$sabotage" attack-suite --honest-results "$out/attack-suite-honest.json" --out "$out/attack-suite.json"
-  step "live suite, sabotage controls" "$sabotage" live-suite --honest-results "$out/live-suite-honest.json" --out "$out/live-suite.json"
+  step "attack suite, sabotage controls" attack-suite "$sabotage" attack-suite --honest-results "$out/attack-suite-honest.json" --out "$out/attack-suite.json"
+  step "live suite, sabotage controls" live-suite "$sabotage" live-suite --honest-results "$out/live-suite-honest.json" --out "$out/live-suite.json"
 else
   echo "factory-lab: sabotage controls not run, because an honest suite failed"
 fi
