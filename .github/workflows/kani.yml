@@ -1,0 +1,34 @@
+name: kani
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kani-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # The Kani proofs of the gateway's admission, in the image built from this
+  # checkout. The organization's required workflow will run the same command in
+  # the published image; until it does, this is the job to require.
+  admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Kani proofs of admission in the kani image, with no network
+        run: scripts/factory.sh kani
+
+      - name: Kani report
+        if: ${{ !cancelled() }}
+        run: docker run --rm -v vac-factory-target:/target:ro vac-factory:kani cat /target/verify/kani.json
