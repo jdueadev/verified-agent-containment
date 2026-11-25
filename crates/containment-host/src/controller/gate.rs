@@ -80,6 +80,10 @@ impl Gate {
         attempt: Attempt, grant: Option<Grant>, account: Account) -> Result<Permit<'_>, (Layer, Option<Level>)> {
         let (grant, control) = self.sabotaged(attempt.kind, grant, **control);
         let mut lease = lock(&self.lease);
+        // A signed reset's lease begins when the kernel accepts the reset, so
+        // whatever is admitted from then on is the new lease's, even before
+        // the reset handler gets to it.
+        lease.start(control.reset_counter);
         match decide(grant.as_ref(), control, now_ms, authority_ready, &lease.spent(&account), &attempt) {
             Verdict::Allow { used } => {
                 lease.set(&account, used);
@@ -143,14 +147,11 @@ impl Gate {
         }
     }
 
-    /// Starts the lease of the signed reset numbered `number`. A charge made
-    /// under an earlier lease stays with it. A lease already started, or an
-    /// older one, is not started again.
+    /// Starts the lease of the signed reset numbered `number`, so the report
+    /// shows it even if nothing is admitted in it. A charge made under an
+    /// earlier lease stays with that one.
     pub(super) fn start_lease(&self, number: u64) {
-        let mut lease = lock(&self.lease);
-        if lease.number < number {
-            *lease = Lease { number, ..Lease::default() };
-        }
+        lock(&self.lease).start(number);
     }
 
     /// What the current lease has spent, as the run's report gives it.
@@ -162,6 +163,14 @@ impl Gate {
 }
 
 impl Lease {
+    /// Becomes the lease of reset `number` unless it, or a later one, has
+    /// started already; reset counters only grow.
+    fn start(&mut self, number: u64) {
+        if self.number < number {
+            *self = Lease { number, ..Lease::default() };
+        }
+    }
+
     fn spent(&self, account: &Account) -> Cost {
         match account {
             Account::Unmetered => Cost::default(),
@@ -371,6 +380,26 @@ mod tests {
         gate.start_lease(1);
         gate.start_lease(0);
         assert_eq!(gate.lease_report()["tokens"], 30);
+    }
+
+    /// The kernel starts a lease when it accepts a signed reset, under the
+    /// control lock; the reset handler renews the budgets only afterwards. An
+    /// attempt admitted in between is the new lease's: the old lease's spending
+    /// must not refuse it, and its charge must not be wiped by the renewal.
+    #[test]
+    fn an_attempt_admitted_just_after_a_reset_belongs_to_the_new_lease() {
+        let gate = honest();
+        let budget = Limit { requests: Some(2), ..Limit::NONE };
+        let account = || Account::Host(ORIGIN.to_owned());
+        for _ in 0..2 {
+            drop(admit(&gate, RUN, web(false), host(false, budget), account()).expect("allowed"));
+        }
+        // The kernel has accepted reset 1. The handler has not got to it yet.
+        let reset = Control { reset_counter: 1, ..RUN };
+        let after = admit(&gate, reset, web(false), host(false, budget), account()).map(drop).map_err(|(by, _)| by);
+        assert_eq!(after, Ok(()), "refused for the old lease's spending");
+        gate.start_lease(1);
+        assert_eq!(requests(&gate), 1, "the new lease lost its charge");
     }
 
     /// The reservation is made under the same lock as the decision, so model
