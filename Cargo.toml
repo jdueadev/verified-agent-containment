@@ -14,6 +14,8 @@ license = "MIT OR Apache-2.0"
 # code as a crate attribute; the host and wasm crates need it.
 [workspace.lints.rust]
 unused_must_use = "deny"
+# The Kani proofs are compiled under cfg(kani) (scripts/kani.sh).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 [workspace.lints.clippy]
 dbg_macro = "deny"

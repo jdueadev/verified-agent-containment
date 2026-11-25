@@ -10,6 +10,8 @@ scripts/factory.sh check
 
 It builds the pinned image and runs `scripts/check.sh` inside it: the kernel-purity and sabotage checks, the Bend proofs, clippy and tests for both feature sets, the Rust-to-Bend and Rust-to-wasm differentials, the mutation check, the TLA+ model, and the tool tests. Results go to `target/verify/`. If you have the tools installed, `scripts/check.sh` runs the same thing directly.
 
+A change to `crates/containment-host/src/controller/admission.rs`, `controller/gate.rs` or the kernel's `authorize` also needs `scripts/kani.sh`, the Kani proofs of the gateway's admission (`.claude/skills/verify-gateway-admission/SKILL.md`). Kani is not in the image yet, so `check` does not run it.
+
 `scripts/factory.sh verdict` rechecks the proofs with Lean. `scripts/factory.sh lab` runs the root attack and live suites in a privileged container; only on a disposable machine.
 
 On a pull request, the required `check` workflow runs the same checks. It lives in the organization's `.github` repository, not here, so a pull request cannot change it.
@@ -31,7 +33,7 @@ On a pull request, the required `check` workflow runs the same checks. It lives 
 |---|---|
 | `crates/containment-kernel` | The decision kernel, proved against `formal/` |
 | `crates/containment-host` | Controller, gateway, sandbox, harness, red team |
-| `formal/` | Bend kernel, laws and proofs; TLA+ host model |
+| `formal/` | Bend kernel, laws and proofs; TLA+ host model; Kani proofs of admission (`formal/kani/`) |
 | `tools/` | The check scripts `scripts/check.sh` calls |
 | `scripts/` | `check.sh`, `verdict.sh`, `factory.sh`, the lab scripts |
 | `ci/` | The image definition and tool pins |

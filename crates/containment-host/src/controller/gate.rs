@@ -263,6 +263,11 @@ impl Shared {
     }
 }
 
+// The Kani proofs of the lease handling above. scripts/kani.sh runs them.
+#[cfg(kani)]
+#[path = "../../../../formal/kani/gate_proofs.rs"]
+mod proofs;
+
 #[cfg(test)]
 mod tests {
     use super::*;
