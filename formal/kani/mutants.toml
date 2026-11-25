@@ -1,5 +1,7 @@
 # Broken variants of the product code, one or more per harness: the smallest
-# edit that breaks the harness's promise. `scripts/kani.sh mutants` applies
+# edit that breaks the harness's promise in a state the product can reach, not
+# only in one the harness's free inputs allow (a lease numbered past the
+# kernel's reset counter, say). `scripts/kani.sh mutants` applies
 # each to a scratch copy of the checkout and requires the harness it names in
 # `breaks` to fail on it. Every run checks that each `old` still occurs exactly
 # once in its file and that every harness is named by some mutant, so a
@@ -144,11 +146,11 @@ Verdict::Refuse { by, raise } => {
 """
 
 [[mutant]]
-name = "the charge names the reset counter, not its lease"
+name = "the charge names the run's first lease"
 file = "crates/containment-host/src/controller/gate.rs"
 breaks = "a_refusal_never_charges_and_an_admission_charges_its_lease"
 old = "number: lease.number, account, cost: attempt.cost"
-new = "number: control.reset_counter, account, cost: attempt.cost"
+new = "number: 0, account, cost: attempt.cost"
 
 [[mutant]]
 name = "an unmetered admission is charged to the model"
