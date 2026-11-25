@@ -153,11 +153,13 @@ def prove():
             mark = "verified" if r["verified"] else "FAILED"
             print(f"{suite:9} {name:62} {mark:8} {r.get('seconds') or 0:6.1f}s {'; '.join(r['failed'] + r.get('vacuous', []))}")
             report.append({"suite": suite, **r})
+        print(f"{suite:9} {'(compile and verify, wall)':62} {'':8} {seconds:6.1f}s")
         if code != 0 or missing:
             ok = False
             print(f"kani: the {suite} run exited {code}; see {logs / (suite + '.log')}", file=sys.stderr)
-            print("\n".join(line for line in text.splitlines() if line.startswith("error"))[-2000:], file=sys.stderr)
-        print(f"{suite:9} {'(compile and verify, wall)':62} {'':8} {seconds:6.1f}s")
+            errors = [line for line in text.splitlines() if line.startswith("error")]
+            if errors:
+                print("\n".join(errors)[-2000:], file=sys.stderr)
     out = {"kani": kani_version, "cbmc": cbmc, "inputs": inputs, "sha256": digest(inputs),
            "passed": [r["harness"] for r in report if r["verified"]] if ok else [], "harnesses": report}
     (OUT / "kani.json").write_text(json.dumps(out, indent=2) + "\n")
