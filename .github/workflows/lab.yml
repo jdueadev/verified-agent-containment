@@ -187,8 +187,10 @@ jobs:
         with:
           name: lab-1
           path: lab
-      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532
       - run: |
+          time curl -sSLf -o cosign https://github.com/sigstore/cosign/releases/download/v3.1.5/cosign-linux-amd64
+          echo "912502def4baf810eaf36b210a4f51e1da214f9f6d664e2a9a2154cfc67ee0d6  cosign" | sha256sum -c -
+          chmod +x cosign && export PATH="$PWD:$PATH"
           cosign version
           time cosign sign-blob --yes --bundle manifest.sigstore.json lab/manifest.json
           ls -l manifest.sigstore.json
