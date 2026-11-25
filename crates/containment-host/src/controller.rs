@@ -21,6 +21,9 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
+// The gate takes it into use in the following change.
+#[cfg_attr(not(test), allow(dead_code))]
+mod admission;
 mod classifier;
 mod enforcer;
 mod gateway;
