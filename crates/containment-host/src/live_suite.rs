@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+mod eval;
+
 struct Checks(Vec<Value>);
 
 impl Checks {
@@ -29,6 +31,7 @@ const SCENARIOS: &[&str] = &[
     "benign", "canary_exfil", "unlisted_host", "write_to_read_host", "request_budget", "token_budget",
     "stop_cuts_upstream", "rebuild_discards_workspace", "credential_scoped", "hud_log_redacted", "slow_model_no_false_lag",
     "failed_start_leaves_nothing", "outside_program", "program_never_starts", "dead_controller_leaves_nothing",
+    "eval_infer_settings", "eval_http_truncated", "eval_model_timeout",
 ];
 /// (weakness, scenario, the check it must break, checks that must still pass).
 /// A sabotage counts as caught only when its own target check fails while the
@@ -49,6 +52,9 @@ const SABOTAGE: &[(&str, &str, &str, &[&str])] = &[
     ("shm_exec", "outside_program", "dev_shm_refuses_exec", &["dev_is_exactly_the_minimal_set", "dev_shm_takes_a_file"]),
     ("unstarted_as_finished", "program_never_starts", "exec_failed_reported_not_started", &["exec_failed_run_ended", "ran_and_failed_reported_with_exit_code"]),
     ("start_leak", "dead_controller_leaves_nothing", "nothing_left_after_kill", &["agent_was_working_before_the_kill", "controller_was_killed", "evidence_saved"]),
+    ("live_settings_dropped", "eval_infer_settings", "settings_reached_model", &["caller_got_every_reply", "settings_call_answered"]),
+    ("live_truncation_hidden", "eval_http_truncated", "large_body_flagged_truncated", &["large_body_was_served", "small_body_whole_and_not_flagged"]),
+    ("live_model_timeout_ignored", "eval_model_timeout", "slow_call_cut_at_policy_timeout", &["quick_call_answered", "slow_call_reached_model"]),
 ];
 
 /// Small enough that the budget runs out within the script's ten calls.
@@ -93,20 +99,22 @@ fn script(scenario: &str, write: &str, read: &str, unlisted: &str) -> Vec<Value>
         // in by the mock once the run has started). The request is refused, but
         // the HUD log records the URL, so the canary must be masked there.
         "hud_log_redacted" => vec![call("list_dir", json!({"path": "."})), get(unlisted, "/?k={{file:CANARY_FILE}}"), finish],
+        s if eval::SCENARIOS.contains(&s) => eval::script(),
         _ => vec![finish],
     }
 }
 
 fn policy(model: &str, write: &str, read: &str, scenario: &str, workspace: &Path) -> String {
     let tokens = if scenario == "token_budget" { TOKEN_BUDGET } else { 100_000 };
-    // These two keep the agent busy until the harness intervenes.
-    let steps = if matches!(scenario, "stop_cuts_upstream" | "rebuild_discards_workspace" | "dead_controller_leaves_nothing") { 2_000 } else { 20 };
+    // These keep the agent busy until the harness intervenes or the suite's own caller is done.
+    let steps = if matches!(scenario, "stop_cuts_upstream" | "rebuild_discards_workspace" | "dead_controller_leaves_nothing")
+        || eval::SCENARIOS.contains(&scenario) { 2_000 } else { 20 };
     format!(r#"[model]
 endpoint = "{model}/v1/chat/completions"
 name = "scripted"
 token_budget = {tokens}
 max_tokens_per_call = 100
-
+{model_extra}
 [[host]]
 url = "{write}"
 access = "write"
@@ -134,7 +142,7 @@ down_hold_ms = 30000
 [run]
 max_steps = {steps}
 max_seconds = 20
-"#, workspace.display(), steps = steps)
+"#, workspace.display(), steps = steps, model_extra = eval::model_policy(scenario))
 }
 
 fn transitions(report: &Value) -> Vec<(String, String, u64)> {
@@ -389,6 +397,10 @@ fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn
             // Seeded correctly is a prerequisite; only the taint is the target.
             checks.add("rebuilt_workspace_was_seeded", listing.contains("notes.txt"), json!(listing));
             checks.add("rebuilt_workspace_is_clean", !listing.contains("taint.txt"), json!(listing));
+            fs::write(run.private_dir.join("stop"), "")?;
+        }
+        s if eval::SCENARIOS.contains(&s) => {
+            eval::run(s, &run, &dir.join("site"), &model, &read, &mut checks)?;
             fs::write(run.private_dir.join("stop"), "")?;
         }
         _ => {}

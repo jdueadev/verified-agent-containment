@@ -11,6 +11,8 @@ name = "qwen2.5:7b-instruct"
 max_tokens_per_call = 1024
 # Tokens per lease. When used up, the agent is restricted and inference is refused.
 token_budget = 200000
+# Longest one model call may take, 1 to 3600 s. Unset, about 60 s.
+# timeout_seconds = 300
 
 # Read-only origins the agent may fetch from.
 [[host]]

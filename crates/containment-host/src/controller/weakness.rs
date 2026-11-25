@@ -107,6 +107,10 @@ weaknesses! {
     unstarted_as_finished,
     host_dev,
     shm_exec,
+    live_settings_dropped,
+    live_truncation_hidden,
+    oversized_request_kept_open,
+    live_model_timeout_ignored,
 }
 
 #[cfg(test)]
@@ -138,7 +142,7 @@ mod tests {
     #[cfg(feature = "sabotage")]
     #[test]
     fn the_sabotage_build_accepts_every_defect() {
-        assert_eq!(NAMES.len(), 42);
+        assert_eq!(NAMES.len(), 46);
         for name in NAMES {
             assert!(Weakness::parse(name).is_ok(), "{name} was refused");
         }

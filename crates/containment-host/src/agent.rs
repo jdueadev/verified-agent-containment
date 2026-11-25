@@ -328,12 +328,22 @@ fn churn(gateway: &str) {
         }
     }
     let oversized = Gateway::connect(gateway).map(|mut client| {
+        // The write fails once the gateway stops reading; its reply is still there to read.
         let _ = writeln!(client.stream, "{}", "x".repeat(MAX_LINE_BYTES as usize * 2));
         let mut line = String::new();
-        client.reader.read_line(&mut line).unwrap_or(0)
+        let _ = client.reader.read_line(&mut line);
+        // Then the connection must be over: closed, not merely quiet.
+        let mut rest = String::new();
+        let after_reply = match client.reader.read_line(&mut rest) {
+            Ok(0) => "closed",
+            Ok(_) => "more_data",
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => "still_open",
+            Err(_) => "closed",
+        };
+        json!({"reply": serde_json::from_str::<Value>(&line).unwrap_or(json!(line)), "after_reply": after_reply})
     });
     let after = Gateway::connect(gateway).map(|mut c| c.send(json!({"op":"egress","host":"allowed.test","data":"after-churn"})));
-    say("churn", json!({"connected":connected,"oversized_reply_bytes":oversized.ok(),"after":after.ok()}));
+    say("churn", json!({"connected":connected,"oversized":oversized.ok(),"after":after.ok()}));
 }
 
 pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
@@ -457,6 +467,18 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             }
             say("classifier_input", json!({"sent": true}));
             idle()
+        }
+        // Stands in for an outside program, such as an eval, that sends its own
+        // gateway requests: each one in turn on one connection, every reply reported.
+        "gateway_requests" => {
+            let mut client = Gateway::connect(gateway)?;
+            client.stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+            for request in probe["requests"].as_array().into_iter().flatten() {
+                let began = std::time::Instant::now();
+                let reply = client.send(request.clone());
+                say("reply", json!({"reply": reply, "elapsed_ms": began.elapsed().as_millis() as u64}));
+            }
+            Ok(())
         }
         other => Err(format!("unknown scenario {other}").into()),
     }
