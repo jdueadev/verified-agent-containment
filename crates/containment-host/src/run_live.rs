@@ -238,11 +238,25 @@ pub fn summarise(report: &Value) -> String {
         .filter(|t| t["from"] != t["to"]).map(|t| format!("{} -> {} ({})", t["from"].as_str().unwrap_or("?"), t["to"].as_str().unwrap_or("?"), t["event"].as_str().unwrap_or("?"))).collect();
     let degraded = report["upstream_abort_failures"].as_u64().unwrap_or(0);
     let warning = if degraded > 0 { format!("\nWARNING: {degraded} upstream connection(s) could only be shut down, not reset; bytes queued before the cut may have been sent") } else { String::new() };
-    format!("final mode: {}\nmode changes: {}\nclassifier signals: {}\nlive use: {}{warning}",
+    format!("final mode: {}\nmode changes: {}\nclassifier signals: {}\nlive use: {}\nprogram: {}{warning}",
         report["final_mode"].as_str().unwrap_or("?"),
         if transitions.is_empty() { "none".to_owned() } else { transitions.join("; ") },
         report["classifier_signals"].as_array().map_or(0, Vec::len),
-        report["live"])
+        report["live"], report["program"])
+}
+
+/// Why `live` exits non-zero after this report, if it does: the program did not
+/// start, or it exited non-zero or was killed by a signal.
+pub fn program_failure(report: &Value) -> Option<String> {
+    let program = &report["program"];
+    if report["exit_cause"] == "program_did_not_start" {
+        return Some(format!("the program did not start: {}", program["reason"].as_str().unwrap_or("no reason was given")));
+    }
+    match (program["exit_code"].as_i64(), program["signal"].as_i64()) {
+        (Some(code), _) if code != 0 => Some(format!("the program exited with status {code}")),
+        (_, Some(signal)) => Some(format!("the program was killed by signal {signal}")),
+        _ => None,
+    }
 }
 
 /// Runs a live agent, or an outside program, under a policy, streams what it does and saves the run.
@@ -301,7 +315,7 @@ pub fn live(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     println!("saved to {}", out.display());
     fs::remove_dir_all(&run.root)?;
-    Ok(())
+    program_failure(&report).map_or(Ok(()), |failure| Err(failure.into()))
 }
 
 /// Status, stop or a signed reset for a running live controller.
@@ -356,4 +370,20 @@ pub fn ctl(args: &[String]) -> Result<(), Box<dyn Error>> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_fails_for_a_program_that_did_not_start_or_did_not_exit_cleanly() {
+        let report = |cause: &str, program: Value| json!({"exit_cause": cause, "program": program});
+        assert_eq!(program_failure(&report("agent_finished", json!({"started": true, "exit_code": 0}))), None);
+        assert_eq!(program_failure(&report("operator_stop", json!({"started": true}))), None);
+        let not_started = program_failure(&report("program_did_not_start", json!({"started": false, "reason": "exec /x: gone"})));
+        assert!(not_started.is_some_and(|m| m.contains("did not start") && m.contains("exec /x: gone")));
+        assert!(program_failure(&report("agent_finished", json!({"started": true, "exit_code": 3}))).is_some_and(|m| m.contains("status 3")));
+        assert!(program_failure(&report("agent_finished", json!({"started": true, "signal": 9}))).is_some_and(|m| m.contains("signal 9")));
+    }
 }

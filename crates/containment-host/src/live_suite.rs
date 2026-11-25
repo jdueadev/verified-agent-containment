@@ -28,7 +28,7 @@ impl Checks {
 const SCENARIOS: &[&str] = &[
     "benign", "canary_exfil", "unlisted_host", "write_to_read_host", "request_budget", "token_budget",
     "stop_cuts_upstream", "rebuild_discards_workspace", "credential_scoped", "hud_log_redacted", "slow_model_no_false_lag",
-    "failed_start_leaves_nothing", "outside_program",
+    "failed_start_leaves_nothing", "outside_program", "program_never_starts",
 ];
 /// (weakness, scenario, the check it must break, checks that must still pass).
 /// A sabotage counts as caught only when its own target check fails while the
@@ -45,6 +45,7 @@ const SABOTAGE: &[(&str, &str, &str, &[&str])] = &[
     ("lag_from_receipt", "slow_model_no_false_lag", "no_classifier_signal", &["agent_finished_slowly"]),
     ("start_leak", "failed_start_leaves_nothing", "late_failure_left_nothing", &["rejected_policy_start_failed", "late_failure_start_failed"]),
     ("writable_root", "outside_program", "supplied_root_is_read_only", &["granted_request_arrived_through_gate", "program_saw_supplied_root"]),
+    ("unstarted_as_finished", "program_never_starts", "exec_failed_reported_not_started", &["exec_failed_run_ended", "ran_and_failed_reported_with_exit_code"]),
 ];
 
 /// Small enough that the budget runs out within the script's ten calls.
@@ -228,12 +229,56 @@ fn program_root(root: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// A program that cannot start must be reported as not started, never as finished,
+/// and must make `live` fail. It fails two ways: the planner refuses it (a script,
+/// with no root given), and its exec fails (a path the supplied root does not have).
+/// A third program starts and exits 2, so "started" is not the answer to everything.
+fn never_starts(weakness: &str, dir: &Path) -> Result<Value, Box<dyn Error>> {
+    let script = dir.join("script.sh");
+    fs::write(&script, "#!/bin/sh\nexit 0\n")?;
+    fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
+    program_root(&dir.join("root"))?;
+    let head = "[model]\nendpoint = \"http://127.0.0.1:9/v1/chat/completions\"\nname = \"none\"\n\n[run]\nmax_seconds = 20\n";
+    let with_root = format!("{head}\n[root]\ndir = \"{}\"\n", dir.join("root").display());
+    let cases = [
+        ("planner_refused", head.to_owned(), vec![script.display().to_string()]),
+        ("exec_failed", with_root.clone(), vec!["/bin/no-such-program".to_owned()]),
+        ("ran_and_failed", with_root, vec!["/bin/probe".to_owned(), "no-such-command".to_owned()]),
+    ];
+    let mut checks = Checks(Vec::new());
+    for (name, policy, argv) in cases {
+        let path = dir.join(format!("{name}.toml"));
+        fs::write(&path, policy)?;
+        let mut run = run_live::start(&path, &Workload::Program(argv), &[], weakness)?;
+        let report = run_live::wait(&mut run, |_| {}, |_| {});
+        let _ = fs::remove_dir_all(&run.root);
+        checks.add(&format!("{name}_run_ended"), report.is_ok(), json!(report.as_ref().err().map(ToString::to_string)));
+        let report = report.unwrap_or(Value::Null);
+        // What `live` would say about this run, and so whether it would exit non-zero.
+        let failure = run_live::program_failure(&report);
+        let detail = json!({"exit_cause": report["exit_cause"], "program": report["program"], "live_says": failure});
+        if name == "ran_and_failed" {
+            let ran = report["exit_cause"] == "agent_finished" && report["program"] == json!({"started": true, "exit_code": 2});
+            checks.add("ran_and_failed_reported_with_exit_code", ran && failure.is_some(), detail);
+        } else {
+            let not_started = report["exit_cause"] == "program_did_not_start" && report["program"]["started"] == false
+                && report["program"]["reason"].as_str().is_some_and(|r| !r.is_empty());
+            checks.add(&format!("{name}_reported_not_started"), not_started && failure.is_some_and(|f| f.contains("did not start")), detail);
+        }
+    }
+    Ok(json!({"scenario": "program_never_starts", "weakness": weakness, "passed": checks.passed(), "final_mode": null, "checks": checks.0, "live": null}))
+}
+
 fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn Error>> {
     let dir = work.join(format!("{scenario}-{weakness}"));
     let _ = fs::remove_dir_all(&dir);
     if scenario == "failed_start_leaves_nothing" {
         fs::create_dir_all(&dir)?;
         return failed_start(weakness, &dir);
+    }
+    if scenario == "program_never_starts" {
+        fs::create_dir_all(&dir)?;
+        return never_starts(weakness, &dir);
     }
     fs::create_dir_all(dir.join("site"))?;
     fs::create_dir_all(dir.join("seed"))?;
@@ -411,6 +456,7 @@ fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn
             checks.add("sandbox_entries_win_over_supplied", probe["tmp"].as_array().is_some_and(|t| !t.contains(&json!("decoy"))), probe["tmp"].clone());
             let refused = probe["write_errors"].as_object().is_some_and(|w| w.len() == 2 && w.values().all(|e| e == libc::EROFS));
             checks.add("supplied_root_is_read_only", refused && !dir.join("root/data/probe").exists(), probe["write_errors"].clone());
+            checks.add("program_exit_recorded", report["program"] == json!({"started": true, "exit_code": 0}), report["program"].clone());
         }
         "credential_scoped" => {
             let reads = read.try_entries()?;

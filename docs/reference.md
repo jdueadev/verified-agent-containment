@@ -6,7 +6,7 @@ Details for `containment-lab live`, the HUD, `ctl` and the red-team kit. For a g
 
 `containment-lab --help` lists the commands, and every command takes `--help`. Exit status:
 - `0`: success;
-- `1`: the command failed, or for `redteam`, a task leaked;
+- `1`: the command failed; for `live`, also when the program in the sandbox did not start, exited with a non-zero status or was killed by a signal; for `redteam`, a task leaked;
 - `2`: invalid usage.
 
 A results file is only replaced once its run has finished. Model, agent and upstream text printed to the terminal has its control characters shown escaped, so they never act as terminal sequences.
@@ -30,7 +30,9 @@ The command streams each model step and tool call, prints every mode change, and
 
 A run ends on its own when the agent finishes in Run or Restrict. After Hold, Freeze or Kill it waits for a reset or a stop, up to `run.max_seconds` (default 900 s), and then tears down (failing closed). A reset from Kill rebuilds the sandbox with a fresh workspace.
 
-`containment-lab live-suite` checks all of this end to end with a scripted model and local fixture servers. It tests credential scoping, the canary, unlisted hosts, writes to read hosts, request and token budgets, the cut on stop, the workspace rebuild, that the HUD log never holds secrets, that a slow model (800 ms per call) is not taken for a stalled classifier, that a controller which fails during start leaves no process, cgroup or run directory, and that an outside program runs from a read-only root it was given. Ten of the thirteen scenarios have a sabotaged controller that must fail that scenario (`benign`, `token_budget` and `stop_cuts_upstream` do not). `results/live-suite.json` records 11/11 runs passed and 8/8 sabotaged controllers caught. It predates the `failed_start_leaves_nothing` and `outside_program` scenarios and their `start_leak` and `writable_root` sabotages. The checks look at what reached the upstream servers, including the model server, not at what the agent reports.
+The report's `exit_cause` says why the run ended: `agent_finished`, `program_did_not_start`, `operator_stop` or `run_time_limit`. Its `program` field says what the sandbox's init saw of the program in the current sandbox generation. The field is `{"started": false, "reason": "..."}` for a program that never ran, `{"started": true}` while it runs, and gains `exit_code` or `signal` once it has ended.
+
+`containment-lab live-suite` checks all of this end to end with a scripted model and local fixture servers. It tests credential scoping, the canary, unlisted hosts, writes to read hosts, request and token budgets, the cut on stop, the workspace rebuild, that the HUD log never holds secrets, that a slow model (800 ms per call) is not taken for a stalled classifier, that a controller which fails during start leaves no process, cgroup or run directory, that an outside program runs from a read-only root it was given, and that a program which cannot start is reported as not started. Eleven of the fourteen scenarios have a sabotaged controller that must fail that scenario (`benign`, `token_budget` and `stop_cuts_upstream` do not). `results/live-suite.json` records 11/11 runs passed and 8/8 sabotaged controllers caught. It predates the `failed_start_leaves_nothing`, `outside_program` and `program_never_starts` scenarios and their `start_leak`, `writable_root` and `unstarted_as_finished` sabotages. The checks look at what reached the upstream servers, including the model server, not at what the agent reports.
 
 Two limits are specific to live runs:
 - A live reset is signed with a per-run key file that only root can read, not a hardware key, because reset v3 is not built yet. It proves that root on this host approved the reset, not that the operator did.
@@ -46,7 +48,7 @@ sudo target/release/containment-lab live --policy policy.toml -- /usr/bin/python
 
 The program gets the same confinement as the agent: its own uid, rlimits, seccomp, an empty network namespace and the parent-death chain. Its environment holds only `VAC_GATE` (the gateway socket, `/gateway.sock`), `HOME=/workspace` and `PATH=/usr/local/bin:/usr/bin:/bin`. It starts in `/workspace`. It reaches the network only through the gateway, which takes one JSON request per line, such as `{"op": "http", "method": "GET", "url": "https://example.com/"}`.
 
-Without a `[root]` table, the sandbox root is planned from the program's ELF file, as for the agent: the program at its own path, its loader and its libraries. A program the planner cannot cover does not start. That includes a script, a static binary and an ELF file that sets RPATH or RUNPATH.
+Without a `[root]` table, the sandbox root is planned from the program's ELF file, as for the agent: the program at its own path, its loader and its libraries. A program the planner cannot cover does not start, and the run reports it as not started. That includes a script, a static binary and an ELF file that sets RPATH or RUNPATH.
 
 For an interpreter and its libraries, give a directory to build the root from:
 

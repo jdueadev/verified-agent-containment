@@ -3,7 +3,7 @@ use std::error::Error;
 use std::ffi::CString;
 use std::fs;
 use std::io;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{symlink, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
@@ -81,18 +81,102 @@ fn c(path: &str) -> Result<CString, Box<dyn Error>> {
     Ok(CString::new(path)?)
 }
 
+/// One started sandbox.
+pub struct Sandbox {
+    /// The launcher, outside the sandbox's PID namespace.
+    pub child: Child,
+    /// Copies the program's output into `spec.output`. The caller joins it once the
+    /// sandbox's processes are gone, so the last records the program wrote reach the file.
+    pub copier: std::thread::JoinHandle<()>,
+    /// What the sandbox's init says about the program.
+    pub status: ProgramStatus,
+}
+
+/// How the program in a sandbox has fared, as the sandbox's init reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Reported {
+    /// Nothing yet: the sandbox is still starting.
+    Nothing,
+    /// The program never ran, and why.
+    NotStarted(String),
+    /// Its exec succeeded.
+    Started,
+    Exited(i32),
+    Signalled(i32),
+}
+
+impl Reported {
+    fn after(self, record: &Value) -> Self {
+        match (record["started"].as_bool(), record["exit_code"].as_i64(), record["signal"].as_i64()) {
+            (Some(false), _, _) => Self::NotStarted(record["reason"].as_str().unwrap_or("no reason was given").to_owned()),
+            (Some(true), _, _) => Self::Started,
+            (_, Some(code), _) => Self::Exited(code as i32),
+            (_, _, Some(signal)) => Self::Signalled(signal as i32),
+            _ => self,
+        }
+    }
+
+    /// For the run's report.
+    pub fn to_json(&self) -> Value {
+        match self {
+            Self::Nothing => json!({"started": null}),
+            Self::NotStarted(reason) => json!({"started": false, "reason": reason}),
+            Self::Started => json!({"started": true}),
+            Self::Exited(code) => json!({"started": true, "exit_code": code}),
+            Self::Signalled(signal) => json!({"started": true, "signal": signal}),
+        }
+    }
+}
+
+/// The controller's end of the pipe on which the sandbox's init reports, one JSON
+/// line per record: whether the program started, then how it ended.
+pub struct ProgramStatus {
+    pipe: io::PipeReader,
+    unread: Vec<u8>,
+    state: Reported,
+}
+
+impl ProgramStatus {
+    /// Reads whatever init has written so far, without waiting.
+    pub fn poll(&mut self) -> &Reported {
+        let mut buffer = [0_u8; 4096];
+        while let Ok(n @ 1..) = io::Read::read(&mut self.pipe, &mut buffer) {
+            self.unread.extend_from_slice(&buffer[..n]);
+        }
+        while let Some(end) = self.unread.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = self.unread.drain(..=end).collect();
+            if let Ok(record) = serde_json::from_slice::<Value>(&line) {
+                self.state = std::mem::replace(&mut self.state, Reported::Nothing).after(&record);
+            }
+        }
+        &self.state
+    }
+
+    /// Once the launcher has exited: all init said. A sandbox that ended without
+    /// saying its program started did not start it, as far as anyone can tell.
+    pub fn ended(&mut self) -> &Reported {
+        if *self.poll() == Reported::Nothing {
+            self.state = Reported::NotStarted("the sandbox ended before it reported that the program started".to_owned());
+        }
+        &self.state
+    }
+}
+
 /// Starts one sandbox inside `cgroup`. This must run on the controller's main
 /// thread because the parent-death signal follows the spawning thread.
-/// Returns the sandbox's process and the thread copying its output into `spec.output`.
-/// The caller joins the copier once the sandbox's processes are gone, so the last
-/// records the agent wrote reach the file.
-pub fn spawn(spec: &SandboxSpec, cgroup: &Path, uid: u32, workspace: Option<&Path>) -> io::Result<(Child, std::thread::JoinHandle<()>)> {
+pub fn spawn(spec: &SandboxSpec, cgroup: &Path, uid: u32, workspace: Option<&Path>) -> io::Result<Sandbox> {
     let procs = fs::OpenOptions::new().write(true).open(cgroup.join("cgroup.procs"))?;
     let output = fs::OpenOptions::new().create(true).append(true).open(&spec.output)?;
     // The agent writes to a pipe, not to the file: with a file descriptor on the file it
     // could ftruncate away what earlier generations wrote (#88). The controller copies the
     // pipe into the file, at most AGENT_OUTPUT_LIMIT bytes per generation.
     let (reader, writer) = io::pipe()?;
+    // Init's reports. The write end is close-on-exec here, so no other child of this
+    // process gets it; only the launcher keeps it across its exec.
+    let (status_reader, status_writer) = io::pipe()?;
+    // SAFETY: fcntl on a descriptor this function owns.
+    check(unsafe { libc::fcntl(status_reader.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) })?;
+    let status_fd = status_writer.as_raw_fd();
     let mut flags = libc::CLONE_NEWNS | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS | libc::CLONE_NEWPID | libc::CLONE_NEWCGROUP;
     if !spec.share_network {
         flags |= libc::CLONE_NEWNET;
@@ -106,7 +190,7 @@ pub fn spawn(spec: &SandboxSpec, cgroup: &Path, uid: u32, workspace: Option<&Pat
         "argv": spec.program.argv, "root": spec.program.root, "uid": uid, "expose_private": spec.expose_private,
         "death_signal": death_signal, "host_root": spec.host_root, "wide_root": spec.wide_root, "writable_root": spec.writable_root,
         "seccomp": spec.seccomp, "memfd_exec": spec.memfd_exec,
-        "workspace": workspace,
+        "workspace": workspace, "status_fd": status_fd,
     });
     let mut command = Command::new(&spec.exe);
     command
@@ -130,13 +214,16 @@ pub fn spawn(spec: &SandboxSpec, cgroup: &Path, uid: u32, workspace: Option<&Pat
                     libc::_exit(70);
                 }
             }
+            check(libc::fcntl(status_fd, libc::F_SETFD, 0))?;
             check(libc::unshare(flags))
         });
     }
     let child = command.spawn()?;
-    // Closes the parent's copies of the write end, so the copy ends when the agent's do.
+    // Closes the parent's copies of the write ends, so each pipe ends when the sandbox's copies do.
     drop(command);
-    Ok((child, copy_agent_output(reader, output)))
+    drop(status_writer);
+    let status = ProgramStatus { pipe: status_reader, unread: Vec::new(), state: Reported::Nothing };
+    Ok(Sandbox { child, copier: copy_agent_output(reader, output), status })
 }
 
 /// The most one generation may add to its output file. The rest is read and dropped,
@@ -434,7 +521,10 @@ pub unsafe fn install_filter(program: &mut [libc::sock_filter]) -> libc::c_int {
     unsafe { libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &fprog as *const libc::sock_fprog) }
 }
 
-fn drop_authority(uid: u32, seccomp: bool) -> Result<(), Box<dyn Error>> {
+/// `keep` is the exec-status pipe, the one descriptor above stderr that stays open.
+/// It is close-on-exec, so the program still starts with only 0, 1 and 2.
+fn drop_authority(uid: u32, seccomp: bool, keep: libc::c_int) -> Result<(), Box<dyn Error>> {
+    let keep = u32::try_from(keep).ok().filter(|fd| *fd > 2).ok_or("the exec-status pipe is a standard descriptor")?;
     let limit = |resource, value| {
         let limit = libc::rlimit { rlim_cur: value, rlim_max: value };
         // SAFETY: `limit` is a valid rlimit for the call.
@@ -448,7 +538,10 @@ fn drop_authority(uid: u32, seccomp: bool) -> Result<(), Box<dyn Error>> {
     unsafe {
         // Unconfirmed means stopped (INV-7): a failed close_range would leave the
         // controller's descriptors open in the agent.
-        check(libc::syscall(libc::SYS_close_range, 3_u32, u32::MAX, 0_u32) as libc::c_int)?;
+        if keep > 3 {
+            check(libc::syscall(libc::SYS_close_range, 3_u32, keep - 1, 0_u32) as libc::c_int)?;
+        }
+        check(libc::syscall(libc::SYS_close_range, keep + 1, u32::MAX, 0_u32) as libc::c_int)?;
         check(libc::setgroups(0, ptr::null()))?;
         check(libc::setresgid(uid, uid, uid))?;
         check(libc::setresuid(uid, uid, uid))?;
@@ -489,6 +582,10 @@ pub fn launch(args: &[String]) -> Result<(), Box<dyn Error>> {
     let [config] = args else { return Err("sandbox-launch arguments are invalid".into()) };
     let config: Value = serde_json::from_str(config)?;
     let death_signal = config["death_signal"] == true;
+    let status_fd = config["status_fd"].as_i64().and_then(|fd| libc::c_int::try_from(fd).ok()).ok_or("status_fd")?;
+    // SAFETY: the controller opened this descriptor for the launcher alone and kept it
+    // open across exec; nothing else in this process owns it.
+    let status = unsafe { fs::File::from_raw_fd(status_fd) };
     // Init polls this pipe so a launcher death before PDEATHSIG is armed is seen.
     let mut pipe = [0; 2];
     // SAFETY: `pipe` is a valid two-element output array.
@@ -501,6 +598,8 @@ pub fn launch(args: &[String]) -> Result<(), Box<dyn Error>> {
     if init > 0 {
         // SAFETY: closing the unused read end is valid in the launcher.
         unsafe { libc::close(pipe[0]) };
+        // Only init reports, so the reports end when init does.
+        drop(status);
         let mut status = 0;
         // SAFETY: `status` is a valid out pointer.
         unsafe { libc::waitpid(init, &mut status, 0) };
@@ -508,10 +607,48 @@ pub fn launch(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     // SAFETY: closing the unused write end is valid in init.
     unsafe { libc::close(pipe[1]) };
+    match start_program(&config, death_signal, pipe[0]) {
+        Ok(program) => {
+            report(&status, &json!({"started": true}));
+            supervise(program, &status)
+        }
+        Err(error) => {
+            report(&status, &json!({"started": false, "reason": error.to_string().chars().take(2000).collect::<String>()}));
+            Err(error)
+        }
+    }
+}
+
+/// One record for the controller. Only init writes to this pipe.
+fn report(status: &fs::File, record: &Value) {
+    let _ = io::Write::write_all(&mut &*status, format!("{record}\n").as_bytes());
+}
+
+/// Init reaps orphans and ends the sandbox when the program exits, once it has
+/// said how the program ended.
+fn supervise(program: libc::pid_t, status: &fs::File) -> ! {
+    loop {
+        let mut wait = 0;
+        // SAFETY: `wait` is a valid out pointer.
+        let pid = unsafe { libc::waitpid(-1, &mut wait, 0) };
+        if pid == program {
+            let ended = if libc::WIFSIGNALED(wait) { json!({"signal": libc::WTERMSIG(wait)}) } else { json!({"exit_code": libc::WEXITSTATUS(wait)}) };
+            report(status, &ended);
+        }
+        if pid == program || (pid < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)) {
+            // SAFETY: _exit is always safe to call.
+            unsafe { libc::_exit(0) };
+        }
+    }
+}
+
+/// Init's part before the program runs: the root, then the program. Returns the
+/// program's pid once its exec has succeeded, or why it did not start.
+fn start_program(config: &Value, death_signal: bool, death_pipe: libc::c_int) -> Result<libc::pid_t, Box<dyn Error>> {
     if death_signal {
         // SAFETY: prctl has no pointer arguments here.
         check(unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) })?;
-        let mut waiting = libc::pollfd { fd: pipe[0], events: libc::POLLIN, revents: 0 };
+        let mut waiting = libc::pollfd { fd: death_pipe, events: libc::POLLIN, revents: 0 };
         // SAFETY: `waiting` is a valid pollfd array of length one.
         if unsafe { libc::poll(&mut waiting, 1, 0) } != 0 {
             return Err("sandbox launcher exited during start".into());
@@ -525,39 +662,106 @@ pub fn launch(args: &[String]) -> Result<(), Box<dyn Error>> {
     if config["memfd_exec"] != true {
         fs::write("/proc/sys/vm/memfd_noexec", "2").map_err(|e| format!("vm.memfd_noexec: {e}"))?;
     }
-    let placed = prepare(&config)?;
+    let placed = prepare(config)?;
     let argv: Vec<&str> = config["argv"].as_array().ok_or("argv")?.iter().map(|a| a.as_str().ok_or("argv")).collect::<Result<_, _>>()?;
+    // The exec-status pipe. Its write end is close-on-exec, so a successful exec closes
+    // it with nothing written, and a failure writes why before the program exits.
+    let mut exec_status = [0; 2];
+    // SAFETY: `exec_status` is a valid two-element output array.
+    check(unsafe { libc::pipe2(exec_status.as_mut_ptr(), libc::O_CLOEXEC) })?;
     // SAFETY: init is single-threaded here.
-    let agent = unsafe { libc::fork() };
-    if agent < 0 {
+    let program = unsafe { libc::fork() };
+    if program < 0 {
         return Err(io::Error::last_os_error().into());
     }
-    if agent == 0 {
-        drop_authority(config["uid"].as_u64().ok_or("uid")? as u32, config["seccomp"] != false)?;
-        // Nothing of the controller's environment: only where the gateway is, and a
-        // home and search path inside the sandbox.
-        let mut command = Command::new(&placed.program);
-        command.args(&argv[1..]).env_clear()
-            .env("VAC_GATE", &placed.gateway).env("HOME", "/workspace").env("PATH", "/usr/local/bin:/usr/bin:/bin");
-        if let Some(dir) = placed.workspace {
-            command.current_dir(dir);
-        }
-        return Err(command.exec().into());
+    if program == 0 {
+        let why = exec_program(config, &placed, &argv, exec_status[1]).to_string();
+        // SAFETY: writes a live buffer to the descriptor kept open for this.
+        unsafe { libc::write(exec_status[1], why.as_ptr().cast(), why.len()) };
+        // SAFETY: _exit is always safe to call.
+        unsafe { libc::_exit(127) };
     }
-    // Init reaps orphans and ends the sandbox when the agent exits.
-    loop {
-        let mut status = 0;
-        // SAFETY: `status` is a valid out pointer.
-        let pid = unsafe { libc::waitpid(-1, &mut status, 0) };
-        if pid == agent || (pid < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)) {
-            // SAFETY: _exit is always safe to call.
-            unsafe { libc::_exit(0) };
-        }
+    // SAFETY: closes init's copy of the write end, so the read below ends at the exec.
+    unsafe { libc::close(exec_status[1]) };
+    let mut failed = Vec::new();
+    // SAFETY: the read end was created above and nothing else owns it.
+    io::Read::read_to_end(&mut unsafe { fs::File::from_raw_fd(exec_status[0]) }, &mut failed)?;
+    if !failed.is_empty() {
+        // SAFETY: reaps the program, which has exited; a null status pointer is allowed.
+        unsafe { libc::waitpid(program, ptr::null_mut(), 0) };
+        return Err(String::from_utf8_lossy(&failed).into_owned().into());
     }
+    Ok(program)
+}
+
+/// The program's side of the fork: it gives up authority, then execs. Returns only
+/// on failure, with the reason.
+fn exec_program(config: &Value, placed: &Placed, argv: &[&str], exec_status: libc::c_int) -> Box<dyn Error> {
+    let Some(uid) = config["uid"].as_u64() else { return "uid".into() };
+    if let Err(error) = drop_authority(uid as u32, config["seccomp"] != false, exec_status) {
+        return error;
+    }
+    // Nothing of the controller's environment: only where the gateway is, and a
+    // home and search path inside the sandbox.
+    let mut command = Command::new(&placed.program);
+    command.args(&argv[1..]).env_clear()
+        .env("VAC_GATE", &placed.gateway).env("HOME", "/workspace").env("PATH", "/usr/local/bin:/usr/bin:/bin");
+    if let Some(dir) = placed.workspace {
+        command.current_dir(dir);
+    }
+    format!("exec {}: {}", placed.program, command.exec()).into()
 }
 
 /// Creates the directory the new root is mounted over.
 pub fn prepare_new_root(path: &Path) -> io::Result<()> {
     fs::create_dir_all(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reports() -> (ProgramStatus, io::PipeWriter) {
+        let (pipe, writer) = io::pipe().expect("pipe");
+        // SAFETY: fcntl on a descriptor this test owns.
+        unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
+        (ProgramStatus { pipe, unread: Vec::new(), state: Reported::Nothing }, writer)
+    }
+
+    #[test]
+    fn init_reports_are_read_as_they_arrive_even_split_across_writes() {
+        let (mut status, mut init) = reports();
+        assert_eq!(status.poll(), &Reported::Nothing);
+        io::Write::write_all(&mut init, b"{\"started\":true}\n{\"exit_").expect("write");
+        assert_eq!(status.poll(), &Reported::Started);
+        io::Write::write_all(&mut init, b"code\":3}\n").expect("write");
+        assert_eq!(status.poll(), &Reported::Exited(3));
+        assert_eq!(status.poll().to_json(), json!({"started": true, "exit_code": 3}));
+    }
+
+    #[test]
+    fn a_sandbox_that_ends_without_a_report_did_not_start_its_program() {
+        let (mut status, init) = reports();
+        drop(init);
+        assert!(matches!(status.ended(), Reported::NotStarted(_)));
+        let (mut status, mut init) = reports();
+        io::Write::write_all(&mut init, b"{\"started\":false,\"reason\":\"exec /x: gone\"}\n").expect("write");
+        assert_eq!(status.ended(), &Reported::NotStarted("exec /x: gone".to_owned()));
+        // A program that started keeps that, even with its end unreported.
+        let (mut status, mut init) = reports();
+        io::Write::write_all(&mut init, b"{\"started\":true}\n").expect("write");
+        assert_eq!(status.ended(), &Reported::Started);
+    }
+
+    #[test]
+    fn an_outside_program_must_not_hide_under_the_sandboxs_own_entries() {
+        let argv = |path: &str| vec![path.to_owned(), "arg".to_owned()];
+        assert!(Program::outside(argv("/usr/bin/python3"), None).is_ok());
+        for bad in ["usr/bin/x", "/", "/tmp/x", "/agent", "/workspace/run.sh", "/usr/../tmp/x", "/proc/self/exe"] {
+            assert!(Program::outside(argv(bad), None).is_err(), "{bad} was accepted");
+        }
+        assert!(Program::outside(Vec::new(), None).is_err());
+        assert!(Program::outside(vec!["/bin/x".to_owned(), "a\0b".to_owned()], None).is_err());
+    }
 }

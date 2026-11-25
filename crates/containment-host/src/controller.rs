@@ -879,10 +879,13 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         thread::sleep(Duration::from_millis(1));
     }
     let first_workspace = shared.workspace_for(1, uid_base + 1)?;
-    let (first, first_copier) = sandbox::spawn(&shared.spec, &lock(&shared.generation).path, uid_base + 1, first_workspace.as_deref())?;
-    let mut children: Vec<Child> = vec![first];
+    let first = sandbox::spawn(&shared.spec, &lock(&shared.generation).path, uid_base + 1, first_workspace.as_deref())?;
+    let mut children: Vec<Child> = vec![first.child];
     // One output copier per generation, replaced ones included; joined at the end.
-    let mut copiers = vec![first_copier];
+    let mut copiers = vec![first.copier];
+    // What the newest sandbox's init said about its program. The newest sandbox is
+    // the installed generation's, since a failed rebuild installs nothing.
+    let mut program = first.status;
     let max_run = live.as_ref().map(|l| Duration::from_secs(l.policy.run.max_seconds));
     let began = Instant::now();
     let mut status = BTreeMap::new();
@@ -915,7 +918,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
                 let spawned = shared.workspace_for(number, uid)
                     .and_then(|workspace| sandbox::spawn(&shared.spec, &generation.path, uid, workspace.as_deref()));
                 match spawned {
-                    Ok((child, copier)) => Ok((generation, child, copier)),
+                    Ok(sandbox) => Ok((generation, sandbox)),
                     Err(e) => {
                         // Roll back so a retry can create this generation number again,
                         // and the installed generation stays the identity in force.
@@ -932,10 +935,11 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
                 }
             });
             let ok = created.is_ok();
-            if let Ok((generation, child, copier)) = created {
+            if let Ok((generation, sandbox)) = created {
                 let old = std::mem::replace(&mut *lock(&shared.generation), generation);
-                children.push(child);
-                copiers.push(copier);
+                children.push(sandbox.child);
+                copiers.push(sandbox.copier);
+                program = sandbox.status;
                 let _ = fs::remove_dir(old.path);
             }
             let (done, ready) = &shared.recreate_done;
@@ -957,7 +961,10 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             let mode = lock(&shared.control).mode;
             let finished = children.is_empty() && !rebuilding && matches!(mode, Mode::Run | Mode::Restrict);
             if finished {
-                exit_cause = "agent_finished";
+                // Every launcher has exited, so init has said all it will.
+                let started = !matches!(program.ended(), sandbox::Reported::NotStarted(_));
+                // Sabotage: a program that never ran looks like one that finished.
+                exit_cause = if started || shared.weak.unstarted_as_finished() { "agent_finished" } else { "program_did_not_start" };
                 break;
             }
             if max_run.is_some_and(|m| began.elapsed() > m) {
@@ -990,7 +997,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
          fs::read_to_string(generation.path.join("cgroup.procs")).unwrap_or_default().lines().count(), generation.number, generation.limits())
     };
     let report = json!({
-        "final_mode": mode_name(final_control.mode), "exit_cause": exit_cause, "populated": populated, "frozen": frozen, "survivors": survivors, "generation": generation, "limits": limits, "authority_pending": authority_pending_at_exit,
+        "final_mode": mode_name(final_control.mode), "exit_cause": exit_cause, "program": program.poll().to_json(), "populated": populated, "frozen": frozen, "survivors": survivors, "generation": generation, "limits": limits, "authority_pending": authority_pending_at_exit,
         "transitions": *lock(&shared.transitions), "actions": *lock(&shared.actions), "classifier_signals": *lock(&shared.classifier_signals),
         "system_one_probe": *lock(&shared.s1_probe), "system_one_limits": *lock(&shared.s1_limits),
         "live": shared.live.as_ref().map(|l| json!({"tokens": l.tokens.load(Ordering::SeqCst), "used": lock(&l.used).iter().map(|(k, v)| (k.clone(), json!({"requests": v.requests, "bytes": v.bytes}))).collect::<serde_json::Map<_, _>>()})), "system_one_restarts": shared.s1_restarts.load(Ordering::Relaxed), "log_overflow": shared.log_overflow.load(Ordering::Relaxed),
