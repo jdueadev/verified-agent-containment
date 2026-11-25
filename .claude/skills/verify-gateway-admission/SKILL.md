@@ -107,9 +107,17 @@ the new commit.
 
 ## Run it
 
-Install Kani once, at the version in `ci/pins.env` (`KANI_VERSION`). A plain `cargo kani
-setup` downloads Kani's bundle unchecked, so fetch the bundle yourself and check it against
-the sum in `ci/pins.env` (on arm64, `aarch64-unknown-linux-gnu` and
+The factory's `kani` image has Kani at the pinned version, installed from the checked
+bundle. With Docker, from the repository root:
+
+```bash
+scripts/factory.sh kani            # scripts/kani.sh in the kani image, with no network
+scripts/factory.sh kani mutants    # scripts/kani.sh mutants, the same way
+```
+
+Without Docker, install Kani once, at the version in `ci/pins.env` (`KANI_VERSION`). A
+plain `cargo kani setup` downloads Kani's bundle unchecked, so fetch the bundle yourself and
+check it against the sum in `ci/pins.env` (on arm64, `aarch64-unknown-linux-gnu` and
 `FACTORY_KANI_SHA256_ARM64`). The setup unpacks it into `~/.kani` (or `KANI_HOME`) and
 installs the nightly toolchain Kani is built for through rustup:
 
@@ -151,8 +159,9 @@ checkout. A line reads `caught` when the named harness failed with the counterex
 `MISSED` when it passed or the mutant did not compile. The report is
 `target/verify/kani-mutants.json`.
 
-Kani is not in the factory image yet, so `scripts/check.sh` and the required `check`
-workflow do not run it. Run it yourself before pushing a change to the covered code.
+`scripts/check.sh` and the required `check` workflow do not run it. The container
+workflow runs it in the `kani` image on amd64 and arm64, but only when the image or its
+scripts change. Run it yourself before pushing a change to the covered code.
 
 ## When it fails: a real bug or a modelling error?
 

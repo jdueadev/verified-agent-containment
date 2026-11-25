@@ -123,7 +123,7 @@ def version():
     want = pins["KANI_VERSION"]
     if found.get("Kani Rust Verifier") != want:
         raise SystemExit(f"kani: need Kani {want} (ci/pins.env), found {found.get('Kani Rust Verifier', 'none')}; "
-                         f"install it with: cargo install --locked kani-verifier --version {want} && cargo kani setup")
+                         "run scripts/factory.sh kani, which has it, or install it as .claude/skills/verify-gateway-admission/SKILL.md says")
     return want, found.get("CBMC")
 
 
