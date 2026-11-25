@@ -9,7 +9,6 @@ __pycache__/
 !/.claude/hooks/
 !/.claude/skills/
 !/.claude/agents/
-!/.claude/handover/
 
 # TLC trace dumps
 formal/host/*_TTrace_*
