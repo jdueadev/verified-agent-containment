@@ -45,6 +45,8 @@ const SABOTAGE: &[(&str, &str, &str, &[&str])] = &[
     ("lag_from_receipt", "slow_model_no_false_lag", "no_classifier_signal", &["agent_finished_slowly"]),
     ("start_leak", "failed_start_leaves_nothing", "late_failure_left_nothing", &["rejected_policy_start_failed", "late_failure_start_failed"]),
     ("writable_root", "outside_program", "supplied_root_is_read_only", &["granted_request_arrived_through_gate", "program_saw_supplied_root"]),
+    ("host_dev", "outside_program", "dev_is_exactly_the_minimal_set", &["granted_request_arrived_through_gate", "program_saw_supplied_root"]),
+    ("shm_exec", "outside_program", "dev_shm_refuses_exec", &["dev_is_exactly_the_minimal_set", "dev_shm_takes_a_file"]),
     ("unstarted_as_finished", "program_never_starts", "exec_failed_reported_not_started", &["exec_failed_run_ended", "ran_and_failed_reported_with_exit_code"]),
     ("start_leak", "dead_controller_leaves_nothing", "nothing_left_after_kill", &["agent_was_working_before_the_kill", "controller_was_killed", "evidence_saved"]),
 ];
@@ -246,8 +248,9 @@ fn failed_start(weakness: &str, dir: &Path) -> Result<Value, Box<dyn Error>> {
 /// A root directory for an outside program, assembled the way a user would: this
 /// binary at /bin/probe with the loader and libraries the resolver lists for it,
 /// copied in at their paths. Also a directory anyone may write to (only the
-/// read-only mount stops a write there), a symlink, and decoys named like two of the
-/// sandbox's own entries, which the sandbox's entries must win over.
+/// read-only mount stops a write there), a symlink, and decoys named like three of the
+/// sandbox's own entries, which the sandbox's entries must win over. The `dev` decoy is
+/// what a distribution's root holds: a node of the host's own, here a regular file.
 fn program_root(root: &Path) -> Result<(), Box<dyn Error>> {
     let exe = std::env::current_exe()?;
     let plan = crate::sandbox_view::plan(&fs::read(&exe)?, Path::new("/"))?;
@@ -268,6 +271,8 @@ fn program_root(root: &Path) -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(root.join("tmp"))?;
     fs::write(root.join("tmp/decoy"), "from the supplied root")?;
     fs::write(root.join("agent"), "from the supplied root")?;
+    fs::create_dir_all(root.join("dev"))?;
+    fs::write(root.join("dev/sda"), "from the supplied root")?;
     Ok(())
 }
 
@@ -497,14 +502,26 @@ fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn
             // What was supplied, less the names the sandbox keeps for itself, plus the
             // ones it creates. Written out here rather than taken from the sandbox, so a
             // name dropped from the sandbox's list shows up as a supplied entry.
-            let kept = ["proc", "tmp", "workspace", "gateway.sock", ".old", "agent"];
+            let kept = ["proc", "tmp", "dev", "workspace", "gateway.sock", ".old", "agent"];
             let mut expected: Vec<String> = fs::read_dir(dir.join("root"))?.flatten().map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|n| !kept.contains(&n.as_str())).chain(["proc", "tmp", "workspace", "gateway.sock"].map(String::from)).collect();
+                .filter(|n| !kept.contains(&n.as_str())).chain(["proc", "tmp", "dev", "workspace", "gateway.sock"].map(String::from)).collect();
             expected.sort();
             checks.add("program_saw_supplied_root", probe["root"] == json!(expected), json!({"seen": probe["root"], "expected": expected}));
             checks.add("sandbox_entries_win_over_supplied", probe["tmp"].as_array().is_some_and(|t| !t.contains(&json!("decoy"))), probe["tmp"].clone());
             let refused = probe["write_errors"].as_object().is_some_and(|w| w.len() == 2 && w.values().all(|e| e == libc::EROFS));
             checks.add("supplied_root_is_read_only", refused && !dir.join("root/data/probe").exists(), probe["write_errors"].clone());
+            // The /dev that ordinary programs assume, and nothing of the host's: no tty,
+            // no console, no disk, not the supplied root's decoy.
+            let devices = ["full", "null", "random", "shm", "urandom", "zero"];
+            checks.add("dev_is_exactly_the_minimal_set", probe["dev"] == json!(devices), json!({"seen": probe["dev"], "expected": devices}));
+            let used = &probe["dev_use"];
+            let work = used["null_write"].is_null() && used["full_write"] == libc::ENOSPC && used["zero_read"] == true
+                && used["random_read"].is_null() && used["urandom_read"].is_null();
+            checks.add("devices_work_for_the_program", work, used.clone());
+            checks.add("dev_shm_takes_a_file", used["shm_write"].is_null(), used["shm_write"].clone());
+            // EACCES is the mount refusing; a mount that allowed exec would reach the
+            // file and fail with ENOEXEC, since it is not an executable.
+            checks.add("dev_shm_refuses_exec", used["shm_write"].is_null() && used["shm_exec"] == libc::EACCES, used["shm_exec"].clone());
             checks.add("program_exit_recorded", report["program"] == json!({"started": true, "exit_code": 0}), report["program"].clone());
         }
         "credential_scoped" => {

@@ -24,7 +24,7 @@ const SABOTAGE: &[(&str, &str)] = &[
     ("shared_control_socket", "classifier_sends_hard"), ("classifier_down_ignored", "classifier_crash"),
     ("system_one_unconfined", "system_one_isolation"), ("system_one_weak_filter", "system_one_isolation"), ("no_kill", "process_escape"),
     ("writable_policy", "agent_attacks_control"), ("no_parent_death_signal", "controller_crash"),
-    ("host_root", "sandbox_escape"), ("wide_root", "sandbox_escape"), ("ignore_actuator_failure", "actuator_dead"), ("stale_clock", "clock_rollback"),
+    ("host_root", "sandbox_escape"), ("wide_root", "sandbox_escape"), ("host_dev", "sandbox_escape"), ("ignore_actuator_failure", "actuator_dead"), ("stale_clock", "clock_rollback"),
     ("leak_streams", "gateway_churn"), ("drop_overflow", "gateway_flood"), ("unauthenticated_monitor", "forged_renewal"),
     ("no_seccomp", "sandbox_escape"), ("stale_generation_authority", "reset_races_kill"), ("no_enforcer_watchdog", "enforcer_stall"),
     ("single_flag_authority", "double_reset"),
@@ -237,8 +237,8 @@ fn unmediated(records: &[Value], cut: Option<u64>) -> u64 {
     }))
 }
 
-/// The agent saw exactly its loader and libraries, /agent, the gateway socket, /proc and
-/// /tmp: nothing missing and nothing extra (#88). The expected set comes from the same
+/// The agent saw exactly its loader and libraries, /agent, the gateway socket, /proc,
+/// /tmp and the sandbox's own /dev: nothing missing and nothing extra (#88). The expected set comes from the same
 /// executable the sandbox copies, through the resolver; the observed set from the agent's
 /// own walk, which must have completed without errors or truncation. The loader and
 /// /agent must be among them, so an empty or broken walk cannot pass.
@@ -247,7 +247,8 @@ fn agent_view_exact(view: &Value) -> (bool, Value) {
         .map_err(|e| e.to_string())
         .and_then(|exe| fs::read(exe).map_err(|e| e.to_string()))
         .and_then(|bytes| crate::sandbox_view::plan(&bytes, Path::new("/")))
-        .map(|plan| crate::sandbox_view::expected_view(&plan, &["/agent", "/gateway.sock", "/proc", "/tmp"]));
+        .map(|plan| crate::sandbox_view::expected_view(&plan, &["/agent", "/gateway.sock", "/proc", "/tmp", "/dev", "/dev/null",
+            "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom", "/dev/shm"]));
     let expected = match expected {
         Ok(set) => set.into_iter().collect::<std::collections::BTreeSet<String>>(),
         Err(error) => return (false, json!({"error": error})),
@@ -295,7 +296,8 @@ fn sandbox_mounts_exact(run_id: &str) -> (bool, Value) {
         Err(e) => return fail(format!("ldd: {e}")),
     };
     let mut expected: std::collections::BTreeSet<String> =
-        ["/", "/proc", "/tmp", "/agent", "/gateway.sock"].iter().map(|s| (*s).to_owned()).collect();
+        ["/", "/proc", "/tmp", "/agent", "/gateway.sock", "/dev", "/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom", "/dev/shm"]
+            .iter().map(|s| (*s).to_owned()).collect();
     expected.extend(libraries.iter().cloned());
     let seen: std::collections::BTreeSet<String> = mounts.keys().cloned().collect();
     let extra: Vec<&String> = seen.difference(&expected).take(40).collect();

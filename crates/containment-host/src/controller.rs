@@ -772,7 +772,8 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         exe: exe.clone(), program, new_root, private_dir: private_dir.clone(), gateway: gateway.clone(),
         output: private_dir.join("agent.jsonl"),
         share_network: weak.shared_network(), expose_private: weak.writable_policy(),
-        no_parent_death_signal: weak.no_parent_death_signal(), host_root: weak.host_root(), wide_root: weak.wide_root(), writable_root: weak.writable_root(), seccomp: !weak.no_seccomp(), memfd_exec: weak.memfd_exec(),
+        no_parent_death_signal: weak.no_parent_death_signal(), host_root: weak.host_root(), wide_root: weak.wide_root(), writable_root: weak.writable_root(),
+        host_dev: weak.host_dev(), shm_exec: weak.shm_exec(), seccomp: !weak.no_seccomp(), memfd_exec: weak.memfd_exec(),
     };
     let freeze_faults = match scenario.as_str() { "actuator_retry" => 2, "actuator_dead" => i64::MAX, "reset_races_kill" => 1, "double_reset" => 2, _ => 0 };
     let kill_faults = match scenario.as_str() { "actuator_dead" => i64::MAX, "reset_races_kill" | "double_reset" => 3, _ => 0 };

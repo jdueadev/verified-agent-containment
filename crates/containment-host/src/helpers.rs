@@ -83,10 +83,42 @@ pub fn sink(args: &[String]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// What the program finds in /dev: whether each device behaves as its name says, and
+/// whether /dev/shm takes a file but will not run one. The file is not an executable,
+/// so a mount that allowed exec would fail with ENOEXEC, not EACCES. It is removed
+/// afterwards, in case /dev/shm is not the sandbox's own.
+fn probe_dev() -> serde_json::Value {
+    use std::io::Read;
+    let errno = |result: std::io::Result<()>| json!(result.map_err(|e| e.raw_os_error()).err());
+    let write = |path: &str| OpenOptions::new().write(true).open(path).and_then(|mut f| f.write_all(b"probe"));
+    let read = |path: &str| -> std::io::Result<Vec<u8>> {
+        let mut bytes = vec![0xff; 16];
+        std::fs::File::open(path)?.read_exact(&mut bytes)?;
+        Ok(bytes)
+    };
+    let script = "/dev/shm/probe";
+    let shm_write = std::fs::write(script, b"not an executable\n")
+        .and_then(|()| std::fs::set_permissions(script, std::os::unix::fs::PermissionsExt::from_mode(0o755)));
+    let shm_exec = match std::process::Command::new(script).status() {
+        Ok(status) => json!({"ran": status.code()}),
+        Err(e) => json!(e.raw_os_error()),
+    };
+    let _ = std::fs::remove_file(script);
+    json!({
+        "null_write": errno(write("/dev/null")),
+        "full_write": errno(write("/dev/full")),
+        "zero_read": read("/dev/zero").map_or_else(|e| json!(e.raw_os_error()), |b| json!(b.iter().all(|x| *x == 0))),
+        "random_read": errno(read("/dev/random").map(drop)),
+        "urandom_read": errno(read("/dev/urandom").map(drop)),
+        "shm_write": errno(shm_write),
+        "shm_exec": shm_exec,
+    })
+}
+
 /// Run by the live suite as an outside program, from a root it assembled: asks the
-/// gateway for `url`, lists `/` and `/tmp`, tries to create each of `writes`, and
-/// prints what happened as one transcript line. Nothing here is trusted by the
-/// check that a request went through the gateway; that is read from the server.
+/// gateway for `url`, lists `/`, `/tmp` and `/dev`, uses /dev, tries to create each of
+/// `writes`, and prints what happened as one transcript line. Nothing here is trusted
+/// by the check that a request went through the gateway; that is read from the server.
 pub fn probe_root(args: &[String]) -> Result<(), Box<dyn Error>> {
     let [url, writes @ ..] = args else { return Err("probe-root arguments are invalid".into()) };
     let gateway = std::env::var("VAC_GATE").map_err(|_| "VAC_GATE is not set")?;
@@ -100,7 +132,7 @@ pub fn probe_root(args: &[String]) -> Result<(), Box<dyn Error>> {
     let written: serde_json::Map<String, serde_json::Value> = writes.iter()
         .map(|path| (path.clone(), json!(std::fs::write(path, "probe").map_err(|e| e.raw_os_error()).err())))
         .collect();
-    println!("{}", json!({"event": "probe_root", "value": {"gateway": reply, "root": names("/"), "tmp": names("/tmp"), "write_errors": written}}));
+    println!("{}", json!({"event": "probe_root", "value": {"gateway": reply, "root": names("/"), "tmp": names("/tmp"), "dev": names("/dev"), "dev_use": probe_dev(), "write_errors": written}}));
     Ok(())
 }
 
