@@ -34,17 +34,22 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Build the check and dev images
+      - name: Build the check, proofs and dev images
         run: scripts/factory.sh build
 
-      - name: Tool versions in the image
-        run: docker run --rm vac-factory:check bash -euo pipefail -c 'cargo --version; rustup target list --installed; bun --version; node --version; java -version; lean --version; command -v bend'
+      - name: Tool versions in the check image, which has no Lean
+        run: docker run --rm vac-factory:check bash -euo pipefail -c 'cargo --version; rustup target list --installed; bun --version; node --version; java -version; command -v bend; if command -v lean; then echo "the check image contains Lean" >&2; exit 1; fi'
+
+      - name: Tool versions in the proofs and dev images
+        run: |
+          docker run --rm vac-factory:proofs bash -euo pipefail -c 'bun --version; lean --version; command -v bend'
+          docker run --rm vac-factory:dev bash -euo pipefail -c 'cargo --version; lean --version; gh --version'
 
       - name: Run the checks in the image
         run: docker run --rm -v "$PWD:/work" vac-factory:check scripts/check.sh --no-strict
 
-      - name: Lean recheck in the image
-        run: docker run --rm -v "$PWD:/work" vac-factory:check scripts/verdict.sh
+      - name: Lean recheck in the proofs image
+        run: docker run --rm -v "$PWD:/work" vac-factory:proofs scripts/verdict.sh
 
   lab:
     runs-on: ubuntu-24.04
@@ -84,13 +89,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build the check and dev images
+      - name: Build the check, proofs and dev images
         run: scripts/factory.sh build
 
       - name: Push the images for this architecture
         run: |
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
-          for stage in check dev; do
+          for stage in check proofs dev; do
             docker tag "vac-factory:$stage" "$REGISTRY_IMAGE:$stage-$ARCH"
             docker push "$REGISTRY_IMAGE:$stage-$ARCH"
           done
@@ -110,7 +115,8 @@ jobs:
       - name: Publish the multi-architecture images and print their digests
         run: |
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
-          for stage in check dev; do
+          for stage in check proofs dev; do
             docker buildx imagetools create -t "$REGISTRY_IMAGE:$stage" "$REGISTRY_IMAGE:$stage-amd64" "$REGISTRY_IMAGE:$stage-arm64"
             docker buildx imagetools inspect "$REGISTRY_IMAGE:$stage" --format '{{.Name}}@{{.Manifest.Digest}}'
+            echo
           done

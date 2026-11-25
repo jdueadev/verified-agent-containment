@@ -1,5 +1,5 @@
 ARG FACTORY_BASE_IMAGE
-FROM ${FACTORY_BASE_IMAGE} AS toolchain
+FROM ${FACTORY_BASE_IMAGE} AS base
 
 ARG TARGETARCH
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
@@ -38,6 +38,36 @@ RUN source <(grep -E '^[A-Z0-9_]+=' /opt/factory/pins.env); \
     bun --version
 
 RUN source <(grep -E '^[A-Z0-9_]+=' /opt/factory/pins.env); \
+    git clone --quiet https://github.com/bendlang/bend /opt/bend; \
+    git -C /opt/bend checkout --quiet "$BEND_COMMIT"; \
+    [ "$(git -C /opt/bend rev-parse HEAD)" = "$BEND_COMMIT" ] || { echo "bend is not at BEND_COMMIT" >&2; exit 1; }; \
+    printf '#!/bin/sh\nexec bun /opt/bend/bend2/main.ts "$@"\n' > /usr/local/bin/bend; \
+    chmod +x /usr/local/bin/bend
+
+WORKDIR /work
+
+FROM base AS proofs
+ARG TARGETARCH
+
+RUN source <(grep -E '^[A-Z0-9_]+=' /opt/factory/pins.env); \
+    case "$TARGETARCH" in \
+      amd64) asset="lean-${LEAN_VERSION}-linux"; sum="$FACTORY_LEAN_SHA256_AMD64" ;; \
+      arm64) asset="lean-${LEAN_VERSION}-linux_aarch64"; sum="$FACTORY_LEAN_SHA256_ARM64" ;; \
+      *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/lean.tar.zst "https://github.com/leanprover/lean4/releases/download/v${LEAN_VERSION}/${asset}.tar.zst"; \
+    echo "${sum}  /tmp/lean.tar.zst" | sha256sum --check --strict; \
+    mkdir -p /opt/lean; \
+    tar --zstd -xf /tmp/lean.tar.zst -C /opt/lean --strip-components=1; \
+    rm /tmp/lean.tar.zst; \
+    lean --version
+
+CMD ["scripts/verdict.sh"]
+
+FROM base AS check
+ARG TARGETARCH
+
+RUN source <(grep -E '^[A-Z0-9_]+=' /opt/factory/pins.env); \
     case "$TARGETARCH" in \
       amd64) arch=x64; sum="$FACTORY_NODE_SHA256_AMD64" ;; \
       arm64) arch=arm64; sum="$FACTORY_NODE_SHA256_ARM64" ;; \
@@ -74,26 +104,6 @@ RUN source <(grep -E '^[A-Z0-9_]+=' /opt/factory/pins.env); \
     rustup default "$channel"; \
     cargo --version
 
-RUN source <(grep -E '^[A-Z0-9_]+=' /opt/factory/pins.env); \
-    git clone --quiet https://github.com/bendlang/bend /opt/bend; \
-    git -C /opt/bend checkout --quiet "$BEND_COMMIT"; \
-    [ "$(git -C /opt/bend rev-parse HEAD)" = "$BEND_COMMIT" ] || { echo "bend is not at BEND_COMMIT" >&2; exit 1; }; \
-    printf '#!/bin/sh\nexec bun /opt/bend/bend2/main.ts "$@"\n' > /usr/local/bin/bend; \
-    chmod +x /usr/local/bin/bend
-
-RUN source <(grep -E '^[A-Z0-9_]+=' /opt/factory/pins.env); \
-    case "$TARGETARCH" in \
-      amd64) asset="lean-${LEAN_VERSION}-linux"; sum="$FACTORY_LEAN_SHA256_AMD64" ;; \
-      arm64) asset="lean-${LEAN_VERSION}-linux_aarch64"; sum="$FACTORY_LEAN_SHA256_ARM64" ;; \
-      *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
-    esac; \
-    curl -fsSL -o /tmp/lean.tar.zst "https://github.com/leanprover/lean4/releases/download/v${LEAN_VERSION}/${asset}.tar.zst"; \
-    echo "${sum}  /tmp/lean.tar.zst" | sha256sum --check --strict; \
-    mkdir -p /opt/lean; \
-    tar --zstd -xf /tmp/lean.tar.zst -C /opt/lean --strip-components=1; \
-    rm /tmp/lean.tar.zst; \
-    lean --version
-
 COPY Cargo.toml Cargo.lock /tmp/prefetch/
 COPY .cargo /tmp/prefetch/.cargo
 COPY crates /tmp/prefetch/crates
@@ -101,13 +111,12 @@ RUN cd /tmp/prefetch; \
     cargo fetch --locked; \
     rm -rf /tmp/prefetch
 
-WORKDIR /work
-
-FROM toolchain AS check
 CMD ["scripts/check.sh"]
 
-FROM toolchain AS dev
+FROM check AS dev
+COPY --from=proofs /opt/lean /opt/lean
 RUN apt-get update; \
     apt-get install -y --no-install-recommends gh less openssh-client; \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/*; \
+    lean --version
 CMD ["bash"]
