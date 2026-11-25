@@ -1,5 +1,4 @@
 *
-!ci/pins.env
 !rust-toolchain.toml
 !Cargo.toml
 !Cargo.lock

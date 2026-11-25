@@ -4,8 +4,10 @@ cd "$(dirname "$0")/.."
 
 engine="${FACTORY_ENGINE:-docker}"
 image="${FACTORY_IMAGE:-vac-factory}"
-base="$(sed -n 's/^FACTORY_BASE_IMAGE=//p' ci/pins.env)"
-[ -n "$base" ] || { echo "factory: ci/pins.env has no FACTORY_BASE_IMAGE" >&2; exit 1; }
+pins=()
+while IFS= read -r pin; do pins+=(--build-arg "$pin"); done < <(grep -E '^[A-Z0-9_]+=' ci/pins.env)
+[ "${#pins[@]}" -gt 0 ] || { echo "factory: ci/pins.env has no pins" >&2; exit 1; }
+if [ -n "${FACTORY_BASE_IMAGE:-}" ]; then pins+=(--build-arg "FACTORY_BASE_IMAGE=$FACTORY_BASE_IMAGE"); fi
 
 usage() {
   echo "usage: scripts/factory.sh build | shell | check [check.sh options] | verdict | lab [repeat]" >&2
@@ -18,7 +20,7 @@ usage() {
 }
 
 build() {
-  "$engine" build -f ci/factory.Dockerfile --build-arg FACTORY_BASE_IMAGE="$base" --target "$1" -t "$image:$1" .
+  "$engine" build ${FACTORY_BUILD_OPTIONS:-} -f ci/factory.Dockerfile "${pins[@]}" --target "$1" -t "$image:$1" .
 }
 
 mounts=(-v "$PWD:/work" -v vac-factory-target:/work/target)
