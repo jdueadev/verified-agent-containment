@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::process::{Child, Command, Stdio};
 use std::thread;
+use std::time::{Duration, Instant};
 
 pub struct Request {
     pub method: String,
@@ -178,6 +179,26 @@ pub fn fixture_server(args: &[String]) -> Result<(), Box<dyn Error>> {
     })
 }
 
+/// Every line of a log a server may still be appending to. The server writes a
+/// line in several pieces, so a read can end inside the last line; that line is
+/// given a moment to be finished. A line that stays unfinished, or is not JSON,
+/// is an error.
+fn read_log(path: &Path) -> std::io::Result<Vec<Value>> {
+    let invalid = |why: String| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{}: {why}", path.display()));
+    let began = Instant::now();
+    let text = loop {
+        let text = fs::read_to_string(path)?;
+        if text.is_empty() || text.ends_with('\n') {
+            break text;
+        }
+        if began.elapsed() > Duration::from_secs(1) {
+            return Err(invalid("the last line was never finished".into()));
+        }
+        thread::sleep(Duration::from_millis(1));
+    };
+    text.lines().map(|line| serde_json::from_str(line).map_err(|e| invalid(e.to_string()))).collect()
+}
+
 /// A test server started as a child process; it prints its port on stdout.
 pub struct Server {
     child: Child,
@@ -197,9 +218,7 @@ impl Server {
     /// Every logged request; an unreadable log or a malformed line is an error,
     /// so a check can never pass on missing evidence.
     pub fn try_entries(&self) -> std::io::Result<Vec<Value>> {
-        fs::read_to_string(&self.log)?.lines()
-            .map(|l| serde_json::from_str(l).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{}: {e}", self.log.display()))))
-            .collect()
+        read_log(&self.log)
     }
 
     pub fn entries(&self) -> Vec<Value> {
@@ -218,3 +237,53 @@ impl Drop for Server {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("vac-mock-{name}-{}.jsonl", std::process::id()));
+        let _ = fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn a_log_being_written_reads_as_whole_lines() {
+        let path = scratch("busy");
+        let log = Log::open(&path).unwrap();
+        let writer = thread::spawn(move || {
+            for n in 0..20_000 {
+                log.write(json!({"n": n, "headers": {"host": "example.test", "accept": "*/*"}, "body": "x".repeat(64)}));
+            }
+        });
+        let mut torn = 0;
+        while !writer.is_finished() {
+            let raw = fs::read_to_string(&path).unwrap();
+            torn += usize::from(!raw.is_empty() && !raw.ends_with('\n'));
+            read_log(&path).unwrap();
+        }
+        writer.join().unwrap();
+        assert_eq!(read_log(&path).unwrap().len(), 20_000);
+        let _ = fs::remove_file(&path);
+        assert!(torn > 0, "no raw read ended inside a line, so this run did not exercise the race");
+    }
+
+    #[test]
+    fn a_line_that_is_never_finished_is_an_error() {
+        let path = scratch("cut");
+        fs::write(&path, "{\"n\":1}\n{\"n\":").unwrap();
+        let error = read_log(&path).unwrap_err();
+        let _ = fs::remove_file(&path);
+        assert!(error.to_string().contains("never finished"), "{error}");
+    }
+
+    #[test]
+    fn a_finished_line_that_is_not_json_is_an_error() {
+        let path = scratch("bad");
+        fs::write(&path, "{\"n\":1}\nnot json\n").unwrap();
+        let error = read_log(&path);
+        let _ = fs::remove_file(&path);
+        assert!(error.is_err());
+    }
+}
