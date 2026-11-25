@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Proves the gateway's admission decision (controller/admission.rs) with Kani,
-# for every input in the scope formal/kani/ states, and writes
-# target/verify/kani.json.
-#   scripts/kani.sh              prove every harness (under a minute)
+# Proves the gateway's admission decision (controller/admission.rs) and the
+# gate's lease handling (controller/gate.rs) with Kani, for every input in the
+# scope formal/kani/ states, and writes target/verify/kani.json.
+#   scripts/kani.sh              prove every harness (about a minute)
 #   scripts/kani.sh mutants [N]  show each harness failing on the broken variants
 #                                in formal/kani/mutants.toml (several minutes)
 # Needs uv and Kani at KANI_VERSION in ci/pins.env, installed and set up:

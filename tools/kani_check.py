@@ -21,7 +21,8 @@ OUT = ROOT / "target/verify"
 MUTANTS = ROOT / "formal/kani/mutants.toml"
 
 # Where harnesses are compiled. The admission crate compiles admission.rs on its
-# own. `reaches` is the product code each suite's harnesses run.
+# own; the gate's harnesses need its private types, so they are compiled into
+# the host crate. `reaches` is the product code each suite's harnesses run.
 SUITES = {
     "admission": {
         "dir": "formal/kani",
@@ -29,6 +30,18 @@ SUITES = {
         "harnesses": "formal/kani/admission_proofs.rs",
         "module": "admission_proofs",
         "reaches": ["crates/containment-host/src/controller/admission.rs", "crates/containment-kernel/src/lib.rs"],
+    },
+    "gate": {
+        "dir": ".",
+        "args": ["-p", "containment-host", "-Z", "stubbing"],
+        "harnesses": "formal/kani/gate_proofs.rs",
+        "module": "controller::gate::proofs",
+        "reaches": [
+            "crates/containment-host/src/controller/gate.rs",
+            "crates/containment-host/src/controller/admission.rs",
+            "crates/containment-host/src/controller/weakness.rs",
+            "crates/containment-kernel/src/lib.rs",
+        ],
     },
 }
 # Hashed into the report with the code above, so a recorded pass names what it covered.

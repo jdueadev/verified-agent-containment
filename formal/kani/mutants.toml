@@ -123,3 +123,50 @@ file = "crates/containment-host/src/controller/admission.rs"
 breaks = "settling_never_wraps"
 old = "spent.saturating_sub(reserved).saturating_add(actual)"
 new = "(spent - reserved).saturating_add(actual)"
+
+[[mutant]]
+name = "the lease is not started before deciding (the bug c76510e fixed)"
+file = "crates/containment-host/src/controller/gate.rs"
+breaks = "a_refusal_never_charges_and_an_admission_charges_its_lease"
+old = "lease.start(control.reset_counter);"
+new = ""
+
+[[mutant]]
+name = "a refusal is charged its cost"
+file = "crates/containment-host/src/controller/gate.rs"
+breaks = "a_refusal_never_charges_and_an_admission_charges_its_lease"
+old = "Verdict::Refuse { by, raise } => Err((by, raise)),"
+new = """
+Verdict::Refuse { by, raise } => {
+                lease.set(&account, attempt.cost);
+                Err((by, raise))
+            }
+"""
+
+[[mutant]]
+name = "the charge names the reset counter, not its lease"
+file = "crates/containment-host/src/controller/gate.rs"
+breaks = "a_refusal_never_charges_and_an_admission_charges_its_lease"
+old = "number: lease.number, account, cost: attempt.cost"
+new = "number: control.reset_counter, account, cost: attempt.cost"
+
+[[mutant]]
+name = "an unmetered admission is charged to the model"
+file = "crates/containment-host/src/controller/gate.rs"
+breaks = "a_refusal_never_charges_and_an_admission_charges_its_lease"
+old = "Account::Unmetered => {}"
+new = "Account::Unmetered => self.model = spent,"
+
+[[mutant]]
+name = "settling ignores which lease made the charge"
+file = "crates/containment-host/src/controller/gate.rs"
+breaks = "a_charge_settles_only_into_the_lease_that_made_it"
+old = "if lease.number == self.number {"
+new = "if lease.number >= self.number {"
+
+[[mutant]]
+name = "an older reset restarts the lease"
+file = "crates/containment-host/src/controller/gate.rs"
+breaks = "a_charge_settles_only_into_the_lease_that_made_it"
+old = "if self.number < number {"
+new = "if self.number != number {"
