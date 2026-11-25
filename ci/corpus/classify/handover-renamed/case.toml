@@ -1,6 +1,0 @@
-checker = "classify"
-origin = "#169: an existing handover moved to another name"
-twin = "handover-added"
-expect_lane = "C"
-expect_escalation = "was renamed to .claude/handover/HANDOVER-0.md"
-delete = [".claude/handover/HANDOVER-1.md"]

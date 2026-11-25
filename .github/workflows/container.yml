@@ -11,6 +11,12 @@ on:
       - scripts/factory.sh
       - scripts/factory-lab.sh
       - .github/workflows/container.yml
+      - .python-version
+      - pyproject.toml
+      - uv.lock
+      - scripts/check.sh
+      - scripts/verdict.sh
+      - tools/**
   workflow_dispatch:
 
 permissions:
@@ -38,7 +44,7 @@ jobs:
         run: scripts/factory.sh build
 
       - name: Tool versions in the check image, which has no Lean
-        run: docker run --rm vac-factory:check bash -euo pipefail -c 'cargo --version; rustup target list --installed; bun --version; node --version; java -version; command -v bend; if command -v lean; then echo "the check image contains Lean" >&2; exit 1; fi'
+        run: docker run --rm vac-factory:check bash -euo pipefail -c 'cargo --version; rustup target list --installed; bun --version; node --version; java -version; uv --version; uv run --no-project python --version; command -v bend; if command -v python3; then echo "the check image contains a system python3" >&2; exit 1; fi; if command -v lean; then echo "the check image contains Lean" >&2; exit 1; fi'
 
       - name: Tool versions in the proofs and dev images
         run: |
@@ -46,7 +52,7 @@ jobs:
           docker run --rm vac-factory:dev bash -euo pipefail -c 'cargo --version; lean --version; gh --version'
 
       - name: Run the checks in the image
-        run: docker run --rm -v "$PWD:/work" vac-factory:check scripts/check.sh --no-strict
+        run: docker run --rm -v "$PWD:/work" vac-factory:check scripts/check.sh
 
       - name: Lean recheck in the proofs image
         run: docker run --rm -v "$PWD:/work" vac-factory:proofs scripts/verdict.sh

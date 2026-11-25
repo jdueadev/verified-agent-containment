@@ -11,6 +11,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     RUSTUP_HOME=/opt/rustup \
     CARGO_HOME=/opt/cargo \
     TLA2TOOLS=/opt/tla/tla2tools.jar \
+    UV_PYTHON_INSTALL_DIR=/opt/python \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PYTHON_PREFERENCE=only-managed \
+    UV_NO_CACHE=1 \
+    UV_PROJECT_ENVIRONMENT=/tmp/vac-venv \
     PATH=/opt/cargo/bin:/opt/lean/bin:/opt/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 COPY ci/pins.env /opt/factory/pins.env
@@ -19,7 +24,7 @@ COPY rust-toolchain.toml /opt/factory/rust-toolchain.toml
 RUN source <(grep -E '^[A-Z0-9_]+=' /opt/factory/pins.env); \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-      ca-certificates curl git gcc libc6-dev python3 unzip xz-utils zstd \
+      ca-certificates curl git gcc libc6-dev unzip xz-utils zstd \
       "openjdk-${JAVA_VERSION}-jre-headless"; \
     rm -rf /var/lib/apt/lists/*; \
     git config --system --add safe.directory '*'
@@ -103,6 +108,21 @@ RUN source <(grep -E '^[A-Z0-9_]+=' /opt/factory/pins.env); \
     rustup toolchain install "$channel" --profile minimal -c clippy -c rustfmt -t wasm32-unknown-unknown; \
     rustup default "$channel"; \
     cargo --version
+
+COPY .python-version /opt/factory/.python-version
+RUN source <(grep -E '^[A-Z0-9_]+=' /opt/factory/pins.env); \
+    case "$TARGETARCH" in \
+      amd64) triple=x86_64-unknown-linux-gnu; sum="$FACTORY_UV_SHA256_AMD64" ;; \
+      arm64) triple=aarch64-unknown-linux-gnu; sum="$FACTORY_UV_SHA256_ARM64" ;; \
+      *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/uv.tar.gz "https://github.com/astral-sh/uv/releases/download/${FACTORY_UV_VERSION}/uv-${triple}.tar.gz"; \
+    echo "${sum}  /tmp/uv.tar.gz" | sha256sum --check --strict; \
+    tar -xzf /tmp/uv.tar.gz -C /usr/local/bin --strip-components=1 "uv-${triple}/uv"; \
+    rm /tmp/uv.tar.gz; \
+    UV_PYTHON_DOWNLOADS=manual uv python install "$(cat /opt/factory/.python-version)"; \
+    chmod -R a+rX /opt/python; \
+    uv run --no-project python --version
 
 COPY Cargo.toml Cargo.lock /tmp/prefetch/
 COPY .cargo /tmp/prefetch/.cargo

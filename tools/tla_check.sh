@@ -3,9 +3,11 @@
 # The v3 configuration must pass; the two known-bad configurations must violate
 # ClassifierCannotForceStop, which shows the model can see those bugs, and the
 # no-monitor configuration must reach Freeze, which shows the lease clock is live.
-# Needs java and tla2tools.jar (TLA2TOOLS, default /opt/tla/tla2tools.jar).
+# Needs java, uv and tla2tools.jar (TLA2TOOLS, default /opt/tla/tla2tools.jar).
+# Usage: tla_check.sh [OUTPUT.json]   default target/verify/tla-check.json
 set -euo pipefail
 cd "$(dirname "$0")/.."
+report="${1:-target/verify/tla-check.json}"
 jar="${TLA2TOOLS:-/opt/tla/tla2tools.jar}"
 [ -f "$jar" ] || { echo "tla_check: $jar not found; set TLA2TOOLS" >&2; exit 2; }
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
@@ -13,7 +15,7 @@ work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 # so changing a bound in a .cfg also invalidates the recorded result.
 configs=(HostModel HostModelSlowRenew HostModelPre1 HostModelLagUncapped HostModelNoMonitor)
 inputs=(formal/host/HostModel.tla); for c in "${configs[@]}"; do inputs+=("formal/host/$c.cfg"); done
-spec_sha="$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(b"".join(pathlib.Path(p).read_bytes().replace(b"\r\n", b"\n") for p in sys.argv[1:])).hexdigest())' "${inputs[@]}")"
+spec_sha="$(uv run python -c 'import hashlib, pathlib, sys; print(hashlib.sha256(b"".join(pathlib.Path(p).read_bytes().replace(b"\r\n", b"\n") for p in sys.argv[1:])).hexdigest())' "${inputs[@]}")"
 results=()
 fail=0
 for cfg in "${configs[@]}"; do
@@ -34,8 +36,8 @@ done
 # The passed properties are the ones the good configuration actually checks.
 passed_props="$(awk '/^(INVARIANTS|PROPERTIES)/{on=1; next} /^[A-Z]+/{on=0} on && NF {printf "%s\"%s\"", (n++ ? "," : "["), $1} END {print (n ? "]" : "[]")}' formal/host/HostModel.cfg)"
 [ "$fail" = 0 ] || passed_props='[]'
-mkdir -p results
+mkdir -p "$(dirname "$report")"
 inputs_json="$(printf '"%s",' "${inputs[@]}")"
 printf '{"spec":"formal/host/HostModel.tla","inputs":[%s],"sha256":"%s","tlc":"%s","passed":%s,"runs":[%s]}\n' \
-  "${inputs_json%,}" "$spec_sha" "$(basename "$jar")" "$passed_props" "$(IFS=,; echo "${results[*]}")" | python3 -m json.tool > results/tla-check.json
+  "${inputs_json%,}" "$spec_sha" "$(basename "$jar")" "$passed_props" "$(IFS=,; echo "${results[*]}")" | uv run python -m json.tool > "$report"
 exit "$fail"

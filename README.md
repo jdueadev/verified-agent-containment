@@ -101,9 +101,8 @@ The full list is in [`docs/evidence.md`](docs/evidence.md#scope-limits).
 - **Evidence:** 36 Bend kernel laws proved (Lean-checked), 46/46 unsafe kernel mutants rejected, 77,364 differential transitions with 0 mismatches on each of the Rust-to-Bend and Rust-to-WebAssembly checks, and 176/176 Linux attack-suite runs passed with 0 bytes admitted after a stop. The WSL2 copy of that suite caught 29/29 sabotaged controllers; the later GitHub-hosted runs caught 30/30. The committed scripted and local-model (Qwen3.5-9B) red-team scorecards show 0 leaks. Full tables and timings are in [`docs/evidence.md`](docs/evidence.md).
 - **Reproduce the proofs and suites:** Bend, Lean, TLA+, WebAssembly and the full `--repeat 30` attack suite are in [`docs/verification.md`](docs/verification.md).
 - **Architecture spec:** [`docs/design-spec.md`](docs/design-spec.md).
-- **Claims matrix:** every guarantee, its evidence and its falsifier is a row in [`claims.toml`](claims.toml), rendered as [`docs/claims.md`](docs/claims.md) and checked by `tools/claims_check.py`.
-- **What the guarantees apply to:** tagged releases, where the `release` workflow has confirmed that every claim's evidence is fresh. A commit on `main` between releases may carry a claim marked stale in [`docs/claims.md`](docs/claims.md).
-- **Changing this repository:** [`AGENTS.md`](AGENTS.md) lists the rules that must not be broken and which changes need the maintainer, for people and for AI agents alike.
+- **Claims matrix:** every guarantee, its evidence and its falsifier is a row in [`claims.toml`](claims.toml), rendered as [`docs/claims.md`](docs/claims.md). Both are frozen at tag `pre-factory` and have not been re-verified since; they will be reset and re-earned.
+- **Changing this repository:** [`AGENTS.md`](AGENTS.md) is the one-page guide, for people and for AI agents alike.
 
 ## License
 

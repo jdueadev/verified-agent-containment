@@ -5,3 +5,4 @@
 !Cargo.lock
 !.cargo
 !crates
+!.python-version

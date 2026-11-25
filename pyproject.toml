@@ -1,0 +1,9 @@
+[project]
+name = "vac-tools"
+version = "0.0.0"
+description = "Check scripts for verified-agent-containment. Standard library only."
+requires-python = ">=3.13"
+dependencies = []
+
+[tool.uv]
+package = false

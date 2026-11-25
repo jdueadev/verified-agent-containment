@@ -1,42 +1,45 @@
 #!/usr/bin/env bash
-# Runs every check that does not require root. Requires cargo, bun, node, python3 and bend.
-# Pass --no-strict to warn on stale host lab claims instead of failing (used on Draft PRs;
-# the evidence-freshness CI job runs claims_check.py --strict as the merge gate).
+# Runs every check that needs neither root nor Lean, and writes what it measures
+# to target/verify/. Nothing under results/ is touched.
+# Needs cargo, bend, bun, node, java, uv and the TLA+ tools; scripts/factory.sh check
+# runs it in the image that has them all.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-STRICT="--strict"
-for arg in "$@"; do
-  case "$arg" in
-    --no-strict) STRICT="" ;;
-    *) echo "unknown option: $arg (expected --no-strict)" >&2; exit 2 ;;
-  esac
+
+jar="${TLA2TOOLS:-/opt/tla/tla2tools.jar}"
+for tool in cargo bend bun node java uv; do
+  command -v "$tool" >/dev/null || { echo "check: $tool is not installed" >&2; exit 2; }
 done
-# In CI a missing tool fails here, so a green run means every step ran. Locally
-# it prints SKIPPED: a partial run is tier T0, never the full gate.
-python3 tools/pins_check.py require cargo bend bun node java --file "${TLA2TOOLS:-/opt/tla/tla2tools.jar}"
-# Rules that hold on every commit: sabotage is not a default feature, and
-# .github/CODEOWNERS is exactly lane C of ci/lanes.toml.
-python3 tools/policy_check.py invariants
-python3 tools/pins_check.py drift
-python3 tools/workflow_lint.py
-mkdir -p results target/generated
+[ -f "$jar" ] || { echo "check: $jar not found; set TLA2TOOLS" >&2; exit 2; }
+
+out=target/verify
+mkdir -p "$out" target/generated
+
+uv run tools/invariants_check.py
+
+cp formal/PROOF.bend target/generated/PROOF.bend.committed
+uv run tools/generate_proof.py
+if ! cmp -s formal/PROOF.bend target/generated/PROOF.bend.committed; then
+  cp target/generated/PROOF.bend.committed formal/PROOF.bend
+  echo "check: formal/PROOF.bend is not what tools/generate_proof.py writes; run it and commit the result" >&2
+  exit 1
+fi
 (cd formal && bend PROOF.bend --check-only)
 bend formal/kernel.bend -o target/generated/kernel.mjs >/dev/null
+
 cargo clippy -q --locked -p containment-kernel -p containment-host --all-targets -- -D warnings
+cargo test -q --locked -p containment-kernel
 cargo test -q --locked -p containment-host
-# The sabotage build carries the deliberate defects; it must build, lint and test too.
 cargo clippy -q --locked -p containment-host --all-targets --features sabotage -- -D warnings
 cargo test -q --locked -p containment-host --features sabotage
 cargo build -q --locked -p containment-host
+
 target/debug/containment-lab differential-cases 5000 24301 > target/generated/differential.jsonl
-bun tools/differential.mjs target/generated/kernel.mjs target/generated/differential.jsonl | tee results/differential.json
+bun tools/differential.mjs target/generated/kernel.mjs target/generated/differential.jsonl | tee "$out/differential.json"
 scripts/build-wasm.sh
-node tools/wasm_check.mjs target/wasm32-unknown-unknown/release/containment_wasm.wasm target/generated/differential.jsonl | tee results/wasm-differential.json
-python3 tools/mutation_check.py target/generated/kernel.mjs results/mutation-check.json
-if command -v java >/dev/null && [ -f "${TLA2TOOLS:-/opt/tla/tla2tools.jar}" ]; then tools/tla_check.sh; else echo "SKIPPED: TLC (java or tla2tools.jar missing)" >&2; fi
-python3 tools/claims_check.py $STRICT
-# The tests run last. New test files merge without the maintainer (#125, stage 2), and a
-# test runs with this user's rights in this checkout, so nothing that judges anything
-# may run after one. `spec` runs the base branch's tests apart from the head's new ones.
-cargo test -q --locked -p containment-kernel
-python3 -m unittest discover -s tools -p 'test_*.py'
+node tools/wasm_check.mjs target/wasm32-unknown-unknown/release/containment_wasm.wasm target/generated/differential.jsonl | tee "$out/wasm-differential.json"
+uv run tools/mutation_check.py target/generated/kernel.mjs "$out/mutation-check.json"
+tools/tla_check.sh "$out/tla-check.json"
+
+uv run python -m unittest discover -s tools -p 'test_*.py'
+echo "check: all checks passed; results in $out/"

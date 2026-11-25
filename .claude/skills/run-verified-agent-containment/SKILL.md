@@ -24,7 +24,7 @@ Do not run them from a working checkout, and do not try `unshare` to get around 
 
 Already present on the machine this was written on; nothing was installed:
 
-- Rust via `rustup` (the toolchain is pinned by `rust-toolchain.toml`), `python3`
+- Rust via `rustup` (the toolchain is pinned by `rust-toolchain.toml`), `uv`
 - Node 22 or newer (the driver uses the built-in `WebSocket` and `fetch`; no `npm install`)
 - A Chromium binary. The driver finds one in `~/.cache/ms-playwright/` or takes
   `CHROMIUM=/path/to/chrome`.
@@ -60,8 +60,8 @@ working tree. Build it to another path, never over `web/dist/`:
 scripts/build-wasm.sh
 npx --yes --package binaryen@123.0.0 wasm-opt -Oz --strip-debug --strip-producers target/wasm32-unknown-unknown/release/containment_wasm.wasm -o target/generated/kernel.opt.wasm
 npx --yes --package binaryen@123.0.0 wasm2js target/generated/kernel.opt.wasm -o target/generated/kernel.fallback.js
-python3 web/build_variants.py
-python3 web/build.py target/vac-driver/simulator.html
+uv run web/build_variants.py
+uv run web/build.py target/vac-driver/simulator.html
 node .claude/skills/run-verified-agent-containment/driver.mjs sim --page target/vac-driver/simulator.html
 ```
 
@@ -115,13 +115,11 @@ writes its own script and fixture page under `target/vac-driver/`.
 
 ## Direct invocation (what most changes need)
 
-The last 25 merges touched mostly `tools/*.py`, `ci/`, `.github/` and `docs/decisions/`,
-not the running app. For those, the checks and tests are the way to exercise a change.
-These are read-only as invoked and leave `git status` clean:
+For changes that do not touch the running app, the checks and tests are the way to
+exercise a change. These are read-only as invoked and leave `git status` clean:
 
 ```bash
-python3 tools/policy_check.py invariants
-python3 tools/claims_check.py --affected origin/main
+uv run tools/invariants_check.py
 target/debug/containment-lab differential-cases 3 24301
 ```
 
@@ -131,12 +129,11 @@ target/debug/containment-lab differential-cases 3 24301
 ## Test
 
 ```bash
-python3 -m unittest discover -s tools -p 'test_*.py'
+uv run python -m unittest discover -s tools -p 'test_*.py'
 cargo test -q --locked -p containment-kernel
 ```
 
-The tool tests take about a minute. Passing these plus the driver is tier **T0**. Name each check you ran when you report it.
-`scripts/check.sh` (T1) was not run for this skill.
+Name each check you ran when you report it. `scripts/check.sh` was not run for this skill.
 
 ## Run (human path)
 
@@ -145,15 +142,11 @@ or stop.
 
 ## Gotchas
 
-- **`.claude/` is in `.gitignore`.** This skill and its driver are local files, not part
-  of the repository. Tracking them would add a path that `ci/lanes.toml` does not list,
-  which makes it a lane C change for the maintainer to decide.
 - **The page declares no charset.** Loaded from `file://`, headless Chromium decodes it
   as windows-1252, and every `·` and `→` in the trace turns into `Â·` and `â†’` in both
   text and screenshots. The driver therefore serves the page over loopback HTTP as UTF-8.
   `--file-url` loads it the raw way if you need to see that.
-- **Do not run `scripts/build-page.sh` to test the page.** It rewrites `web/dist/`, and
-  `scripts/check.sh` rewrites files under `results/`. Use the build-to-another-path steps
+- **Do not run `scripts/build-page.sh` to test the page.** It rewrites `web/dist/`. Use the build-to-another-path steps
   above.
 - **The committed page is a snapshot.** Its evidence footer and wasm are whatever was
   current when it was last built. A page built from the working tree was not

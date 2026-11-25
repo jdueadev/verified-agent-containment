@@ -1,5 +1,0 @@
-checker = "classify"
-origin = "#125 stage 2 review: a coding declaration turns a comment into code on import"
-twin = "spec-file-added"
-expect_lane = "C"
-expect_escalation = "declares the source encoding raw-unicode-escape"

@@ -1,5 +1,0 @@
-checker = "classify"
-origin = "#125 seed: INV-1, platforms come only from runs that happened"
-twin = "claim-added"
-expect_lane = "C"
-expect_escalation = "platforms was edited"

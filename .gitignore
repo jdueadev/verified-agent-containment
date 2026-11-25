@@ -2,9 +2,8 @@ target/
 results/*.tmp
 *.wasm.tmp
 __pycache__/
-# Shared Claude Code configuration (#169). Everything else under .claude/ stays
-# local: scratch files, worktrees, settings.local.json, session state. This file is
-# a convenience; `policy_check.py invariants` enforces the allow-list.
+# Shared Claude Code configuration. Everything else under .claude/ stays local:
+# scratch files, worktrees, settings.local.json, session state.
 /.claude/*
 !/.claude/settings.json
 !/.claude/hooks/
@@ -19,3 +18,4 @@ target-sabotage/
 
 # Personal agent notes, never shared
 CLAUDE.local.md
+.venv/

@@ -1,6 +1,0 @@
-checker = "classify"
-origin = "#125 seed: a spec file removed or renamed"
-twin = "spec-file-added"
-expect_lane = "C"
-expect_escalation = "spec tools/test_thing.py was removed"
-delete = ["tools/test_thing.py"]

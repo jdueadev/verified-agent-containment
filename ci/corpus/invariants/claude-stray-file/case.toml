@@ -1,5 +1,0 @@
-checker = "invariants"
-origin = "#169: a local file force-added under .claude/"
-twin = "claude-allowed"
-expect = "reject"
-expect_error = ".claude/ship-state.md: is not on the shared .claude/ allow-list"

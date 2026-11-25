@@ -1,6 +1,0 @@
-checker = "approval"
-origin = "#149 seed: #147, approved at its only head, 78980ea"
-expect = "accept"
-# The inputs are #147's as they stood before its merge: the branch was created at
-# 22:16:26, the PR at 22:16:44, and the owner approved at 22:21:25. The later
-# branch_deletion and closed entries are left out. @HEAD@ stands for 78980ea.

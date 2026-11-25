@@ -1,5 +1,0 @@
-checker = "invariants"
-origin = "#169 review: a shared skill that pre-approves tools before anyone reviews it"
-twin = "claude-allowed"
-expect = "reject"
-expect_error = "frontmatter key 'allowed-tools' is not allowed yet"

@@ -4,41 +4,22 @@ How to rerun the proofs, the test suites and the browser showcase. The results t
 
 ## Requirements
 
-Rust, Bun, Node.js, Python 3, and the pinned Bend checkout. The Lean recheck needs Lean v4.34.0 (or `BENDTT` set to a built kernel). TLA+ checks need Java and `tla2tools.jar` (default `/opt/tla/tla2tools.jar`, or set `TLA2TOOLS`); `scripts/check.sh` skips them if either is missing.
+Docker, for the pinned image: `scripts/factory.sh` builds it and runs everything below inside it. To run without the image you need Rust, Bun, Node.js, Java with `tla2tools.jar` (default `/opt/tla/tla2tools.jar`, or set `TLA2TOOLS`), `uv`, and the pinned Bend checkout; the Lean recheck needs Lean v4.34.0 (or `BENDTT` set to a built kernel). Versions are in `ci/pins.env`, `rust-toolchain.toml` and `.python-version`.
 
 ## Proofs, tests, differential and mutation checks
 
 ```bash
-git clone https://github.com/bendlang/bend /tmp/bend
-git -C /tmp/bend checkout 0e2f38f
-printf '#!/bin/sh\nexec bun /tmp/bend/bend2/main.ts "$@"\n' | sudo tee /usr/local/bin/bend >/dev/null
-sudo chmod +x /usr/local/bin/bend
-scripts/check.sh          # proofs, tests, differential, wasm, mutation (with law witnesses), claims check
-scripts/verdict.sh        # Lean recheck; needs Lean v4.34.0, or BENDTT set to a built kernel
+scripts/factory.sh check      # scripts/check.sh in the check image
+scripts/factory.sh verdict    # scripts/verdict.sh, the Lean recheck, in the proofs image
 ```
 
-Near the end, `scripts/check.sh` runs `python3 tools/claims_check.py --strict`, then the kernel crate tests and the tool unit tests. With `--strict`, the claims check fails if a row of [`claims.toml`](../claims.toml) has evidence that no longer holds, if any claim is stale, if `results/attack-suite.json` or `results/live-suite.json` lacks the dual-binary stamps (honest runs from a default build, controls from a different sabotage build), if `results/attack-suite.json` is not a full unwaived run (`timed_repeat >= 30`, no cgroup waiver), or if [`claims.md`](claims.md) is out of date (`--write` regenerates it). The same build rules apply to the newest run under `results/ci/`. Pass `--no-strict` to report stale claims as warnings. The proof, test, differential, mutation, and coverage checks stay mandatory either way. The TLA+ check runs only when `java` and `tla2tools.jar` are present; otherwise the script prints `SKIPPED` and continues.
+`scripts/check.sh` runs the kernel-purity and sabotage checks, confirms `formal/PROOF.bend` is what `tools/generate_proof.py` writes, checks the Bend proofs, runs clippy and the tests for both feature sets, the Rust-to-Bend and Rust-to-wasm differentials, the mutation check with law witnesses, the TLA+ model, and the tool tests. It fails if a tool is missing. Its measurements go to `target/verify/`; it does not touch `results/`.
 
-To check locally which claims your current edits invalidate before running the root lab:
+## Pull requests
 
-```bash
-python3 tools/claims_check.py --affected              # uncommitted edits vs HEAD
-python3 tools/claims_check.py --affected origin/main  # entire branch vs origin/main
-```
+`main` is squash-only with linear history. The required `check` workflow, kept in the organization's `.github` repository, runs `scripts/check.sh` and the Lean recheck on every pull request, each in its own pinned image.
 
-## Pull request workflow
-
-`main` is squash-only with linear history, and `evidence-freshness` is not a required check (`docs/decisions/0002-repository-settings.md`). Freshness is enforced where the guarantees are made: on release tags.
-
-1. **Open the PR.** On every push, the `check` job runs `scripts/check.sh --no-strict` (Bend proofs, TLA+, differential, mutation, Clippy, both unit-test builds, tooling tests, and non-strict `claims_check.py`). Formal proofs and source coverage (`CI-7`) are enforced on every commit; stale claims print as warnings.
-2. **Iterate through review rounds** using fast unit tests and the `check` job.
-3. **Commit evidence that CI can regenerate** on the final commit:
-   * If `formal/host/*` changed, commit the regenerated `results/tla-check.json` (from `tools/tla_check.sh`).
-   * If `formal/*.bend` changed, commit the regenerated `results/formal-verdict.json` (from `scripts/verdict.sh`) in the same PR. `CI-1` fails `check` until the verdict matches, so this one cannot wait for the merge; it needs the maintainer, since the agent environment has no Lean.
-   * Regenerate `docs/claims.md` with `python3 tools/claims_check.py --write`.
-4. **Merge with honestly stale claims.** List the ids `--affected origin/main` prints in the PR. On Ready PRs and on `main`, the `evidence-freshness` job runs `python3 tools/claims_check.py --strict` and reports what is stale; it does not block the merge. That job is paused (#206) while `main`'s CI-4 lab evidence is stale; run the same command locally to see what is stale.
-5. **Refresh lab evidence on `main`, after the merge.** The maintainer runs the root lab on the squashed commit, which is on `main`, so `CI-4` can resolve the commit recorded in `claims.toml` from any clean clone. The results and the `platforms` update land in a follow-up PR. A lab run on a PR branch commit cannot be used: squashing means that commit never reaches `main`.
-6. **Release.** The `release` workflow requires every claim to be fresh under `--strict` on the tagged commit.
+The claims in [`claims.toml`](../claims.toml) are frozen at tag `pre-factory`; see [`evidence-rules.md`](evidence-rules.md).
 
 ## What the laws cover
 
@@ -66,7 +47,7 @@ sudo "$T/sabotage/release/containment-lab" live-suite --honest-results results/l
 # add --allow-missing-limits only if the host has no cgroup v2 pids/memory/cpu controllers; it is recorded
 ```
 
-The deliberate defects exist only in a build with the `sabotage` feature. A default build refuses every `--weakness` except `none` and runs no controls; each results file records the feature set and SHA-256 of the binary behind the honest runs and behind the controls, and `tools/claims_check.py --strict` requires them to differ.
+The deliberate defects exist only in a build with the `sabotage` feature. A default build refuses every `--weakness` except `none` and runs no controls; each results file records the feature set and SHA-256 of the binary behind the honest runs and behind the controls.
 
 `scripts/run-wsl2.sh` wraps the attack-suite steps with kernel and cgroup checks. On Windows, [`scripts/lab/`](../scripts/lab/README.md) runs both suites in a throwaway WSL2 distro.
 
@@ -74,7 +55,6 @@ The deliberate defects exist only in a build with the `sabotage` feature. A defa
 
 ```bash
 scripts/build-page.sh     # also compiles the 10 sabotaged kernels from tools/kernel_mutants.py
-python3 tools/page_check.py web/dist/agent-containment-simulator.html
 ```
 
 If `rustup target add wasm32-unknown-unknown` is unavailable but `rust-src` is installed, use `BUILD_STD=1`.

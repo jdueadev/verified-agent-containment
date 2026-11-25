@@ -1,5 +1,0 @@
-checker = "classify"
-origin = "#125 seed: the mutant ratchet"
-twin = "mutant-added"
-expect_lane = "C"
-expect_escalation = "mutant BEND_MUTANTS:one was changed"

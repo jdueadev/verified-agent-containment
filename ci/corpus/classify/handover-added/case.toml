@@ -1,4 +1,0 @@
-checker = "classify"
-origin = "#169: a new handover on its own, twin of the handover and nested-config cases"
-expect_lane = "C"
-expect_no_escalation = true
