@@ -116,7 +116,7 @@ impl Gate {
         (grant, control)
     }
 
-    pub(super) fn open(&self, baseline: bool) -> Slot<'_> {
+    fn open(&self, baseline: bool) -> Slot<'_> {
         let mut upstreams = lock(&self.upstreams);
         upstreams.next += 1;
         let id = upstreams.next;

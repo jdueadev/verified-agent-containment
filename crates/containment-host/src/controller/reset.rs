@@ -232,13 +232,6 @@ pub(super) fn reset_handler(shared: &Arc<Shared>, message: Value, peer: Option<l
     if accepted {
         // Budgets are per lease: an accepted reset starts a new one.
         shared.gate.start_lease(result.control.reset_counter);
-        if let Some(live) = &shared.live {
-            // Held across the lease change so a release cannot interleave with it.
-            let change = lock(&live.lease_change);
-            live.lease.fetch_add(1, Ordering::SeqCst);
-            live.tokens.store(0, Ordering::SeqCst);
-            drop(change);
-        }
     }
     json!({"ok": accepted, "mode": mode_name(result.control.mode), "counter": result.control.reset_counter})
 }

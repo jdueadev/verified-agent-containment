@@ -1,7 +1,7 @@
 //! The untrusted agent socket and the outbound paths behind it.
 
 use super::*;
-use super::gate::{Account, Slot};
+use super::gate::{Account, Permit, Slot};
 
 /// Sends one lab egress record to the sink on an admitted slot, which is
 /// freed when this returns.
@@ -195,15 +195,6 @@ fn carries_canary(shared: &Shared, live: &LiveState, texts: &[&str]) -> bool {
     !shared.weak.live_canary_unchecked() && !live.canary.is_empty() && texts.iter().any(|text| text.contains(&live.canary))
 }
 
-/// Reserves an upstream slot under the control lock if the kernel allows the
-/// access now. Admission is ordered with commits exactly like lab egress.
-pub(super) fn admit(shared: &Shared, granted: bool, baseline: bool) -> Option<Slot<'_>> {
-    let control = lock(&shared.control);
-    let ok = shared.authority_ready()
-        && authorize_for(&shared.weak, shared.now_ms(), *control, AccessRequest { kind: AccessKind::Egress, granted, baseline });
-    ok.then(|| shared.gate.open(baseline))
-}
-
 /// Sends one upstream request on an admitted slot, which is freed when this
 /// returns. A cut between admission and connect aborts before any byte is
 /// written; a cut later shuts the socket.
@@ -261,37 +252,22 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
     }
     // Everything checked and counted below is this body, exactly as it is sent.
     let body = request.to_string();
-    // The model endpoint is an upstream too: the canary must not reach it.
-    if !shared.weak.live_canary_unchecked() && !live.canary.is_empty() && body.contains(&live.canary) {
-        // The call is refused either way. A model on this host only restricts the
-        // agent; a remote one means the canary was about to leave, so freeze.
-        let local = crate::http::is_loopback_literal(&live.model_url.host);
-        let level = if local { Level::Restrict } else { Level::Freeze };
-        shared.apply(Some(if local { "canary_to_local_model" } else { "canary_exfil" }), received, |now_ms| Event::HardRule { now_ms, level });
-        return denied("denied");
-    }
-    // Reserve the call's maximum (prompt estimate plus completion) first, so
-    // concurrent calls cannot overspend. The reservation belongs to this lease.
-    let reserve = max_tokens + body.len() as u64 / 3;
-    let lease = live.lease.load(Ordering::SeqCst);
-    let reserved = live.tokens.try_update(Ordering::SeqCst, Ordering::SeqCst, |used| (used + reserve <= budget).then_some(used + reserve));
-    if reserved.is_err() {
-        shared.apply(Some("budget_tokens"), received, |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
-        return denied("token budget for this lease is used up");
-    }
-    let release = |used: u64| {
-        // Same lock as the reset, so the lease cannot change under this release.
-        let _guard = lock(&live.lease_change);
-        if live.lease.load(Ordering::SeqCst) != lease {
-            // A reset started a new lease; this call's charge belongs to the old one.
-            return live.tokens.load(Ordering::SeqCst);
-        }
-        live.tokens.try_update(Ordering::SeqCst, Ordering::SeqCst, |t| Some(t.saturating_sub(reserve) + used)).map_or(0, |t| t.saturating_sub(reserve) + used)
-    };
+    // The call reserves its maximum, the prompt estimate plus the completion,
+    // and settles to what it used once the model has answered.
+    let cost = Cost { requests: 1, bytes: body.len() as u64, tokens: max_tokens.saturating_add(body.len() as u64 / 3) };
+    // The model endpoint is an upstream too: the canary must not reach it. A
+    // model on this host only restricts the agent; a remote one freezes it.
+    let kind = Kind::Model { local: crate::http::is_loopback_literal(&live.model_url.host) };
+    let attempt = Attempt { kind, cost, carries_canary: carries_canary(shared, live, &[&body]) };
     // Inference is baseline egress: allowed in Restrict, refused in Hold and above.
-    let Some(slot) = admit(shared, true, true) else {
-        release(0);
-        return denied("inference is not allowed in the current mode");
+    let grant = Grant { write: true, baseline: true, limit: Limit { tokens: Some(budget), ..Limit::NONE } };
+    let Permit { slot, charge } = match shared.admit(attempt, Some(grant), Account::Model, received) {
+        Ok(permit) => permit,
+        Err(by) => return denied(match by {
+            Layer::Canary => "denied",
+            Layer::Policy | Layer::Kernel => "inference is not allowed in the current mode",
+            Layer::Budget => "token budget for this lease is used up",
+        }),
     };
     let mut headers = vec![("Content-Type".to_owned(), "application/json".to_owned())];
     headers.extend(live.model_header.clone());
@@ -304,7 +280,9 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
             // failure may have reached the model, so the reservation stays charged.
             let unsent = matches!(e.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
                 | std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::InvalidInput);
-            release(if unsent { 0 } else { reserve });
+            if unsent {
+                charge.settle(Cost::default());
+            }
             let timed_out = matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut);
             return denied(&match (timed_out, live.policy.model.timeout_seconds) {
                 (true, Some(seconds)) => format!("model server: no whole reply within model.timeout_seconds ({seconds} s)"),
@@ -313,20 +291,20 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
             });
         }
     };
+    // The model did the work, so without a JSON reply the reservation stands.
     let Ok(reply) = serde_json::from_slice::<Value>(&response.body) else {
-        // The model did the work; charge the reservation.
-        release(reserve);
         return denied(&format!("model server returned HTTP {} without JSON", response.status));
     };
     let used = reply["usage"]["total_tokens"].as_u64().unwrap_or((body.len() + response.body.len()) as u64 / 4);
-    let total = release(used);
-    if total + reserve > budget {
+    let spent = charge.settle(Cost { tokens: used, ..cost });
+    // Restrict now if another call this size would no longer fit.
+    if grant.limit.admits(&spent, &cost).is_none() {
         shared.apply(Some("budget_tokens"), boot_ns(), |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
     }
     let choice = &reply["choices"][0];
     let answer = redact(live, json!({"message": choice["message"], "finish_reason": choice["finish_reason"]}));
     json!({"ok": true, "message": answer["message"], "finish_reason": answer["finish_reason"],
-        "usage": {"call": used, "lease_total": total, "budget": budget, "max_tokens": max_tokens}})
+        "usage": {"call": used, "lease_total": spent.tokens, "budget": budget, "max_tokens": max_tokens}})
 }
 
 /// Removes exact credential values from anything returned to the agent, in

@@ -21,12 +21,9 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-// Until every path goes through the gate, parts of these are used only by tests.
-#[cfg_attr(not(test), allow(dead_code))]
 mod admission;
 mod classifier;
 mod enforcer;
-#[cfg_attr(not(test), allow(dead_code))]
 mod gate;
 mod gateway;
 mod reset;
@@ -574,14 +571,6 @@ fn clip_field(text: &str, chars: usize) -> String {
     text.chars().take(chars).collect()
 }
 
-fn authorize_for(weak: &Weakness, now: u64, control: Control, request: AccessRequest) -> bool {
-    if weak.gateway_bypass() {
-        return true;
-    }
-    let control = if weak.ignore_expiry() { Control { deadline_ms: u64::MAX, ..control } } else { control };
-    authorize(now, control, request)
-}
-
 fn listener(path: &Path, mode: u32) -> Result<UnixListener, Box<dyn Error>> {
     let value = UnixListener::bind(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
@@ -993,7 +982,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         "final_mode": mode_name(final_control.mode), "exit_cause": exit_cause, "program": program.poll().to_json(), "populated": populated, "frozen": frozen, "survivors": survivors, "generation": generation, "limits": limits, "authority_pending": authority_pending_at_exit,
         "transitions": *lock(&shared.transitions), "actions": *lock(&shared.actions), "classifier_signals": *lock(&shared.classifier_signals),
         "system_one_probe": *lock(&shared.s1_probe), "system_one_limits": *lock(&shared.s1_limits),
-        "live": shared.live.as_ref().map(|l| json!({"tokens": l.tokens.load(Ordering::SeqCst), "used": shared.gate.lease_report()["used"]})), "system_one_restarts": shared.s1_restarts.load(Ordering::Relaxed), "log_overflow": shared.log_overflow.load(Ordering::Relaxed),
+        "live": shared.live.as_ref().map(|_| shared.gate.lease_report()), "system_one_restarts": shared.s1_restarts.load(Ordering::Relaxed), "log_overflow": shared.log_overflow.load(Ordering::Relaxed),
         "dropped_logs": shared.dropped_logs.load(Ordering::Relaxed), "monitor_alive": monitor.try_wait()?.is_none(),
         "sink_alive": sink.try_wait()?.is_none(),
         "renew_denied": shared.renew_denied.load(Ordering::Relaxed), "peer_rejected": shared.peer_rejected.load(Ordering::Relaxed),

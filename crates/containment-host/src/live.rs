@@ -7,8 +7,6 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU64;
-use std::sync::Mutex;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -173,7 +171,7 @@ fn default_down() -> u64 { crate::common::LIVE_DOWN_HOLD_MS }
 fn default_steps() -> u64 { 16 }
 fn default_seconds() -> u64 { 900 }
 
-/// Resolved policy plus mutable per-lease state.
+/// The resolved policy of one live run. What each lease spends is the gate's.
 pub struct LiveState {
     pub policy: Policy,
     pub model_url: Url,
@@ -182,12 +180,6 @@ pub struct LiveState {
     /// origin -> (rule, credential header)
     pub hosts: BTreeMap<String, (HostRule, Option<(String, String)>)>,
     pub canary: String,
-    /// Held across a lease change, so a token release cannot interleave with it.
-    pub lease_change: Mutex<()>,
-    pub tokens: AtomicU64,
-    /// Incremented by every accepted reset; reservations from an earlier lease
-    /// are not released into the new one.
-    pub lease: AtomicU64,
     /// Exact credential values, redacted from anything returned to the agent.
     pub secret_values: Vec<String>,
 }
@@ -249,7 +241,7 @@ impl LiveState {
         secret_values.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
         secret_values.dedup();
         crate::common::check_redactable(&secret_values)?;
-        Ok(Self { policy, model_url, model_header, model_limits, hosts, canary, lease_change: Mutex::default(), tokens: AtomicU64::new(0), lease: AtomicU64::new(0), secret_values })
+        Ok(Self { policy, model_url, model_header, model_limits, hosts, canary, secret_values })
     }
 }
 
