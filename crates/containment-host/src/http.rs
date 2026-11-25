@@ -9,7 +9,33 @@ use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-pub const MAX_RESPONSE_BYTES: usize = 256 * 1024;
+/// What one upstream request may cost. A body longer than `body_bytes` is cut
+/// to that length here and marked truncated, so the cut and the flag cannot
+/// disagree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    /// Longest wait for any one read or write.
+    pub idle: Duration,
+    /// Whole-request limit (connect, send and the full response), so a peer that
+    /// trickles bytes cannot hold a gateway worker and its slot indefinitely.
+    pub deadline: Duration,
+    pub body_bytes: usize,
+}
+
+impl Limits {
+    /// A web request; the body is what the agent is given.
+    pub const WEB: Self = Self { idle: Duration::from_secs(60), deadline: Duration::from_secs(120), body_bytes: 64 * 1024 };
+    /// A model call: room for a whole chat completion.
+    pub const MODEL: Self = Self { body_bytes: 256 * 1024, ..Self::WEB };
+
+    /// A model call that may take up to `seconds` in all. The gateway asks for
+    /// the reply whole, so a model sends nothing until it is done, and the wait
+    /// for one read is bounded by the same time.
+    pub const fn model_within(seconds: u64) -> Self {
+        Self { idle: Duration::from_secs(seconds), deadline: Duration::from_secs(seconds), ..Self::MODEL }
+    }
+}
+
 const MAX_LINE: u64 = 8 * 1024;
 const MAX_HEADERS: usize = 100;
 
@@ -38,15 +64,12 @@ fn internal(ip: std::net::IpAddr) -> bool {
         }
     }
 }
-const TIMEOUT: Duration = Duration::from_secs(60);
-/// Whole-request limit (connect, send and the full response), so a peer that
-/// trickles bytes cannot hold a gateway worker and its slot indefinitely.
-const DEADLINE: Duration = Duration::from_secs(120);
 
 /// A TCP stream whose every read and write fails once the request deadline passes.
 struct Deadline {
     tcp: TcpStream,
     until: std::time::Instant,
+    idle: Duration,
 }
 
 impl Deadline {
@@ -56,8 +79,8 @@ impl Deadline {
             let _ = self.tcp.shutdown(Shutdown::Both);
             return Err(io::Error::new(io::ErrorKind::TimedOut, "upstream request took too long"));
         }
-        self.tcp.set_read_timeout(Some(left.min(TIMEOUT)))?;
-        self.tcp.set_write_timeout(Some(left.min(TIMEOUT)))
+        self.tcp.set_read_timeout(Some(left.min(self.idle)))?;
+        self.tcp.set_write_timeout(Some(left.min(self.idle)))
     }
 }
 
@@ -139,7 +162,7 @@ fn tls_config() -> Arc<rustls::ClientConfig> {
 /// Sends one request with `Connection: close`. `register` receives a clone of
 /// the TCP stream before anything is written; returning false aborts.
 pub fn send(
-    url: &Url, method: &str, headers: &[(String, String)], body: &[u8], register: impl FnOnce(TcpStream) -> bool,
+    url: &Url, method: &str, headers: &[(String, String)], body: &[u8], limits: Limits, register: impl FnOnce(TcpStream) -> bool,
 ) -> io::Result<Response> {
     let literal = url.host.parse::<std::net::IpAddr>().is_ok() || url.host == "localhost";
     let address = (url.host.as_str(), url.port).to_socket_addrs()?.next()
@@ -147,10 +170,10 @@ pub fn send(
     if !literal && internal(address.ip()) {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "name resolves to an internal address; list the IP literal in the policy if that is intended"));
     }
-    let until = std::time::Instant::now() + DEADLINE;
-    let tcp = TcpStream::connect_timeout(&address, Duration::from_secs(10))?;
-    tcp.set_read_timeout(Some(TIMEOUT))?;
-    tcp.set_write_timeout(Some(TIMEOUT))?;
+    let until = std::time::Instant::now() + limits.deadline;
+    let tcp = TcpStream::connect_timeout(&address, Duration::from_secs(10).min(limits.deadline))?;
+    tcp.set_read_timeout(Some(limits.idle))?;
+    tcp.set_write_timeout(Some(limits.idle))?;
     if !register(tcp.try_clone()?) {
         let _ = tcp.shutdown(Shutdown::Both);
         return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "cut before write"));
@@ -170,17 +193,17 @@ pub fn send(
         let name = rustls::pki_types::ServerName::try_from(url.host.clone())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "bad server name"))?;
         let connection = rustls::ClientConnection::new(tls_config(), name).map_err(io::Error::other)?;
-        let mut stream = rustls::StreamOwned::new(connection, Deadline { tcp, until });
+        let mut stream = rustls::StreamOwned::new(connection, Deadline { tcp, until, idle: limits.idle });
         stream.write_all(head.as_bytes())?;
         stream.write_all(body)?;
         stream.flush()?;
-        read_response(stream)
+        read_response(stream, limits.body_bytes)
     } else {
-        let mut stream = Deadline { tcp, until };
+        let mut stream = Deadline { tcp, until, idle: limits.idle };
         stream.write_all(head.as_bytes())?;
         stream.write_all(body)?;
         stream.flush()?;
-        read_response(stream)
+        read_response(stream, limits.body_bytes)
     }
 }
 
@@ -194,7 +217,7 @@ pub(crate) fn bounded_line(reader: &mut impl BufRead, line: &mut String) -> io::
     Ok(n)
 }
 
-fn read_response(stream: impl Read) -> io::Result<Response> {
+fn read_response(stream: impl Read, max_body: usize) -> io::Result<Response> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     bounded_line(&mut reader, &mut line)?;
@@ -229,7 +252,7 @@ fn read_response(stream: impl Read) -> io::Result<Response> {
                 break;
             }
             // Never allocate what the server announces: copy through a bounded reader.
-            let keep = size.min(MAX_RESPONSE_BYTES.saturating_sub(body.len()));
+            let keep = size.min(max_body.saturating_sub(body.len()));
             let before = body.len();
             (&mut reader).take(keep as u64).read_to_end(&mut body)?;
             if body.len() - before < keep {
@@ -242,14 +265,14 @@ fn read_response(stream: impl Read) -> io::Result<Response> {
             bounded_line(&mut reader, &mut line)?;
         }
     } else {
-        let limit = length.unwrap_or(MAX_RESPONSE_BYTES + 1).min(MAX_RESPONSE_BYTES + 1);
+        let limit = length.unwrap_or(max_body + 1).min(max_body + 1);
         reader.take(limit as u64).read_to_end(&mut body)?;
         // A declared length the upstream did not deliver is an error, not a short body.
-        if length.is_some_and(|n| n <= MAX_RESPONSE_BYTES && body.len() < n) {
+        if length.is_some_and(|n| n <= max_body && body.len() < n) {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "upstream closed before the declared length"));
         }
-        if body.len() > MAX_RESPONSE_BYTES {
-            body.truncate(MAX_RESPONSE_BYTES);
+        if body.len() > max_body {
+            body.truncate(max_body);
             truncated = true;
         }
     }
@@ -285,9 +308,58 @@ mod tests {
     fn oversized_chunks_are_not_allocated() {
         let response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nffffffffffff\r\nabc";
         // A huge announced chunk is never allocated; ending early is an error, not a body.
-        assert_eq!(read_response(&response[..]).err().map(|e| e.kind()), Some(io::ErrorKind::UnexpectedEof));
+        assert_eq!(read_response(&response[..], Limits::MODEL.body_bytes).err().map(|e| e.kind()), Some(io::ErrorKind::UnexpectedEof));
         let long = format!("HTTP/1.1 200 OK\r\nX: {}\r\n\r\n", "a".repeat(10_000));
-        assert!(read_response(long.as_bytes()).is_err());
+        assert!(read_response(long.as_bytes(), Limits::MODEL.body_bytes).is_err());
+    }
+
+    /// A body is flagged truncated exactly when less of it is kept than was sent,
+    /// with or without a declared length, chunked or not.
+    #[test]
+    fn a_cut_body_is_always_flagged() {
+        let limit = Limits::WEB.body_bytes;
+        let chunked = |n: usize| format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{n:x}\r\n{}\r\n0\r\n\r\n", "a".repeat(n));
+        let sized = |n: usize| format!("HTTP/1.1 200 OK\r\nContent-Length: {n}\r\n\r\n{}", "a".repeat(n));
+        let until_close = |n: usize| format!("HTTP/1.1 200 OK\r\n\r\n{}", "a".repeat(n));
+        for (sent, cut) in [(limit, false), (limit + 1, true), (102_000, true), (10, false)] {
+            for response in [chunked(sent), sized(sent), until_close(sent)] {
+                let r = read_response(response.as_bytes(), limit).expect("response");
+                assert_eq!((r.body.len(), r.truncated), (sent.min(limit), cut), "{sent} bytes sent");
+            }
+        }
+    }
+
+    /// A server that answers after `delay`, on loopback.
+    fn slow_server(delay: Duration) -> Url {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("address").port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(&stream);
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).is_ok_and(|n| n > 0) && line != "\r\n" {
+                        line.clear();
+                    }
+                    std::thread::sleep(delay);
+                    let _ = (&stream).write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+                });
+            }
+        });
+        Url::parse(&format!("http://127.0.0.1:{port}/")).expect("url")
+    }
+
+    #[test]
+    fn the_limits_given_decide_how_long_a_reply_may_take() {
+        let url = slow_server(Duration::from_millis(1_500));
+        let quick = Limits { idle: Duration::from_millis(300), deadline: Duration::from_secs(5), ..Limits::MODEL };
+        let error = send(&url, "GET", &[], b"", quick, |_| true).err().expect("cut after 300 ms without a byte");
+        assert!(matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut), "{error}");
+        let whole = Limits { idle: Duration::from_secs(5), deadline: Duration::from_millis(700), ..Limits::MODEL };
+        let error = send(&url, "GET", &[], b"", whole, |_| true).err().expect("cut at the 700 ms deadline");
+        assert!(matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut), "{error}");
+        let patient = Limits::model_within(3);
+        assert_eq!(send(&url, "GET", &[], b"", patient, |_| true).map(|r| r.body).ok(), Some(b"ok".to_vec()));
     }
 
     #[test]
@@ -298,11 +370,12 @@ mod tests {
 
     #[test]
     fn short_bodies_are_errors() {
+        let limit = Limits::MODEL.body_bytes;
         let short = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nonly twenty bytes...".as_slice();
-        assert_eq!(read_response(short).err().map(|e| e.kind()), Some(io::ErrorKind::UnexpectedEof));
+        assert_eq!(read_response(short, limit).err().map(|e| e.kind()), Some(io::ErrorKind::UnexpectedEof));
         let chunk = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\na\r\nabc".as_slice();
-        assert_eq!(read_response(chunk).err().map(|e| e.kind()), Some(io::ErrorKind::UnexpectedEof));
+        assert_eq!(read_response(chunk, limit).err().map(|e| e.kind()), Some(io::ErrorKind::UnexpectedEof));
         let whole = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc".as_slice();
-        assert_eq!(read_response(whole).map(|r| r.body).ok(), Some(b"abc".to_vec()));
+        assert_eq!(read_response(whole, limit).map(|r| r.body).ok(), Some(b"abc".to_vec()));
     }
 }

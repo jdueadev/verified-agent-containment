@@ -31,7 +31,7 @@ const SABOTAGE: &[(&str, &str)] = &[
     ("memfd_exec", "sandbox_escape"), ("classifier_beat_in_health", "classifier_stall"),
     ("lag_episode_never_resets", "lag_after_reset"), ("untraced_decisions_ignored", "blind_egress_only"),
     ("overflow_latch_sticks", "flood_after_reset"), ("control_peer_unchecked", "control_from_other_uid"),
-    ("reset_peer_unchecked", "control_from_other_uid"),
+    ("reset_peer_unchecked", "control_from_other_uid"), ("oversized_request_kept_open", "gateway_churn"),
 ];
 
 struct Finished {
@@ -719,7 +719,11 @@ fn execute(scenario: &str, weakness: &str, sequence: usize) -> Result<Value, Box
             let growth = report["open_fds"].as_i64().unwrap_or(i64::MAX) - fds_before as i64;
             checks.add("agent_completed_churn", value["connected"].as_u64().unwrap_or(0) >= 2_900, value.clone());
             checks.add("controller_fds_do_not_grow", growth <= 32, json!({"before":fds_before,"after":report["open_fds"],"tracked_streams":report["gateway_streams"]}));
-            checks.add("oversized_request_closes_connection", value["oversized_reply_bytes"] == 0, value["oversized_reply_bytes"].clone());
+            // One reply that names the limit, then nothing more on that connection.
+            let oversized = &value["oversized"];
+            let named = oversized["reply"]["ok"] == false && oversized["reply"]["error"].as_str().is_some_and(|e| e.contains(&MAX_LINE_BYTES.to_string()));
+            checks.add("oversized_request_told_the_limit", named, oversized["reply"].clone());
+            checks.add("oversized_request_closes_connection", oversized["after_reply"] == "closed", oversized.clone());
             checks.add("gateway_still_serves", value["after"]["ok"] == true, value["after"].clone());
         }
         "classifier_injection" => {

@@ -75,6 +75,22 @@ pub struct Model {
     pub token_budget: u64,
     /// Optional credential name for the model endpoint.
     pub credential: Option<String>,
+    /// Longest a model call may take, from connect to the last byte of the
+    /// reply. Unset, a call may take 120 s but must not go 60 s without a byte,
+    /// and since the reply comes whole that means about 60 s.
+    pub timeout_seconds: Option<u64>,
+}
+
+/// Largest `model.timeout_seconds`: one call may take an hour.
+pub const MAX_MODEL_TIMEOUT_SECONDS: u64 = 3_600;
+
+/// The limits for each model call, from the policy.
+fn model_limits(model: &Model) -> Result<crate::http::Limits, String> {
+    match model.timeout_seconds {
+        None => Ok(crate::http::Limits::MODEL),
+        Some(seconds @ 1..=MAX_MODEL_TIMEOUT_SECONDS) => Ok(crate::http::Limits::model_within(seconds)),
+        Some(seconds) => Err(format!("model.timeout_seconds is {seconds}; give 1 to {MAX_MODEL_TIMEOUT_SECONDS}")),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -169,6 +185,7 @@ pub struct LiveState {
     pub policy: Policy,
     pub model_url: Url,
     pub model_header: Option<(String, String)>,
+    pub model_limits: crate::http::Limits,
     /// origin -> (rule, credential header)
     pub hosts: BTreeMap<String, (HostRule, Option<(String, String)>)>,
     pub canary: String,
@@ -193,6 +210,7 @@ impl LiveState {
             }
         }
         let model_url = Url::parse(&policy.model.endpoint).ok_or("model.endpoint is not an http(s) URL")?;
+        let model_limits = model_limits(&policy.model)?;
         let mut creds = BTreeMap::new();
         let mut raw_values = Vec::new();
         for c in &policy.credential {
@@ -237,7 +255,7 @@ impl LiveState {
         secret_values.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
         secret_values.dedup();
         crate::common::check_redactable(&secret_values)?;
-        Ok(Self { policy, model_url, model_header, hosts, canary, used: Mutex::default(), tokens: AtomicU64::new(0), lease: AtomicU64::new(0), secret_values })
+        Ok(Self { policy, model_url, model_header, model_limits, hosts, canary, used: Mutex::default(), tokens: AtomicU64::new(0), lease: AtomicU64::new(0), secret_values })
     }
 }
 
@@ -331,5 +349,18 @@ mod tests {
         }
         assert!(Workload::from_args(&["program".to_owned()]).is_err());
         assert!(Workload::from_args(&["task".to_owned(), "a".to_owned(), "b".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn model_timeout_sets_both_limits_and_must_be_sensible() {
+        let model = |line: &str| toml::from_str::<Model>(&format!("endpoint = \"http://127.0.0.1:1/v1/chat/completions\"\nname = \"m\"\n{line}")).expect("model");
+        assert_eq!(model_limits(&model("")), Ok(crate::http::Limits::MODEL));
+        let limits = model_limits(&model("timeout_seconds = 600")).expect("accepted");
+        assert_eq!((limits.idle.as_secs(), limits.deadline.as_secs(), limits.body_bytes), (600, 600, crate::http::Limits::MODEL.body_bytes));
+        assert!(model_limits(&model("timeout_seconds = 3600")).is_ok());
+        for absurd in ["timeout_seconds = 0", "timeout_seconds = 3601", "timeout_seconds = 100000000"] {
+            assert!(model_limits(&model(absurd)).is_err(), "{absurd}");
+        }
+        assert!(toml::from_str::<Model>("endpoint = \"http://x/\"\nname = \"m\"\ntimeout_seconds = -1\n").is_err());
     }
 }

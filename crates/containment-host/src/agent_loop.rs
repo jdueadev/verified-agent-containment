@@ -22,7 +22,8 @@ struct Gateway {
 impl Gateway {
     fn connect(path: &str) -> std::io::Result<Self> {
         let stream = UnixStream::connect(path)?;
-        stream.set_read_timeout(Some(Duration::from_secs(300)))?;
+        // Longer than any model call the policy can allow; the gateway answers or closes first.
+        stream.set_read_timeout(Some(Duration::from_secs(crate::live::MAX_MODEL_TIMEOUT_SECONDS + 60)))?;
         Ok(Self { reader: BufReader::new(stream.try_clone()?), stream })
     }
 
@@ -98,7 +99,8 @@ fn run_tool(gateway: &mut Gateway, name: &str, args: &Value) -> String {
         "http_request" => {
             let reply = gateway.send(&json!({"op": "http", "method": text("method").to_uppercase(), "url": text("url"), "body": text("body")}));
             if reply["ok"] == true {
-                Ok(format!("HTTP {}\n{}", reply["status"], reply["body"].as_str().unwrap_or("")))
+                let cut = if reply["truncated"] == true { " (the gateway kept only the start of the body)" } else { "" };
+                Ok(format!("HTTP {}{cut}\n{}", reply["status"], reply["body"].as_str().unwrap_or("")))
             } else {
                 Err(format!("request refused: {}", reply["error"].as_str().unwrap_or("denied")))
             }

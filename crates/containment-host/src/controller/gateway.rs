@@ -175,8 +175,21 @@ pub(super) fn serve_gateway(listener: UnixListener, shared: Arc<Shared>) {
             if let Ok(reader) = stream.try_clone() {
                 let mut reader = BufReader::new(reader);
                 let mut line = Vec::new();
-                while let Some(message) = read_request(&mut reader, &mut line) {
-                    if writeln!(stream, "{}", gateway_handler(&shared, message)).is_err() {
+                loop {
+                    while let Some(message) = read_request(&mut reader, &mut line) {
+                        if writeln!(stream, "{}", gateway_handler(&shared, message)).is_err() {
+                            break;
+                        }
+                    }
+                    // A line over the limit stops the reading with the limit's worth
+                    // in `line`. The agent is told why, once, and the rest of the line
+                    // is never read: the connection closes and serves nothing more.
+                    if line.len() as u64 <= MAX_LINE_BYTES || line.ends_with(b"\n") {
+                        break;
+                    }
+                    let _ = writeln!(stream, "{}", status_error(format!("request is larger than the {MAX_LINE_BYTES}-byte limit; the connection is closed")));
+                    // Sabotage: the rest of the line is read as the next request.
+                    if !shared.weak.oversized_request_kept_open() {
                         break;
                     }
                 }
@@ -215,8 +228,8 @@ pub(super) fn admit(shared: &Shared, granted: bool, baseline: bool) -> Option<u6
 
 /// Sends one upstream request on an admitted slot. A cut between admission and
 /// connect aborts before any byte is written; a cut later shuts the socket.
-pub(super) fn send_on_slot(shared: &Shared, slot: u64, url: &crate::http::Url, method: &str, headers: &[(String, String)], body: &[u8]) -> std::io::Result<crate::http::Response> {
-    let result = crate::http::send(url, method, headers, body, |stream| {
+pub(super) fn send_on_slot(shared: &Shared, slot: u64, url: &crate::http::Url, method: &str, headers: &[(String, String)], body: &[u8], limits: crate::http::Limits) -> std::io::Result<crate::http::Response> {
+    let result = crate::http::send(url, method, headers, body, limits, |stream| {
         let mut upstreams = lock(&shared.upstreams);
         match upstreams.active.get_mut(&slot) {
             Some(entry) => {
@@ -234,13 +247,55 @@ pub(super) fn send_on_slot(shared: &Shared, slot: u64, url: &crate::http::Url, m
     result
 }
 
+/// Standard chat-completion settings an `infer` request may carry. Each is
+/// forwarded to the model as given.
+const MODEL_SETTINGS: &[&str] = &["temperature", "top_p", "seed", "stop", "tool_choice", "response_format", "presence_penalty", "frequency_penalty"];
+
+/// Builds the model request for an `infer` request, and returns it with its
+/// completion limit. Any key the gateway would not forward is refused by name,
+/// so a caller never takes a setting for applied when the model never saw it.
+/// The policy names the model, and the gateway reads the reply whole.
+pub(super) fn model_request(model: &crate::live::Model, message: &Value) -> Result<(Value, u64), String> {
+    let mut request = json!({"model": model.name, "messages": message["messages"], "stream": false});
+    let mut max_tokens = model.max_tokens_per_call;
+    for (key, value) in message.as_object().into_iter().flatten() {
+        match key.as_str() {
+            "op" | "messages" => {}
+            "tools" => {
+                if !value.is_null() {
+                    request["tools"] = value.clone();
+                }
+            }
+            "model" if value.as_str() == Some(model.name.as_str()) => {}
+            "model" => return Err(format!("model: the gateway calls the policy's model {:?}; leave model out or name that one", model.name)),
+            "stream" if value == false => {}
+            "stream" => return Err("stream: the gateway returns the whole reply, so only false is accepted".to_owned()),
+            // A smaller limit is the caller's to choose; a larger one stays at the policy's.
+            "max_tokens" => match value.as_u64().filter(|n| *n > 0) {
+                Some(n) => max_tokens = n.min(max_tokens),
+                None => return Err("max_tokens must be a positive integer".to_owned()),
+            },
+            setting if MODEL_SETTINGS.contains(&setting) => request[setting] = value.clone(),
+            other => return Err(format!("{:?} is not forwarded to the model; the settings that are: {}", clip_field(other, 64), MODEL_SETTINGS.join(", "))),
+        }
+    }
+    request["max_tokens"] = json!(max_tokens);
+    Ok((request, max_tokens))
+}
+
 pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, received: u64) -> Value {
     let budget = live.policy.model.token_budget;
-    let reserve = live.policy.model.max_tokens_per_call;
-    let request = json!({
-        "model": live.policy.model.name, "messages": message["messages"], "tools": message["tools"],
-        "max_tokens": reserve, "stream": false,
-    });
+    let (mut request, max_tokens) = match model_request(&live.policy.model, message) {
+        Ok(built) => built,
+        Err(reason) => return denied(&reason),
+    };
+    if let Some(fields) = request.as_object_mut().filter(|_| shared.weak.live_settings_dropped()) {
+        // Sabotage: the caller's settings never reach the model, and nothing says so.
+        for setting in MODEL_SETTINGS {
+            fields.remove(*setting);
+        }
+    }
+    // Everything checked and counted below is this body, exactly as it is sent.
     let body = request.to_string();
     // The model endpoint is an upstream too: the canary must not reach it.
     if !shared.weak.live_canary_unchecked() && !live.canary.is_empty() && body.contains(&live.canary) {
@@ -253,7 +308,7 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
     }
     // Reserve the call's maximum (prompt estimate plus completion) first, so
     // concurrent calls cannot overspend. The reservation belongs to this lease.
-    let reserve = reserve + body.len() as u64 / 3;
+    let reserve = max_tokens + body.len() as u64 / 3;
     let lease = live.lease.load(Ordering::SeqCst);
     let reserved = live.tokens.try_update(Ordering::SeqCst, Ordering::SeqCst, |used| (used + reserve <= budget).then_some(used + reserve));
     if reserved.is_err() {
@@ -276,7 +331,9 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
     };
     let mut headers = vec![("Content-Type".to_owned(), "application/json".to_owned())];
     headers.extend(live.model_header.clone());
-    let response = match send_on_slot(shared, slot, &live.model_url, "POST", &headers, body.as_bytes()) {
+    // Sabotage: the policy's timeout is ignored and the fixed limits apply.
+    let limits = if shared.weak.live_model_timeout_ignored() { crate::http::Limits::MODEL } else { live.model_limits };
+    let response = match send_on_slot(shared, slot, &live.model_url, "POST", &headers, body.as_bytes(), limits) {
         Ok(r) => r,
         Err(e) => {
             // Refused or cut before any byte was written: nothing was spent. Any other
@@ -284,7 +341,12 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
             let unsent = matches!(e.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
                 | std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::InvalidInput);
             release(if unsent { 0 } else { reserve });
-            return denied(&format!("model server: {e}"));
+            let timed_out = matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut);
+            return denied(&match (timed_out, live.policy.model.timeout_seconds) {
+                (true, Some(seconds)) => format!("model server: no whole reply within model.timeout_seconds ({seconds} s)"),
+                (true, None) => format!("model server: {e}; to allow slower calls, set model.timeout_seconds in the policy"),
+                (false, _) => format!("model server: {e}"),
+            });
         }
     };
     let Ok(reply) = serde_json::from_slice::<Value>(&response.body) else {
@@ -297,8 +359,10 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
     if total + reserve > budget {
         shared.apply(Some("budget_tokens"), boot_ns(), |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
     }
-    let message = redact(live, reply["choices"][0]["message"].clone());
-    json!({"ok": true, "message": message, "usage": {"call": used, "lease_total": total, "budget": budget}})
+    let choice = &reply["choices"][0];
+    let answer = redact(live, json!({"message": choice["message"], "finish_reason": choice["finish_reason"]}));
+    json!({"ok": true, "message": answer["message"], "finish_reason": answer["finish_reason"],
+        "usage": {"call": used, "lease_total": total, "budget": budget, "max_tokens": max_tokens}})
 }
 
 /// Removes exact credential values from anything returned to the agent, in
@@ -443,9 +507,10 @@ pub(super) fn live_http(shared: &Shared, live: &LiveState, message: &Value, rece
     if writes {
         headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
     }
-    match send_on_slot(shared, slot, &url, &method, &headers, body.as_bytes()) {
-        Ok(r) => redact(live, json!({"ok": true, "status": r.status, "truncated": r.truncated,
-            "body": String::from_utf8_lossy(&r.body[..r.body.len().min(64 * 1024)])})),
+    match send_on_slot(shared, slot, &url, &method, &headers, body.as_bytes(), crate::http::Limits::WEB) {
+        // Sabotage: a cut body is reported whole.
+        Ok(r) => redact(live, json!({"ok": true, "status": r.status, "truncated": r.truncated && !shared.weak.live_truncation_hidden(),
+            "body": String::from_utf8_lossy(&r.body)})),
         Err(e) => redact(live, denied(&format!("upstream: {e}"))),
     }
 }
@@ -556,6 +621,50 @@ mod tests {
     fn replaces_the_longer_secret_whole() {
         let clean = redact_value(&secrets(&["abc", "abcdef"]), json!("abcdef abc"));
         assert_eq!(clean, json!("[redacted] [redacted]"));
+    }
+
+    fn policy_model() -> crate::live::Model {
+        toml::from_str("endpoint = \"http://127.0.0.1:1/v1/chat/completions\"\nname = \"m\"\nmax_tokens_per_call = 100\n").expect("model table")
+    }
+
+    #[test]
+    fn model_request_forwards_the_callers_settings() {
+        let message = json!({"op": "infer", "messages": [{"role": "user", "content": "hi"}], "tools": [{"type": "function"}],
+            "temperature": 0, "top_p": 0.9, "seed": 7, "stop": ["END"], "tool_choice": "required", "response_format": {"type": "json_object"},
+            "presence_penalty": 0.5, "frequency_penalty": -0.5, "max_tokens": 40, "model": "m", "stream": false});
+        let (request, max_tokens) = model_request(&policy_model(), &message).expect("accepted");
+        assert_eq!(max_tokens, 40);
+        assert_eq!(request, json!({"model": "m", "messages": [{"role": "user", "content": "hi"}], "tools": [{"type": "function"}], "stream": false,
+            "temperature": 0, "top_p": 0.9, "seed": 7, "stop": ["END"], "tool_choice": "required", "response_format": {"type": "json_object"},
+            "presence_penalty": 0.5, "frequency_penalty": -0.5, "max_tokens": 40}));
+    }
+
+    #[test]
+    fn model_request_keeps_the_policy_limits() {
+        let bare = json!({"op": "infer", "messages": []});
+        let (request, max_tokens) = model_request(&policy_model(), &bare).expect("accepted");
+        assert_eq!((max_tokens, request), (100, json!({"model": "m", "messages": [], "stream": false, "max_tokens": 100})));
+        let over = json!({"op": "infer", "messages": [], "tools": null, "max_tokens": 5_000});
+        let (request, max_tokens) = model_request(&policy_model(), &over).expect("accepted");
+        assert_eq!((max_tokens, request.get("tools")), (100, None));
+    }
+
+    #[test]
+    fn model_request_refuses_what_it_would_not_send() {
+        let refused = |extra: Value| {
+            let mut message = json!({"op": "infer", "messages": []});
+            for (key, value) in extra.as_object().expect("object") {
+                message[key] = value.clone();
+            }
+            model_request(&policy_model(), &message).expect_err("refused")
+        };
+        assert!(refused(json!({"logit_bias": {"1": 2}})).contains("logit_bias"));
+        assert!(refused(json!({"n": 3})).starts_with("\"n\""));
+        assert!(refused(json!({"model": "other"})).contains("\"m\""));
+        assert!(refused(json!({"stream": true})).starts_with("stream"));
+        for bad in [json!(0), json!(-1), json!(1.5), json!("40")] {
+            assert!(refused(json!({"max_tokens": bad})).starts_with("max_tokens"));
+        }
     }
 
     #[test]
