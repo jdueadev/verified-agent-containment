@@ -1,0 +1,125 @@
+# Broken variants of the product code, one or more per harness: the smallest
+# edit that breaks the harness's promise. `scripts/kani.sh mutants` applies
+# each to a scratch copy of the checkout and requires the harness it names in
+# `breaks` to fail on it. Every run checks that each `old` still occurs exactly
+# once in its file and that every harness is named by some mutant, so a
+# harness never seen failing, or a mutant the code has moved away from, stops
+# the check.
+
+[[mutant]]
+name = "no grant falls back to an open read grant"
+file = "crates/containment-host/src/controller/admission.rs"
+breaks = "an_ungranted_destination_is_never_allowed"
+old = "let covered = grant.filter("
+new = "let covered = grant.or(Some(&Grant { write: false, baseline: true, limit: Limit::NONE })).filter("
+
+[[mutant]]
+name = "authority readiness is not asked"
+file = "crates/containment-host/src/controller/admission.rs"
+breaks = "the_mode_binds"
+old = "if !(authority_ready && kernel_allows("
+new = "if !(kernel_allows("
+
+[[mutant]]
+name = "the lab secret rides along when egress alone is allowed"
+file = "crates/containment-host/src/controller/admission.rs"
+breaks = "the_mode_binds"
+old = "Kind::LabEgress { secret: true } => allows(egress) && allows(brokered),"
+new = "Kind::LabEgress { secret: true } => allows(egress) || allows(brokered),"
+
+[[mutant]]
+name = "the kernel is asked at time zero"
+file = "crates/containment-host/src/controller/admission.rs"
+breaks = "the_mode_binds"
+old = "let allows = |request| authorize(now_ms, control, request);"
+new = "let allows = |request| authorize(0, control, request);"
+
+[[mutant]]
+name = "the budget checks what was spent, not the new total"
+file = "crates/containment-host/src/controller/admission.rs"
+breaks = "the_budget_holds"
+old = "Some(limit) => used.checked_add(cost).filter(|total| *total <= limit),"
+new = "Some(limit) => used.checked_add(cost).filter(|_| used <= limit),"
+
+[[mutant]]
+name = "an allowed attempt is not charged"
+file = "crates/containment-host/src/controller/admission.rs"
+breaks = "the_budget_holds"
+old = "Some(used) => Verdict::Allow { used },"
+new = "Some(_) => Verdict::Allow { used: *used },"
+
+[[mutant]]
+name = "the canary is checked after the policy"
+file = "crates/containment-host/src/controller/admission.rs"
+breaks = "the_canary_rule_fires_first_and_raises"
+old = """
+    // First, so the canary's rule fires however else the attempt would end.
+    if attempt.carries_canary {
+        // A canary bound for a model on this host has not left it.
+        let level = if attempt.kind == (Kind::Model { local: true }) { Level::Restrict } else { Level::Freeze };
+        return Verdict::Refuse { by: Layer::Canary, raise: Some(level) };
+    }
+    let covered = grant.filter(|grant| grant.write || attempt.kind != Kind::Web { write: true });
+    let Some(grant) = covered else {
+        return Verdict::Refuse { by: Layer::Policy, raise: None };
+    };
+"""
+new = """
+    let covered = grant.filter(|grant| grant.write || attempt.kind != Kind::Web { write: true });
+    let Some(grant) = covered else {
+        return Verdict::Refuse { by: Layer::Policy, raise: None };
+    };
+    if attempt.carries_canary {
+        let level = if attempt.kind == (Kind::Model { local: true }) { Level::Restrict } else { Level::Freeze };
+        return Verdict::Refuse { by: Layer::Canary, raise: Some(level) };
+    }
+"""
+
+[[mutant]]
+name = "a canary to a remote model only restricts"
+file = "crates/containment-host/src/controller/admission.rs"
+breaks = "the_canary_rule_fires_first_and_raises"
+old = "let level = if attempt.kind == (Kind::Model { local: true }) {"
+new = "let level = if matches!(attempt.kind, Kind::Model { .. }) {"
+
+[[mutant]]
+name = "the write check looks at reads"
+file = "crates/containment-host/src/controller/admission.rs"
+breaks = "a_read_grant_never_allows_a_write"
+old = "grant.write || attempt.kind != Kind::Web { write: true }"
+new = "grant.write || attempt.kind != Kind::Web { write: false }"
+
+[[mutant]]
+name = "a policy refusal is blamed on the kernel"
+file = "crates/containment-host/src/controller/admission.rs"
+breaks = "each_refusal_names_the_step_that_refused"
+old = "return Verdict::Refuse { by: Layer::Policy, raise: None };"
+new = "return Verdict::Refuse { by: Layer::Kernel, raise: None };"
+
+[[mutant]]
+name = "a budget refusal raises nothing"
+file = "crates/containment-host/src/controller/admission.rs"
+breaks = "each_refusal_names_the_step_that_refused"
+old = "None => Verdict::Refuse { by: Layer::Budget, raise: Some(Level::Restrict) },"
+new = "None => Verdict::Refuse { by: Layer::Budget, raise: None },"
+
+[[mutant]]
+name = "an unlimited count adds without saturating"
+file = "crates/containment-host/src/controller/admission.rs"
+breaks = "admits_never_wraps"
+old = "None => Some(used.saturating_add(cost)),"
+new = "None => Some(used + cost),"
+
+[[mutant]]
+name = "a limited count wraps instead of refusing"
+file = "crates/containment-host/src/controller/admission.rs"
+breaks = "admits_never_wraps"
+old = "Some(limit) => used.checked_add(cost).filter(|total| *total <= limit),"
+new = "Some(limit) => Some(used.wrapping_add(cost)).filter(|total| *total <= limit),"
+
+[[mutant]]
+name = "settling subtracts the reservation without saturating"
+file = "crates/containment-host/src/controller/admission.rs"
+breaks = "settling_never_wraps"
+old = "spent.saturating_sub(reserved).saturating_add(actual)"
+new = "(spent - reserved).saturating_add(actual)"

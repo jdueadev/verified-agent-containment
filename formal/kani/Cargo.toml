@@ -1,0 +1,23 @@
+# Kani proofs of the gateway's admission decision. scripts/kani.sh runs them.
+#
+# This crate compiles the product's own admission.rs (see lib.rs) and adds only
+# the harnesses. It is its own workspace, not a member of the root one, so no
+# product build, lock file or image stage sees it.
+[package]
+name = "admission-proofs"
+version = "0.0.0"
+# The edition admission.rs is written for: the host crate's, from the root workspace.
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[lib]
+path = "lib.rs"
+
+[workspace]
+
+[dependencies]
+containment-kernel = { path = "../../crates/containment-kernel" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
