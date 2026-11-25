@@ -6,7 +6,7 @@
 use crate::common::*;
 use crate::live::Workload;
 use crate::mock::Server;
-use crate::run_live;
+use crate::run_live::{self, LiveRun};
 use serde_json::{json, Value};
 use std::error::Error;
 use std::fs;
@@ -28,7 +28,7 @@ impl Checks {
 const SCENARIOS: &[&str] = &[
     "benign", "canary_exfil", "unlisted_host", "write_to_read_host", "request_budget", "token_budget",
     "stop_cuts_upstream", "rebuild_discards_workspace", "credential_scoped", "hud_log_redacted", "slow_model_no_false_lag",
-    "failed_start_leaves_nothing", "outside_program", "program_never_starts",
+    "failed_start_leaves_nothing", "outside_program", "program_never_starts", "dead_controller_leaves_nothing",
 ];
 /// (weakness, scenario, the check it must break, checks that must still pass).
 /// A sabotage counts as caught only when its own target check fails while the
@@ -46,6 +46,7 @@ const SABOTAGE: &[(&str, &str, &str, &[&str])] = &[
     ("start_leak", "failed_start_leaves_nothing", "late_failure_left_nothing", &["rejected_policy_start_failed", "late_failure_start_failed"]),
     ("writable_root", "outside_program", "supplied_root_is_read_only", &["granted_request_arrived_through_gate", "program_saw_supplied_root"]),
     ("unstarted_as_finished", "program_never_starts", "exec_failed_reported_not_started", &["exec_failed_run_ended", "ran_and_failed_reported_with_exit_code"]),
+    ("start_leak", "dead_controller_leaves_nothing", "nothing_left_after_kill", &["agent_was_working_before_the_kill", "controller_was_killed", "evidence_saved"]),
 ];
 
 /// Small enough that the budget runs out within the script's ten calls.
@@ -81,7 +82,7 @@ fn script(scenario: &str, write: &str, read: &str, unlisted: &str) -> Vec<Value>
         "request_budget" => (0..7).map(|i| post("/item", &format!("{{\"n\":{i}}}"))).chain([finish]).collect(),
         "token_budget" => (0..10).map(|_| get(read, "/index.html")).collect(),
         // Repeats the last message forever: the harness stops the agent.
-        "stop_cuts_upstream" => vec![get(write, "/index.html")],
+        "stop_cuts_upstream" | "dead_controller_leaves_nothing" => vec![get(write, "/index.html")],
         // The last message repeats, so the rebuilt agent lists its own workspace.
         "rebuild_discards_workspace" => vec![call("write_file", json!({"path": "taint.txt", "content": "left behind"})), call("list_dir", json!({"path": "."}))],
         // The credential belongs to the write host; the read host must never see it.
@@ -97,7 +98,7 @@ fn script(scenario: &str, write: &str, read: &str, unlisted: &str) -> Vec<Value>
 fn policy(model: &str, write: &str, read: &str, scenario: &str, workspace: &Path) -> String {
     let tokens = if scenario == "token_budget" { TOKEN_BUDGET } else { 100_000 };
     // These two keep the agent busy until the harness intervenes.
-    let steps = if matches!(scenario, "stop_cuts_upstream" | "rebuild_discards_workspace") { 2_000 } else { 20 };
+    let steps = if matches!(scenario, "stop_cuts_upstream" | "rebuild_discards_workspace" | "dead_controller_leaves_nothing") { 2_000 } else { 20 };
     format!(r#"[model]
 endpoint = "{model}/v1/chat/completions"
 name = "scripted"
@@ -162,6 +163,47 @@ fn run_traces() -> Vec<String> {
         exe.starts_with(&run_prefix).then(|| format!("process {pid}: {exe}"))
     }));
     found
+}
+
+/// Processes, other than zombies, running under the uids a run gives its sandbox
+/// generations and System One. The cgroups say nothing about a process that left them.
+fn processes_of_uids(base: u64) -> Vec<String> {
+    use std::os::unix::fs::MetadataExt;
+    fs::read_dir("/proc").into_iter().flatten().flatten()
+        .filter(|e| e.file_name().to_str().is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit())))
+        .filter(|e| fs::metadata(e.path()).is_ok_and(|m| (base..base + 16).contains(&u64::from(m.uid()))))
+        .filter(|e| fs::read_to_string(e.path().join("stat")).is_ok_and(|s| !s.rsplit(')').next().unwrap_or("").trim_start().starts_with('Z')))
+        .map(|e| format!("process {} of uid base {base}", e.file_name().to_string_lossy())).collect()
+}
+
+/// A controller killed outright after a successful start cannot tear down. Whoever
+/// started it must: no process, cgroup or run directory of the run may be left, and
+/// what the run recorded must be saved. This goes through `finish`, as `live` does.
+fn dead_controller(mut run: LiveRun, dir: &Path, write: &Server, weakness: &str, before: &[String]) -> Result<Value, Box<dyn Error>> {
+    use std::os::unix::process::ExitStatusExt;
+    let mut checks = Checks(Vec::new());
+    let began = Instant::now();
+    while write.try_entries()?.is_empty() && began.elapsed() < Duration::from_secs(5) {
+        sleep(Duration::from_millis(20));
+    }
+    checks.add("agent_was_working_before_the_kill", !write.try_entries()?.is_empty(), json!(write.try_entries()?.len()));
+    let uid_base = run.status["sandbox_uid_base"].as_u64().unwrap_or(0);
+    // From outside, with no warning: the controller gets no chance to tear down.
+    // SAFETY: kill with the pid of this process's own unreaped child.
+    unsafe { libc::kill(run.child.id() as i32, libc::SIGKILL) };
+    let evidence = dir.join("evidence");
+    let ended = run_live::finish(&mut run, &evidence, |_| {}, |_| {});
+    let died = ended.as_ref().err().and_then(|e| e.downcast_ref::<run_live::ControllerDied>());
+    let killed = died.is_some_and(|d| d.failstop.is_none() && d.status.signal() == Some(libc::SIGKILL));
+    checks.add("controller_was_killed", killed, json!(ended.as_ref().err().map(ToString::to_string)));
+    let left: Vec<String> = run_traces().into_iter().filter(|t| !before.contains(t)).chain(processes_of_uids(uid_base)).collect();
+    checks.add("nothing_left_after_kill", left.is_empty(), json!(left));
+    let transcript = fs::read_to_string(evidence.join("transcript.jsonl")).unwrap_or_default();
+    let saved = transcript.contains("\"event\":\"model\"") && evidence.join("events.jsonl").exists() && !evidence.join("report.json").exists();
+    checks.add("evidence_saved", saved, json!({"transcript_lines": transcript.lines().count(), "saved": fs::read_dir(&evidence).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect::<Vec<_>>()}));
+    // Whatever a leak left is removed here, so it does not become the next scenario's.
+    run_live::sweep(&run.root, &run.run_id);
+    Ok(json!({"scenario": "dead_controller_leaves_nothing", "weakness": weakness, "passed": checks.passed(), "final_mode": null, "checks": checks.0, "live": null}))
 }
 
 /// A controller that fails during start must leave no process, no cgroup and no
@@ -300,7 +342,11 @@ fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn
         Workload::Task("Work through the task.".into())
     };
     fs::write(dir.join("policy.toml"), policy_text)?;
+    let before = run_traces();
     let mut run = run_live::start(&dir.join("policy.toml"), &workload, &[("FIXTURE_TOKEN".into(), token.clone())], weakness)?;
+    if scenario == "dead_controller_leaves_nothing" {
+        return dead_controller(run, &dir, &write, weakness, &before);
+    }
     let mut checks = Checks(Vec::new());
     let mut marker = None;
     match scenario {

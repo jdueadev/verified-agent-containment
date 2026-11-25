@@ -18,7 +18,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -29,7 +29,29 @@ pub struct LiveRun {
     pub key: SigningKey,
     pub run_id: String,
     pub status: Value,
+    /// Sabotage `start_leak`: whoever started the controller leaves what it started.
+    leak: bool,
 }
+
+/// The controller exited without writing its report, so nothing confirms that the
+/// run stayed contained to its end.
+#[derive(Debug)]
+pub struct ControllerDied {
+    /// The reason it gave, when it stopped on purpose (a fail-stop).
+    pub failstop: Option<String>,
+    pub status: ExitStatus,
+}
+
+impl std::fmt::Display for ControllerDied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.failstop {
+            Some(reason) => write!(f, "enforcement could not be confirmed ({reason}), so the controller stopped the run ({})", self.status),
+            None => write!(f, "the controller died ({}) before it wrote a report", self.status),
+        }
+    }
+}
+
+impl Error for ControllerDied {}
 
 impl LiveRun {
     pub fn control(&self, message: &Value) -> Value {
@@ -73,11 +95,17 @@ pub fn run_cgroups(run_id: &str) -> Vec<PathBuf> {
 }
 
 /// Removes everything a run can leave on the host once its controller has been
-/// reaped: its cgroups and whatever is in them, helper processes the controller
-/// could not stop (it may have been killed), and the run directory with the
-/// operator's reset key. The controller tears down after itself; this is for
-/// the case where it could not.
+/// reaped: what `reap` stops, then the run directory with the operator's reset key.
+/// The controller tears down after itself; this is for the case where it could not.
 pub fn sweep(root: &Path, run_id: &str) {
+    reap(root, run_id);
+    let _ = fs::remove_dir_all(root);
+}
+
+/// Stops what a run whose controller has been reaped can leave running: its cgroups
+/// and whatever is in them, and helper processes the controller could not stop (it
+/// may have been killed). The run directory and the evidence in it stay.
+pub fn reap(root: &Path, run_id: &str) {
     let cgroups = run_cgroups(run_id);
     for cgroup in &cgroups {
         let _ = fs::write(cgroup.join("cgroup.kill"), "1");
@@ -101,7 +129,6 @@ pub fn sweep(root: &Path, run_id: &str) {
         }
         sleep(Duration::from_millis(10));
     }
-    let _ = fs::remove_dir_all(root);
 }
 
 /// Starts a live controller. `env` adds variables (credentials) to its environment.
@@ -138,7 +165,8 @@ pub fn start(policy: &Path, workload: &Workload, env: &[(String, String)], weakn
         }
     }
     // Sabotage (the controller of a default build refuses the name): nothing is swept.
-    let mut guard = Startup { child: None, root: root.clone(), run_id: run_id.clone(), armed: true, leak: SABOTAGE_BUILD && weakness == "start_leak" };
+    let leak = SABOTAGE_BUILD && weakness == "start_leak";
+    let mut guard = Startup { child: None, root: root.clone(), run_id: run_id.clone(), armed: true, leak };
     let operator = root.join("operator");
     fs::create_dir_all(&operator)?;
     fs::set_permissions(&operator, fs::Permissions::from_mode(0o700))?;
@@ -171,10 +199,12 @@ pub fn start(policy: &Path, workload: &Workload, env: &[(String, String)], weakn
     let status = serde_json::from_slice(&fs::read(status_path)?)?;
     let child = guard.child.take().ok_or("controller handle lost")?;
     guard.armed = false;
-    Ok(LiveRun { root, private_dir, child, key, run_id, status })
+    Ok(LiveRun { root, private_dir, child, key, run_id, status, leak })
 }
 
-/// Waits for the run to end. Returns the controller's report.
+/// Waits for the run to end. Returns the controller's report, or `ControllerDied`.
+/// A controller that did not exit cleanly could not tear down after itself, so this
+/// stops what it left running. Either way the run directory stays, for `save`.
 pub fn wait(run: &mut LiveRun, mut on_line: impl FnMut(&Value), mut on_mode: impl FnMut(&str)) -> Result<Value, Box<dyn Error>> {
     let transcript = run.private_dir.join("agent.jsonl");
     let mut offset = 0;
@@ -195,8 +225,18 @@ pub fn wait(run: &mut LiveRun, mut on_line: impl FnMut(&Value), mut on_mode: imp
                 line.clear();
             }
         }
-        if run.child.try_wait()?.is_some() {
-            break;
+        if let Some(status) = run.child.try_wait()? {
+            if !status.success() && !run.leak {
+                reap(&run.root, &run.run_id);
+            }
+            return match fs::read(run.private_dir.join("report.json")) {
+                Ok(report) => Ok(serde_json::from_slice(&report)?),
+                Err(_) => {
+                    let failstop = fs::read(run.private_dir.join("failstop.json")).ok()
+                        .and_then(|b| serde_json::from_slice::<Value>(&b).ok()).map(|v| v["reason"].as_str().unwrap_or("no reason was given").to_owned());
+                    Err(Box::new(ControllerDied { failstop, status }))
+                }
+            };
         }
         let now = run.mode();
         if now != mode && now != "unknown" {
@@ -205,7 +245,45 @@ pub fn wait(run: &mut LiveRun, mut on_line: impl FnMut(&Value), mut on_mode: imp
         }
         sleep(Duration::from_millis(100));
     }
-    Ok(serde_json::from_slice(&fs::read(run.private_dir.join("report.json"))?)?)
+}
+
+/// Saves what the run in `root` left to `out`: the report if there is one, the
+/// transcript, the HUD's events and a fail-stop record. A file this run did not
+/// leave is removed from `out`, so `out` describes this run alone. Then the run
+/// directory goes. A failed copy keeps it, so nothing is lost.
+pub fn save(root: &Path, report: Option<&Value>, out: &Path) -> Result<(), Box<dyn Error>> {
+    fs::create_dir_all(out)?;
+    match report {
+        Some(report) => write_replace(&out.join("report.json"), &serde_json::to_vec_pretty(report)?)?,
+        None => remove_stale(&out.join("report.json"))?,
+    }
+    for (from, to) in [("agent.jsonl", "transcript.jsonl"), ("events.jsonl", "events.jsonl"), ("failstop.json", "failstop.json")] {
+        let source = root.join("private").join(from);
+        if source.exists() {
+            fs::copy(&source, out.join(to)).map_err(|e| format!("saving {to}: {e}; the run is still in {}", root.display()))?;
+        } else {
+            remove_stale(&out.join(to))?;
+        }
+    }
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+fn remove_stale(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// `wait`, then `save` to `out`, whether or not the controller wrote a report.
+/// `live` ends every run this way.
+pub fn finish(run: &mut LiveRun, out: &Path, on_line: impl FnMut(&Value), on_mode: impl FnMut(&str)) -> Result<Value, Box<dyn Error>> {
+    match wait(run, on_line, on_mode) {
+        Ok(report) => save(&run.root, Some(&report), out).map(|()| report),
+        Err(died) if died.is::<ControllerDied>() => save(&run.root, None, out).and(Err(died)),
+        Err(error) => Err(error),
+    }
 }
 
 fn short(value: &Value, limit: usize) -> String {
@@ -269,7 +347,7 @@ struct LiveArgs {
     /// The task given to the built-in agent
     #[arg(long, required_unless_present = "program", conflicts_with = "program")]
     task: Option<String>,
-    /// Where to save report.json, transcript.jsonl and events.jsonl [default: results/live/<run id>]
+    /// Where to save report.json, transcript.jsonl, events.jsonl and any failstop.json [default: results/live/<run id>]
     #[arg(long)]
     out: Option<PathBuf>,
     /// Also serve the read-only HUD on this local port (0 picks a free one)
@@ -300,22 +378,20 @@ pub fn live(args: &[String]) -> Result<(), Box<dyn Error>> {
         let root = run.root.clone();
         std::thread::spawn(move || if let Err(e) = crate::hud::serve(root, port) { eprintln!("HUD: {e}") });
     }
-    let report = wait(&mut run, |e| if let Some(line) = describe(e) { println!("{line}") }, |m| println!(">>> mode is now {m}"))?;
-    println!("\n{}", summarise(&report));
     let out = out.unwrap_or_else(|| PathBuf::from("results/live").join(&run.run_id));
-    fs::create_dir_all(&out)?;
-    // Everything is saved before the run directory is removed; a failed copy
-    // keeps the run directory so nothing is lost, and the command fails.
-    write_replace(&out.join("report.json"), &serde_json::to_vec_pretty(&report)?)?;
-    for (from, to) in [("agent.jsonl", "transcript.jsonl"), ("events.jsonl", "events.jsonl")] {
-        let source = run.private_dir.join(from);
-        if source.exists() {
-            fs::copy(&source, out.join(to)).map_err(|e| format!("saving {to}: {e}; the run is still in {}", run.root.display()))?;
+    let ended = finish(&mut run, &out, |e| if let Some(line) = describe(e) { println!("{line}") }, |m| println!(">>> mode is now {m}"));
+    match ended {
+        Ok(report) => {
+            println!("\n{}", summarise(&report));
+            println!("saved to {}", out.display());
+            program_failure(&report).map_or(Ok(()), |failure| Err(failure.into()))
         }
+        Err(died) if died.is::<ControllerDied>() => {
+            println!("\nsaved to {}", out.display());
+            Err(died)
+        }
+        Err(error) => Err(error),
     }
-    println!("saved to {}", out.display());
-    fs::remove_dir_all(&run.root)?;
-    program_failure(&report).map_or(Ok(()), |failure| Err(failure.into()))
 }
 
 /// Status, stop or a signed reset for a running live controller.
@@ -385,5 +461,33 @@ mod tests {
         assert!(not_started.is_some_and(|m| m.contains("did not start") && m.contains("exec /x: gone")));
         assert!(program_failure(&report("agent_finished", json!({"started": true, "exit_code": 3}))).is_some_and(|m| m.contains("status 3")));
         assert!(program_failure(&report("agent_finished", json!({"started": true, "signal": 9}))).is_some_and(|m| m.contains("signal 9")));
+    }
+
+    #[test]
+    fn a_controller_that_died_is_told_apart_from_one_that_fail_stopped() {
+        use std::os::unix::process::ExitStatusExt;
+        let failstop = ControllerDied { failstop: Some("enforcer stalled".to_owned()), status: ExitStatus::from_raw(70 << 8) };
+        assert!(failstop.to_string().starts_with("enforcement could not be confirmed (enforcer stalled)"));
+        let killed = ControllerDied { failstop: None, status: ExitStatus::from_raw(libc::SIGKILL) };
+        assert!(killed.to_string().starts_with("the controller died"));
+    }
+
+    #[test]
+    fn saving_a_run_without_a_report_keeps_its_evidence_and_nothing_stale() {
+        let base = std::env::temp_dir().join(format!("vac-save-{}-{}", std::process::id(), boot_ns()));
+        let (root, out) = (base.join("run"), base.join("out"));
+        fs::create_dir_all(root.join("private")).expect("run dir");
+        fs::create_dir_all(&out).expect("out");
+        fs::write(root.join("private/agent.jsonl"), "{\"event\":\"started\"}\n").expect("transcript");
+        fs::write(root.join("private/failstop.json"), "{\"reason\":\"enforcer stalled\"}").expect("failstop");
+        // Left in `out` by an earlier run that did write a report.
+        fs::write(out.join("report.json"), "{}").expect("stale report");
+        fs::write(out.join("events.jsonl"), "stale").expect("stale events");
+        save(&root, None, &out).expect("save");
+        assert_eq!(fs::read_to_string(out.join("transcript.jsonl")).ok().as_deref(), Some("{\"event\":\"started\"}\n"));
+        assert!(fs::read_to_string(out.join("failstop.json")).is_ok_and(|t| t.contains("enforcer stalled")));
+        assert!(!out.join("report.json").exists() && !out.join("events.jsonl").exists());
+        assert!(!root.exists());
+        let _ = fs::remove_dir_all(base);
     }
 }
