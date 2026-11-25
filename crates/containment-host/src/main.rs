@@ -57,6 +57,7 @@ fn main() -> ExitCode {
         Some("monitor") => helpers::monitor(&args[1..]),
         Some("sink") => helpers::sink(&args[1..]),
         Some("probe-operator") => helpers::probe_operator(&args[1..]),
+        Some("probe-root") => helpers::probe_root(&args[1..]),
         Some("system-one") => system_one::run(&args[1..]),
         Some("live") => run_live::live(&args[1..]),
         Some("live-suite") => live_suite::run(&args[1..]),

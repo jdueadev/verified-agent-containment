@@ -24,6 +24,42 @@ pub struct Policy {
     pub timing: Timing,
     #[serde(default)]
     pub run: RunLimits,
+    /// Only with an outside program: the directory its read-only root is made from.
+    pub root: Option<RootDir>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RootDir {
+    /// Absolute host path. Each top-level entry appears read-only at the sandbox root.
+    pub dir: PathBuf,
+}
+
+/// What a live run puts in the sandbox.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Workload {
+    /// The built-in agent, given this task.
+    Task(String),
+    /// An outside program: its absolute path inside the sandbox, then its arguments.
+    Program(Vec<String>),
+}
+
+impl Workload {
+    /// The controller's arguments for it: `task TEXT` or `program PATH ARGS...`.
+    pub fn to_args(&self) -> Vec<String> {
+        match self {
+            Self::Task(task) => vec!["task".to_owned(), task.clone()],
+            Self::Program(argv) => std::iter::once("program".to_owned()).chain(argv.iter().cloned()).collect(),
+        }
+    }
+
+    pub fn from_args(args: &[String]) -> Result<Self, String> {
+        match args {
+            [kind, task] if kind == "task" => Ok(Self::Task(task.clone())),
+            [kind, argv @ ..] if kind == "program" && !argv.is_empty() => Ok(Self::Program(argv.to_vec())),
+            _ => Err("live workload arguments are invalid".to_owned()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -141,14 +177,21 @@ pub struct LiveState {
     /// Incremented by every accepted reset; reservations from an earlier lease
     /// are not released into the new one.
     pub lease: AtomicU64,
-    pub task: String,
     /// Exact credential values, redacted from anything returned to the agent.
     pub secret_values: Vec<String>,
 }
 
 impl LiveState {
-    pub fn load(policy_path: &Path, task: String, canary: String) -> Result<Self, Box<dyn Error>> {
+    pub fn load(policy_path: &Path, workload: &Workload, canary: String) -> Result<Self, Box<dyn Error>> {
         let policy: Policy = toml::from_str(&fs::read_to_string(policy_path)?)?;
+        if let Some(root) = &policy.root {
+            if !matches!(workload, Workload::Program(_)) {
+                return Err("[root] is only for an outside program, given after -- on the command line".into());
+            }
+            if !root.dir.is_absolute() || !root.dir.is_dir() {
+                return Err(format!("root.dir {}: not an existing directory given by an absolute path", root.dir.display()).into());
+            }
+        }
         let model_url = Url::parse(&policy.model.endpoint).ok_or("model.endpoint is not an http(s) URL")?;
         let mut creds = BTreeMap::new();
         let mut raw_values = Vec::new();
@@ -194,7 +237,7 @@ impl LiveState {
         secret_values.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
         secret_values.dedup();
         crate::common::check_redactable(&secret_values)?;
-        Ok(Self { policy, model_url, model_header, hosts, canary, used: Mutex::default(), tokens: AtomicU64::new(0), lease: AtomicU64::new(0), task, secret_values })
+        Ok(Self { policy, model_url, model_header, hosts, canary, used: Mutex::default(), tokens: AtomicU64::new(0), lease: AtomicU64::new(0), secret_values })
     }
 }
 
@@ -255,5 +298,38 @@ mod tests {
     fn unknown_fields_are_rejected() {
         let text = "[model]\nendpoint = \"http://127.0.0.1:1/v1/chat/completions\"\nname = \"m\"\nallow_everything = true\n";
         assert!(toml::from_str::<Policy>(text).is_err());
+        assert!(toml::from_str::<Policy>(&format!("{MODEL}[root]\ndir = \"/\"\nwritable = true\n")).is_err());
+    }
+
+    const MODEL: &str = "[model]\nendpoint = \"http://127.0.0.1:1/v1/chat/completions\"\nname = \"m\"\n";
+
+    fn load(policy: &str, workload: &Workload) -> Result<LiveState, String> {
+        let path = std::env::temp_dir().join(format!("vac-policy-{}-{}.toml", std::process::id(), crate::common::boot_ns()));
+        fs::write(&path, policy).expect("write policy");
+        let loaded = LiveState::load(&path, workload, "cnry_test".to_owned()).map_err(|e| e.to_string());
+        let _ = fs::remove_file(path);
+        loaded
+    }
+
+    #[test]
+    fn a_root_directory_needs_an_outside_program_and_an_existing_directory() {
+        let program = Workload::Program(vec!["/bin/tool".to_owned()]);
+        let task = Workload::Task("t".to_owned());
+        let existing = std::env::temp_dir();
+        let with_root = format!("{MODEL}[root]\ndir = \"{}\"\n", existing.display());
+        assert!(load(&with_root, &program).is_ok_and(|l| l.policy.root.is_some_and(|r| r.dir == existing)));
+        assert!(load(&with_root, &task).is_err_and(|e| e.contains("outside program")));
+        assert!(load(&format!("{MODEL}[root]\ndir = \"/no/such/dir\"\n"), &program).is_err_and(|e| e.contains("not an existing directory")));
+        assert!(load(&format!("{MODEL}[root]\ndir = \"relative\"\n"), &program).is_err());
+        assert!(load(MODEL, &program).is_ok_and(|l| l.policy.root.is_none()));
+    }
+
+    #[test]
+    fn a_workload_survives_the_trip_through_controller_arguments() {
+        for workload in [Workload::Task("read notes.txt".to_owned()), Workload::Program(vec!["/bin/tool".to_owned(), "task".to_owned(), "".to_owned()])] {
+            assert_eq!(Workload::from_args(&workload.to_args()), Ok(workload));
+        }
+        assert!(Workload::from_args(&["program".to_owned()]).is_err());
+        assert!(Workload::from_args(&["task".to_owned(), "a".to_owned(), "b".to_owned()]).is_err());
     }
 }

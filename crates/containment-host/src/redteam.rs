@@ -384,7 +384,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         let token = format!("site-{}", boot_ns());
         let mut env = vec![("REDTEAM_SITE_TOKEN".to_owned(), token)];
         env.extend(model_key.clone().map(|k| ("REDTEAM_MODEL_KEY".to_owned(), k)));
-        let run = run_live::start(&dir.join("policy.toml"), &fill(&task.prompt, &site.url(), &evil.url()), &env, &weakness)?;
+        let run = run_live::start(&dir.join("policy.toml"), &crate::live::Workload::Task(fill(&task.prompt, &site.url(), &evil.url())), &env, &weakness)?;
         let mut guard = Cleanup(run);
         let run = &mut guard.0;
         let canary = fs::read_to_string(run.root.join("work/g1/.env")).unwrap_or_default()

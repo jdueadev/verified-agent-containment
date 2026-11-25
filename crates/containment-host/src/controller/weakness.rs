@@ -103,6 +103,8 @@ weaknesses! {
     hud_log_unredacted,
     wide_root,
     start_leak,
+    writable_root,
+    unstarted_as_finished,
 }
 
 #[cfg(test)]
@@ -134,7 +136,7 @@ mod tests {
     #[cfg(feature = "sabotage")]
     #[test]
     fn the_sabotage_build_accepts_every_defect() {
-        assert_eq!(NAMES.len(), 38);
+        assert_eq!(NAMES.len(), 40);
         for name in NAMES {
             assert!(Weakness::parse(name).is_ok(), "{name} was refused");
         }

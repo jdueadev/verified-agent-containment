@@ -205,7 +205,7 @@ pub(super) fn control_handler(shared: &Arc<Shared>, message: Value, peer: Option
             let Some(level) = message["level"].as_str().and_then(parse_level) else { return status_error("bad level") };
             shared.apply(None, received, |now_ms| Event::HardRule { now_ms, level });
         }
-        Some("skew") if shared.spec.scenario == "clock_rollback" => {
+        Some("skew") if shared.scenario == "clock_rollback" => {
             shared.skew_ms.store(message["ms"].as_i64().unwrap_or(0), Ordering::Relaxed);
             let _ = shared.apply(None, received, |now_ms| Event::Tick { now_ms });
         }

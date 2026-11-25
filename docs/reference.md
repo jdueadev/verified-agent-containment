@@ -6,7 +6,7 @@ Details for `containment-lab live`, the HUD, `ctl` and the red-team kit. For a g
 
 `containment-lab --help` lists the commands, and every command takes `--help`. Exit status:
 - `0`: success;
-- `1`: the command failed, or for `redteam`, a task leaked;
+- `1`: the command failed; for `live`, also when the program in the sandbox did not start, exited with a non-zero status or was killed by a signal; for `redteam`, a task leaked;
 - `2`: invalid usage.
 
 A results file is only replaced once its run has finished. Model, agent and upstream text printed to the terminal has its control characters shown escaped, so they never act as terminal sequences.
@@ -30,11 +30,36 @@ The command streams each model step and tool call, prints every mode change, and
 
 A run ends on its own when the agent finishes in Run or Restrict. After Hold, Freeze or Kill it waits for a reset or a stop, up to `run.max_seconds` (default 900 s), and then tears down (failing closed). A reset from Kill rebuilds the sandbox with a fresh workspace.
 
-`containment-lab live-suite` checks all of this end to end with a scripted model and local fixture servers. It tests credential scoping, the canary, unlisted hosts, writes to read hosts, request and token budgets, the cut on stop, the workspace rebuild, that the HUD log never holds secrets, that a slow model (800 ms per call) is not taken for a stalled classifier, and that a controller which fails during start leaves no process, cgroup or run directory. Nine of the twelve scenarios have a sabotaged controller that must fail that scenario (`benign`, `token_budget` and `stop_cuts_upstream` do not). `results/live-suite.json` records 11/11 runs passed and 8/8 sabotaged controllers caught; it predates the `failed_start_leaves_nothing` scenario and its `start_leak` sabotage. The checks look at what reached the upstream servers, including the model server, not at what the agent reports.
+The report's `exit_cause` says why the run ended: `agent_finished`, `program_did_not_start`, `operator_stop` or `run_time_limit`. Its `program` field says what the sandbox's init saw of the program in the current sandbox generation. The field is `{"started": false, "reason": "..."}` for a program that never ran, `{"started": true}` while it runs, and gains `exit_code` or `signal` once it has ended.
+
+A controller that fail-stops exits on purpose without tearing down, and a controller that is killed cannot tear down. In both cases there is no report. `live` then stops what the run left running and removes its cgroups. It saves the transcript, the events log and, after a fail-stop, `failstop.json` to `--out`, and removes the run directory. It exits 1 with a message that says enforcement could not be confirmed (a fail-stop) or that the controller died.
+
+`containment-lab live-suite` checks all of this end to end with a scripted model and local fixture servers. It tests credential scoping, the canary, unlisted hosts, writes to read hosts, request and token budgets, the cut on stop, the workspace rebuild, that the HUD log never holds secrets, that a slow model (800 ms per call) is not taken for a stalled classifier, that a controller which fails during start leaves no process, cgroup or run directory, that an outside program runs from a read-only root it was given, that a program which cannot start is reported as not started, and that a controller killed during a run leaves nothing running and its evidence saved. Twelve of the fifteen scenarios have a sabotaged controller that must fail that scenario (`benign`, `token_budget` and `stop_cuts_upstream` do not). `results/live-suite.json` records 11/11 runs passed and 8/8 sabotaged controllers caught. It predates the `failed_start_leaves_nothing`, `outside_program`, `program_never_starts` and `dead_controller_leaves_nothing` scenarios and their sabotages. `start_leak` is the sabotage of both `failed_start_leaves_nothing` and `dead_controller_leaves_nothing`. The checks look at what reached the upstream servers, including the model server, not at what the agent reports.
 
 Two limits are specific to live runs:
 - A live reset is signed with a per-run key file that only root can read, not a hardware key, because reset v3 is not built yet. It proves that root on this host approved the reset, not that the operator did.
 - Writes within budget to allowed hosts are not contained (L-OPS-01). Choose write hosts and budgets with that in mind.
+
+## Run an outside program
+
+To run your own program in the sandbox instead of the built-in agent, put it after `--` in place of `--task`. The first word is the program's absolute path inside the sandbox.
+
+```bash
+sudo target/release/containment-lab live --policy policy.toml -- /usr/bin/python3 /workspace/eval.py
+```
+
+The program gets the same confinement as the agent: its own uid, rlimits, seccomp, an empty network namespace and the parent-death chain. Its environment holds only `VAC_GATE` (the gateway socket, `/gateway.sock`), `HOME=/workspace` and `PATH=/usr/local/bin:/usr/bin:/bin`. It starts in `/workspace`. It reaches the network only through the gateway, which takes one JSON request per line, such as `{"op": "http", "method": "GET", "url": "https://example.com/"}`.
+
+Without a `[root]` table, the sandbox root is planned from the program's ELF file, as for the agent: the program at its own path, its loader and its libraries. A program the planner cannot cover does not start, and the run reports it as not started. That includes a script, a static binary and an ELF file that sets RPATH or RUNPATH.
+
+For an interpreter and its libraries, give a directory to build the root from:
+
+```toml
+[root]
+dir = "/srv/sandbox-root"
+```
+
+Each top-level entry of `dir` appears at the sandbox root. Directories and files are bound read-only, with no setuid and no device files, but programs in them run. Symlinks are recreated. The bind is not recursive, so a mount inside `dir` does not appear. The sandbox keeps the names `proc`, `tmp`, `workspace`, `gateway.sock`, `.old` and `agent` for itself and skips entries of `dir` with those names. The program's path is looked up inside this root. The policy loader refuses `[root]` without an outside program, and a `dir` that is not an existing directory given by an absolute path.
 
 ## Watch a run (HUD)
 

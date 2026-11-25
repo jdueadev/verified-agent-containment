@@ -4,8 +4,9 @@
 //! reached the upstream servers, not what the agent says. Each claim has a
 //! sabotaged controller that must fail its scenario.
 use crate::common::*;
+use crate::live::Workload;
 use crate::mock::Server;
-use crate::run_live;
+use crate::run_live::{self, LiveRun};
 use serde_json::{json, Value};
 use std::error::Error;
 use std::fs;
@@ -27,7 +28,7 @@ impl Checks {
 const SCENARIOS: &[&str] = &[
     "benign", "canary_exfil", "unlisted_host", "write_to_read_host", "request_budget", "token_budget",
     "stop_cuts_upstream", "rebuild_discards_workspace", "credential_scoped", "hud_log_redacted", "slow_model_no_false_lag",
-    "failed_start_leaves_nothing",
+    "failed_start_leaves_nothing", "outside_program", "program_never_starts", "dead_controller_leaves_nothing",
 ];
 /// (weakness, scenario, the check it must break, checks that must still pass).
 /// A sabotage counts as caught only when its own target check fails while the
@@ -43,6 +44,9 @@ const SABOTAGE: &[(&str, &str, &str, &[&str])] = &[
     ("hud_log_unredacted", "hud_log_redacted", "hud_log_has_no_secrets", &["canary_url_refused"]),
     ("lag_from_receipt", "slow_model_no_false_lag", "no_classifier_signal", &["agent_finished_slowly"]),
     ("start_leak", "failed_start_leaves_nothing", "late_failure_left_nothing", &["rejected_policy_start_failed", "late_failure_start_failed"]),
+    ("writable_root", "outside_program", "supplied_root_is_read_only", &["granted_request_arrived_through_gate", "program_saw_supplied_root"]),
+    ("unstarted_as_finished", "program_never_starts", "exec_failed_reported_not_started", &["exec_failed_run_ended", "ran_and_failed_reported_with_exit_code"]),
+    ("start_leak", "dead_controller_leaves_nothing", "nothing_left_after_kill", &["agent_was_working_before_the_kill", "controller_was_killed", "evidence_saved"]),
 ];
 
 /// Small enough that the budget runs out within the script's ten calls.
@@ -78,7 +82,7 @@ fn script(scenario: &str, write: &str, read: &str, unlisted: &str) -> Vec<Value>
         "request_budget" => (0..7).map(|i| post("/item", &format!("{{\"n\":{i}}}"))).chain([finish]).collect(),
         "token_budget" => (0..10).map(|_| get(read, "/index.html")).collect(),
         // Repeats the last message forever: the harness stops the agent.
-        "stop_cuts_upstream" => vec![get(write, "/index.html")],
+        "stop_cuts_upstream" | "dead_controller_leaves_nothing" => vec![get(write, "/index.html")],
         // The last message repeats, so the rebuilt agent lists its own workspace.
         "rebuild_discards_workspace" => vec![call("write_file", json!({"path": "taint.txt", "content": "left behind"})), call("list_dir", json!({"path": "."}))],
         // The credential belongs to the write host; the read host must never see it.
@@ -94,7 +98,7 @@ fn script(scenario: &str, write: &str, read: &str, unlisted: &str) -> Vec<Value>
 fn policy(model: &str, write: &str, read: &str, scenario: &str, workspace: &Path) -> String {
     let tokens = if scenario == "token_budget" { TOKEN_BUDGET } else { 100_000 };
     // These two keep the agent busy until the harness intervenes.
-    let steps = if matches!(scenario, "stop_cuts_upstream" | "rebuild_discards_workspace") { 2_000 } else { 20 };
+    let steps = if matches!(scenario, "stop_cuts_upstream" | "rebuild_discards_workspace" | "dead_controller_leaves_nothing") { 2_000 } else { 20 };
     format!(r#"[model]
 endpoint = "{model}/v1/chat/completions"
 name = "scripted"
@@ -161,6 +165,47 @@ fn run_traces() -> Vec<String> {
     found
 }
 
+/// Processes, other than zombies, running under the uids a run gives its sandbox
+/// generations and System One. The cgroups say nothing about a process that left them.
+fn processes_of_uids(base: u64) -> Vec<String> {
+    use std::os::unix::fs::MetadataExt;
+    fs::read_dir("/proc").into_iter().flatten().flatten()
+        .filter(|e| e.file_name().to_str().is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit())))
+        .filter(|e| fs::metadata(e.path()).is_ok_and(|m| (base..base + 16).contains(&u64::from(m.uid()))))
+        .filter(|e| fs::read_to_string(e.path().join("stat")).is_ok_and(|s| !s.rsplit(')').next().unwrap_or("").trim_start().starts_with('Z')))
+        .map(|e| format!("process {} of uid base {base}", e.file_name().to_string_lossy())).collect()
+}
+
+/// A controller killed outright after a successful start cannot tear down. Whoever
+/// started it must: no process, cgroup or run directory of the run may be left, and
+/// what the run recorded must be saved. This goes through `finish`, as `live` does.
+fn dead_controller(mut run: LiveRun, dir: &Path, write: &Server, weakness: &str, before: &[String]) -> Result<Value, Box<dyn Error>> {
+    use std::os::unix::process::ExitStatusExt;
+    let mut checks = Checks(Vec::new());
+    let began = Instant::now();
+    while write.try_entries()?.is_empty() && began.elapsed() < Duration::from_secs(5) {
+        sleep(Duration::from_millis(20));
+    }
+    checks.add("agent_was_working_before_the_kill", !write.try_entries()?.is_empty(), json!(write.try_entries()?.len()));
+    let uid_base = run.status["sandbox_uid_base"].as_u64().unwrap_or(0);
+    // From outside, with no warning: the controller gets no chance to tear down.
+    // SAFETY: kill with the pid of this process's own unreaped child.
+    unsafe { libc::kill(run.child.id() as i32, libc::SIGKILL) };
+    let evidence = dir.join("evidence");
+    let ended = run_live::finish(&mut run, &evidence, |_| {}, |_| {});
+    let died = ended.as_ref().err().and_then(|e| e.downcast_ref::<run_live::ControllerDied>());
+    let killed = died.is_some_and(|d| d.failstop.is_none() && d.status.signal() == Some(libc::SIGKILL));
+    checks.add("controller_was_killed", killed, json!(ended.as_ref().err().map(ToString::to_string)));
+    let left: Vec<String> = run_traces().into_iter().filter(|t| !before.contains(t)).chain(processes_of_uids(uid_base)).collect();
+    checks.add("nothing_left_after_kill", left.is_empty(), json!(left));
+    let transcript = fs::read_to_string(evidence.join("transcript.jsonl")).unwrap_or_default();
+    let saved = transcript.contains("\"event\":\"model\"") && evidence.join("events.jsonl").exists() && !evidence.join("report.json").exists();
+    checks.add("evidence_saved", saved, json!({"transcript_lines": transcript.lines().count(), "saved": fs::read_dir(&evidence).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect::<Vec<_>>()}));
+    // Whatever a leak left is removed here, so it does not become the next scenario's.
+    run_live::sweep(&run.root, &run.run_id);
+    Ok(json!({"scenario": "dead_controller_leaves_nothing", "weakness": weakness, "passed": checks.passed(), "final_mode": null, "checks": checks.0, "live": null}))
+}
+
 /// A controller that fails during start must leave no process, no cgroup and no
 /// run directory. Two failures: a policy the loader rejects (the model endpoint's
 /// origin is also a host), and one that only fails once the cgroups, the sink,
@@ -177,7 +222,7 @@ fn failed_start(weakness: &str, dir: &Path) -> Result<Value, Box<dyn Error>> {
         let path = dir.join(format!("{name}.toml"));
         fs::write(&path, policy)?;
         let before = run_traces();
-        let started = run_live::start(&path, "t", &[], weakness);
+        let started = run_live::start(&path, &Workload::Task("t".into()), &[], weakness);
         let failed = started.is_err();
         let left: Vec<String> = run_traces().into_iter().filter(|t| !before.contains(t)).collect();
         checks.add(&format!("{name}_start_failed"), failed, json!(started.as_ref().err().map(ToString::to_string)));
@@ -198,12 +243,84 @@ fn failed_start(weakness: &str, dir: &Path) -> Result<Value, Box<dyn Error>> {
     Ok(json!({"scenario": "failed_start_leaves_nothing", "weakness": weakness, "passed": checks.passed(), "final_mode": null, "checks": checks.0, "live": null}))
 }
 
+/// A root directory for an outside program, assembled the way a user would: this
+/// binary at /bin/probe with the loader and libraries the resolver lists for it,
+/// copied in at their paths. Also a directory anyone may write to (only the
+/// read-only mount stops a write there), a symlink, and decoys named like two of the
+/// sandbox's own entries, which the sandbox's entries must win over.
+fn program_root(root: &Path) -> Result<(), Box<dyn Error>> {
+    let exe = std::env::current_exe()?;
+    let plan = crate::sandbox_view::plan(&fs::read(&exe)?, Path::new("/"))?;
+    let inside = |path: &Path| root.join(path.strip_prefix("/").unwrap_or(path));
+    fs::create_dir_all(root)?;
+    for (path, entry) in &plan {
+        match entry {
+            crate::sandbox_view::Entry::Dir => fs::create_dir_all(inside(path))?,
+            crate::sandbox_view::Entry::Symlink(target) => std::os::unix::fs::symlink(target, inside(path))?,
+            crate::sandbox_view::Entry::File => drop(fs::copy(path, inside(path))?),
+        }
+    }
+    fs::create_dir_all(root.join("bin"))?;
+    fs::copy(&exe, root.join("bin/probe"))?;
+    fs::create_dir_all(root.join("data"))?;
+    fs::set_permissions(root.join("data"), std::os::unix::fs::PermissionsExt::from_mode(0o777))?;
+    std::os::unix::fs::symlink("bin", root.join("link"))?;
+    fs::create_dir_all(root.join("tmp"))?;
+    fs::write(root.join("tmp/decoy"), "from the supplied root")?;
+    fs::write(root.join("agent"), "from the supplied root")?;
+    Ok(())
+}
+
+/// A program that cannot start must be reported as not started, never as finished,
+/// and must make `live` fail. It fails two ways: the planner refuses it (a script,
+/// with no root given), and its exec fails (a path the supplied root does not have).
+/// A third program starts and exits 2, so "started" is not the answer to everything.
+fn never_starts(weakness: &str, dir: &Path) -> Result<Value, Box<dyn Error>> {
+    let script = dir.join("script.sh");
+    fs::write(&script, "#!/bin/sh\nexit 0\n")?;
+    fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
+    program_root(&dir.join("root"))?;
+    let head = "[model]\nendpoint = \"http://127.0.0.1:9/v1/chat/completions\"\nname = \"none\"\n\n[run]\nmax_seconds = 20\n";
+    let with_root = format!("{head}\n[root]\ndir = \"{}\"\n", dir.join("root").display());
+    let cases = [
+        ("planner_refused", head.to_owned(), vec![script.display().to_string()]),
+        ("exec_failed", with_root.clone(), vec!["/bin/no-such-program".to_owned()]),
+        ("ran_and_failed", with_root, vec!["/bin/probe".to_owned(), "no-such-command".to_owned()]),
+    ];
+    let mut checks = Checks(Vec::new());
+    for (name, policy, argv) in cases {
+        let path = dir.join(format!("{name}.toml"));
+        fs::write(&path, policy)?;
+        let mut run = run_live::start(&path, &Workload::Program(argv), &[], weakness)?;
+        let report = run_live::wait(&mut run, |_| {}, |_| {});
+        let _ = fs::remove_dir_all(&run.root);
+        checks.add(&format!("{name}_run_ended"), report.is_ok(), json!(report.as_ref().err().map(ToString::to_string)));
+        let report = report.unwrap_or(Value::Null);
+        // What `live` would say about this run, and so whether it would exit non-zero.
+        let failure = run_live::program_failure(&report);
+        let detail = json!({"exit_cause": report["exit_cause"], "program": report["program"], "live_says": failure});
+        if name == "ran_and_failed" {
+            let ran = report["exit_cause"] == "agent_finished" && report["program"] == json!({"started": true, "exit_code": 2});
+            checks.add("ran_and_failed_reported_with_exit_code", ran && failure.is_some(), detail);
+        } else {
+            let not_started = report["exit_cause"] == "program_did_not_start" && report["program"]["started"] == false
+                && report["program"]["reason"].as_str().is_some_and(|r| !r.is_empty());
+            checks.add(&format!("{name}_reported_not_started"), not_started && failure.is_some_and(|f| f.contains("did not start")), detail);
+        }
+    }
+    Ok(json!({"scenario": "program_never_starts", "weakness": weakness, "passed": checks.passed(), "final_mode": null, "checks": checks.0, "live": null}))
+}
+
 fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn Error>> {
     let dir = work.join(format!("{scenario}-{weakness}"));
     let _ = fs::remove_dir_all(&dir);
     if scenario == "failed_start_leaves_nothing" {
         fs::create_dir_all(&dir)?;
         return failed_start(weakness, &dir);
+    }
+    if scenario == "program_never_starts" {
+        fs::create_dir_all(&dir)?;
+        return never_starts(weakness, &dir);
     }
     fs::create_dir_all(dir.join("site"))?;
     fs::create_dir_all(dir.join("seed"))?;
@@ -216,8 +333,20 @@ fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn
     let script_text = serde_json::to_string(&script(scenario, &write.url(), &read.url(), &unlisted.url()))?.replace("CANARY_FILE", &dir.join("canary.txt").display().to_string());
     fs::write(dir.join("script.json"), script_text)?;
     let model = Server::start("mock-model", &dir.join("script.json"), dir.join("model.jsonl"))?;
-    fs::write(dir.join("policy.toml"), policy(&model.url(), &write.url(), &read.url(), scenario, &dir.join("seed")))?;
-    let mut run = run_live::start(&dir.join("policy.toml"), "Work through the task.", &[("FIXTURE_TOKEN".into(), token.clone())], weakness)?;
+    let mut policy_text = policy(&model.url(), &write.url(), &read.url(), scenario, &dir.join("seed"));
+    let workload = if scenario == "outside_program" {
+        program_root(&dir.join("root"))?;
+        policy_text += &format!("\n[root]\ndir = \"{}\"\n", dir.join("root").display());
+        Workload::Program(["/bin/probe", "probe-root", &format!("{}/index.html", write.url()), "/data/probe", "/probe"].map(String::from).to_vec())
+    } else {
+        Workload::Task("Work through the task.".into())
+    };
+    fs::write(dir.join("policy.toml"), policy_text)?;
+    let before = run_traces();
+    let mut run = run_live::start(&dir.join("policy.toml"), &workload, &[("FIXTURE_TOKEN".into(), token.clone())], weakness)?;
+    if scenario == "dead_controller_leaves_nothing" {
+        return dead_controller(run, &dir, &write, weakness, &before);
+    }
     let mut checks = Checks(Vec::new());
     let mut marker = None;
     match scenario {
@@ -356,6 +485,27 @@ fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn
             checks.add("no_inference_after_stop", late(model.try_entries()?) == Some(0), json!(late(model.try_entries()?)));
             checks.add("no_upstream_request_after_stop", late(write.try_entries()?) == Some(0), json!(late(write.try_entries()?)));
             checks.add("positive_control_requests_before_stop", write.try_entries()?.len() >= 2, json!(write.try_entries()?.len()));
+        }
+        "outside_program" => {
+            // From outside the program: the server got the request with the credential,
+            // which only the gateway holds, and the controller counted it.
+            let through_gate = writes.iter().any(|e| e["method"] == "GET" && e["path"] == "/index.html"
+                && e["headers"]["authorization"] == json!(format!("Bearer {token}")));
+            let counted = report["live"]["used"][write.url()]["requests"].as_u64().unwrap_or(0);
+            checks.add("granted_request_arrived_through_gate", through_gate && counted >= 1, json!({"server": writes, "counted": counted}));
+            let probe = transcript.iter().find(|e| e["event"] == "probe_root").map_or(Value::Null, |e| e["value"].clone());
+            // What was supplied, less the names the sandbox keeps for itself, plus the
+            // ones it creates. Written out here rather than taken from the sandbox, so a
+            // name dropped from the sandbox's list shows up as a supplied entry.
+            let kept = ["proc", "tmp", "workspace", "gateway.sock", ".old", "agent"];
+            let mut expected: Vec<String> = fs::read_dir(dir.join("root"))?.flatten().map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| !kept.contains(&n.as_str())).chain(["proc", "tmp", "workspace", "gateway.sock"].map(String::from)).collect();
+            expected.sort();
+            checks.add("program_saw_supplied_root", probe["root"] == json!(expected), json!({"seen": probe["root"], "expected": expected}));
+            checks.add("sandbox_entries_win_over_supplied", probe["tmp"].as_array().is_some_and(|t| !t.contains(&json!("decoy"))), probe["tmp"].clone());
+            let refused = probe["write_errors"].as_object().is_some_and(|w| w.len() == 2 && w.values().all(|e| e == libc::EROFS));
+            checks.add("supplied_root_is_read_only", refused && !dir.join("root/data/probe").exists(), probe["write_errors"].clone());
+            checks.add("program_exit_recorded", report["program"] == json!({"started": true, "exit_code": 0}), report["program"].clone());
         }
         "credential_scoped" => {
             let reads = read.try_entries()?;
