@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
-      image: ghcr.io/vac-dev-team/vac-factory@sha256:CHECK_DIGEST
+      image: ghcr.io/vac-dev-team/vac-factory@sha256:5dd1a91d0087d54ca810fd235f5283c5bccec129a8267b70b21280168dc11055
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
-      image: ghcr.io/vac-dev-team/vac-factory@sha256:PROOFS_DIGEST
+      image: ghcr.io/vac-dev-team/vac-factory@sha256:32b6877842a4aee6e40670d69f75e1aee7cd5ac421a5de25e273ec9d914fccb9
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
