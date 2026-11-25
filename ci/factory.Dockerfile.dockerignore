@@ -1,8 +1,7 @@
 *
-!ci/pins.env
 !rust-toolchain.toml
 !Cargo.toml
 !Cargo.lock
 !.cargo
-!crates
+!crates/*/Cargo.toml
 !.python-version

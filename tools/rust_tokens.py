@@ -21,8 +21,8 @@ Token kinds:
 Anything this lexer cannot read raises LexError. A checker must treat that as a
 failure, never as an empty or partial result.
 
-Standard library only. It never imports or runs the code it reads, so policy_check.py
-can use it on an untrusted head. It is part of the trusted base (lane C).
+Standard library only. It never imports or runs the code it reads, so a checker can
+use it on code it does not trust.
 """
 import re
 from typing import NamedTuple

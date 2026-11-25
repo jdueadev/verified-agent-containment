@@ -17,13 +17,7 @@ mkdir -p "$out" target/generated
 
 uv run tools/invariants_check.py
 
-cp formal/PROOF.bend target/generated/PROOF.bend.committed
-uv run tools/generate_proof.py
-if ! cmp -s formal/PROOF.bend target/generated/PROOF.bend.committed; then
-  cp target/generated/PROOF.bend.committed formal/PROOF.bend
-  echo "check: formal/PROOF.bend is not what tools/generate_proof.py writes; run it and commit the result" >&2
-  exit 1
-fi
+uv run tools/generate_proof.py --check
 (cd formal && bend PROOF.bend --check-only)
 bend formal/kernel.bend -o target/generated/kernel.mjs >/dev/null
 
