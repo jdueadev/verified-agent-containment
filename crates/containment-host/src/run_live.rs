@@ -54,6 +54,54 @@ fn sign_reset(key: &SigningKey, run_id: &str, counter: u64, from_mode: &str, not
         "signature": hex_encode(&key.sign(text.as_bytes()).to_bytes())})
 }
 
+/// Processes started from a run directory (the controller's copy of this binary
+/// lives in it), as seen from the host.
+pub fn processes_under(root: &Path) -> Vec<u32> {
+    fs::read_dir("/proc").into_iter().flatten().flatten()
+        .filter_map(|entry| {
+            let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
+            fs::read_link(entry.path().join("exe")).ok()?.starts_with(root).then_some(pid)
+        }).collect()
+}
+
+/// The cgroups a controller creates for a run: the run cgroup and System One's.
+pub fn run_cgroups(run_id: &str) -> Vec<PathBuf> {
+    let Ok(base) = cgroup_root() else { return Vec::new() };
+    ["", "-system-one"].iter().map(|suffix| base.join(format!("verified-agent-containment-{run_id}{suffix}"))).collect()
+}
+
+/// Removes everything a run can leave on the host once its controller has been
+/// reaped: its cgroups and whatever is in them, helper processes the controller
+/// could not stop (it may have been killed), and the run directory with the
+/// operator's reset key. The controller tears down after itself; this is for
+/// the case where it could not.
+pub fn sweep(root: &Path, run_id: &str) {
+    let cgroups = run_cgroups(run_id);
+    for cgroup in &cgroups {
+        let _ = fs::write(cgroup.join("cgroup.kill"), "1");
+    }
+    for pid in processes_under(root) {
+        // SAFETY: kill does not access memory. The pid was just read from /proc
+        // as running a binary inside this run's own directory.
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    }
+    let began = Instant::now();
+    loop {
+        let mut left = !processes_under(root).is_empty();
+        for cgroup in &cgroups {
+            for entry in fs::read_dir(cgroup).into_iter().flatten().flatten().filter(|e| e.path().is_dir()) {
+                let _ = fs::remove_dir(entry.path());
+            }
+            left |= fs::remove_dir(cgroup).is_err() && cgroup.exists();
+        }
+        if !left || began.elapsed() > Duration::from_secs(2) {
+            break;
+        }
+        sleep(Duration::from_millis(10));
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
 /// Starts a live controller. `env` adds variables (credentials) to its environment.
 pub fn start(policy: &Path, task: &str, env: &[(String, String)], weakness: &str) -> Result<LiveRun, Box<dyn Error>> {
     // SAFETY: geteuid has no preconditions.
@@ -62,6 +110,33 @@ pub fn start(policy: &Path, task: &str, env: &[(String, String)], weakness: &str
     }
     let run_id = format!("live-{}-{}", std::process::id(), boot_ns() % 1_000_000);
     let root = PathBuf::from("/run/verified-agent-containment").join(&run_id);
+    // Until startup succeeds, any error stops and reaps the controller and then
+    // removes whatever the run left, so a failed start leaves no controller
+    // running (or a sandbox starting later), no helper process, no cgroup and
+    // no run directory.
+    struct Startup {
+        child: Option<Child>,
+        root: PathBuf,
+        run_id: String,
+        armed: bool,
+        leak: bool,
+    }
+    impl Drop for Startup {
+        fn drop(&mut self) {
+            if !self.armed {
+                return;
+            }
+            if let Some(mut child) = self.child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            if !self.leak {
+                sweep(&self.root, &self.run_id);
+            }
+        }
+    }
+    // Sabotage (the controller of a default build refuses the name): nothing is swept.
+    let mut guard = Startup { child: None, root: root.clone(), run_id: run_id.clone(), armed: true, leak: SABOTAGE_BUILD && weakness == "start_leak" };
     let operator = root.join("operator");
     fs::create_dir_all(&operator)?;
     fs::set_permissions(&operator, fs::Permissions::from_mode(0o700))?;
@@ -78,24 +153,12 @@ pub fn start(policy: &Path, task: &str, env: &[(String, String)], weakness: &str
     for (k, v) in env {
         command.env(k, v);
     }
-    let child = command.spawn()?;
-    // Until startup succeeds, any error stops and reaps the controller, so a
-    // failed start never leaves a controller running (or a sandbox starting later).
-    struct Startup(Option<Child>);
-    impl Drop for Startup {
-        fn drop(&mut self) {
-            if let Some(mut child) = self.0.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
-    }
-    let mut guard = Startup(Some(child));
+    guard.child = Some(command.spawn()?);
     let private_dir = root.join("private");
     let status_path = private_dir.join("status.json");
     let began = Instant::now();
     while !status_path.exists() {
-        if let Some(code) = guard.0.as_mut().ok_or("controller handle lost")?.try_wait()? {
+        if let Some(code) = guard.child.as_mut().ok_or("controller handle lost")?.try_wait()? {
             return Err(format!("controller exited during start ({code})").into());
         }
         if began.elapsed() > Duration::from_secs(10) {
@@ -104,7 +167,8 @@ pub fn start(policy: &Path, task: &str, env: &[(String, String)], weakness: &str
         sleep(Duration::from_millis(5));
     }
     let status = serde_json::from_slice(&fs::read(status_path)?)?;
-    let child = guard.0.take().ok_or("controller handle lost")?;
+    let child = guard.child.take().ok_or("controller handle lost")?;
+    guard.armed = false;
     Ok(LiveRun { root, private_dir, child, key, run_id, status })
 }
 
