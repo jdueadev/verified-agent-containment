@@ -1,22 +1,22 @@
 //! The untrusted agent socket and the outbound paths behind it.
 
 use super::*;
+use super::gate::{Account, Permit, Slot};
 
-pub(super) fn forward(shared: &Shared, slot: u64, admit_ns: u64, host: &str, data: &str, credential: bool) -> bool {
+/// Sends one lab egress record to the sink on an admitted slot, which is
+/// freed when this returns.
+pub(super) fn forward(shared: &Shared, slot: Slot<'_>, host: &str, data: &str, credential: bool) -> bool {
     let address = SocketAddr::from(([127, 0, 0, 1], shared.sink_port));
     let timeout = Duration::from_millis(100);
     let result = (|| {
         let stream = TcpStream::connect_timeout(&address, timeout).ok()?;
         stream.set_read_timeout(Some(timeout)).ok()?;
         stream.set_write_timeout(Some(timeout)).ok()?;
-        let copy = stream.try_clone().ok()?;
-        {
-            // A cut may have happened while connecting.
-            let mut upstreams = lock(&shared.upstreams);
-            *upstreams.active.get_mut(&slot)? = Some(copy);
-        }
+        // A cut may have happened while connecting.
+        slot.attach(stream.try_clone().ok()?).then_some(())?;
         let token = if credential { shared.token.as_str() } else { "" };
         let write_ns = boot_ns();
+        let admit_ns = slot.admitted_ns;
         let mac = record_mac(shared.record_key.as_bytes(), admit_ns, write_ns, host, data, token);
         // JSON escaping keeps agent data inside one record. One write keeps the record whole.
         let line = format!("{}\n", json!({"admit": admit_ns, "write": write_ns, "host": host, "data": data, "credential": token, "mac": mac}));
@@ -26,12 +26,14 @@ pub(super) fn forward(shared: &Shared, slot: u64, admit_ns: u64, host: &str, dat
         BufReader::new(&stream).read_line(&mut ack).ok()?;
         (ack == "ack\n").then_some(())
     })();
-    {
-        let mut upstreams = lock(&shared.upstreams);
-        upstreams.active.remove(&slot);
-        upstreams.baseline.remove(&slot);
-    }
     result.is_some()
+}
+
+/// The lab policy: baseline hosts stay reachable in Restrict, allowed hosts
+/// only in Run.
+fn lab_grant(shared: &Shared, host: &str) -> Option<Grant> {
+    let baseline = shared.baseline.contains(host);
+    (baseline || shared.allowed.contains(host)).then_some(Grant { write: true, baseline, limit: Limit::NONE })
 }
 
 pub(super) fn gateway_handler(shared: &Arc<Shared>, message: Value) -> Value {
@@ -97,46 +99,24 @@ pub(super) fn gateway_decide(shared: &Arc<Shared>, message: &Value, received: u6
         Some("egress") => {
             let host = message["host"].as_str().unwrap_or("");
             let data = message["data"].as_str().unwrap_or("");
-            let wants_secret = message["use_secret"].as_str() == Some("api_token");
-            let baseline = shared.baseline.contains(host);
-            let granted = shared.allowed.contains(host) || baseline;
-            // Admission is ordered with commits by the control lock.
-            let admission = {
-                let control = lock(&shared.control);
-                let now = shared.now_ms();
-                let ready = shared.authority_ready();
-                let egress = ready && authorize_for(&shared.weak, now, *control, AccessRequest { kind: AccessKind::Egress, granted, baseline });
-                let secret = wants_secret && authorize_for(&shared.weak, now, *control, AccessRequest { kind: AccessKind::Secret, granted: true, baseline: false });
-                (egress && (!wants_secret || secret)).then(|| {
-                    let mut upstreams = lock(&shared.upstreams);
-                    upstreams.next += 1;
-                    let slot = upstreams.next;
-                    upstreams.active.insert(slot, None);
-                    if baseline {
-                        upstreams.baseline.insert(slot);
-                    }
-                    (slot, boot_ns(), secret)
-                })
-            };
-            let Some((slot, admit_ns, secret)) = admission else {
-                if !granted && shared.denied.fetch_add(1, Ordering::SeqCst) + 1 >= 3 {
-                    shared.apply(None, received, |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
-                }
-                return json!({"ok": false, "error": "denied"});
-            };
-            json!({"ok": forward(shared, slot, admit_ns, host, data, secret)})
+            let secret = message["use_secret"].as_str() == Some("api_token");
+            let attempt = Attempt { kind: Kind::LabEgress { secret }, cost: Cost::default(), carries_canary: false };
+            match shared.admit(attempt, lab_grant(shared, host), Account::Unmetered, received) {
+                Ok(permit) => json!({"ok": forward(shared, permit.slot, host, data, secret)}),
+                Err(_) => json!({"ok": false, "error": "denied"}),
+            }
         }
         Some("secret") => {
             let name = message["name"].as_str().unwrap_or("");
-            if name == "canary_token" {
-                shared.apply(Some("canary_secret"), received, |now_ms| Event::HardRule { now_ms, level: Level::Freeze });
-                return json!({"ok": false, "error": "denied"});
+            // The lab brokers one secret. Asking for the canary's is the hard rule.
+            let attempt = Attempt { kind: Kind::LabSecret, cost: Cost::default(), carries_canary: name == "canary_token" };
+            let grant = (name == "api_token").then_some(Grant { write: false, baseline: false, limit: Limit::NONE });
+            match shared.admit(attempt, grant, Account::Unmetered, received) {
+                // Nothing goes upstream, so the permit is dropped at once.
+                Ok(_) => json!({"ok": true, "handle": "broker-held"}),
+                Err(Layer::Canary) => json!({"ok": false, "error": "denied"}),
+                Err(_) => json!({"ok": false, "handle": null}),
             }
-            let allowed = name == "api_token" && {
-                let control = lock(&shared.control);
-                shared.authority_ready() && authorize_for(&shared.weak, shared.now_ms(), *control, AccessRequest { kind: AccessKind::Secret, granted: true, baseline: false })
-            };
-            json!({"ok": allowed, "handle": allowed.then_some("broker-held")})
         }
         Some("log") => json!({"ok": true}),
         Some("status") => json!({"ok": true}),
@@ -208,43 +188,18 @@ pub(super) fn denied(reason: &str) -> Value {
     json!({"ok": false, "error": reason})
 }
 
-/// Reserves an upstream slot under the control lock if the kernel allows the
-/// access now. Admission is ordered with commits exactly like lab egress.
-pub(super) fn admit(shared: &Shared, granted: bool, baseline: bool) -> Option<u64> {
-    let control = lock(&shared.control);
-    let ok = shared.authority_ready()
-        && authorize_for(&shared.weak, shared.now_ms(), *control, AccessRequest { kind: AccessKind::Egress, granted, baseline });
-    ok.then(|| {
-        let mut upstreams = lock(&shared.upstreams);
-        upstreams.next += 1;
-        let slot = upstreams.next;
-        upstreams.active.insert(slot, None);
-        if baseline {
-            upstreams.baseline.insert(slot);
-        }
-        slot
-    })
+/// Whether any of `texts` holds the workspace canary. It exists only in the
+/// agent's workspace, so seeing it leave is a hard rule.
+fn carries_canary(shared: &Shared, live: &LiveState, texts: &[&str]) -> bool {
+    // Sabotage: the gateway never looks.
+    !shared.weak.live_canary_unchecked() && !live.canary.is_empty() && texts.iter().any(|text| text.contains(&live.canary))
 }
 
-/// Sends one upstream request on an admitted slot. A cut between admission and
-/// connect aborts before any byte is written; a cut later shuts the socket.
-pub(super) fn send_on_slot(shared: &Shared, slot: u64, url: &crate::http::Url, method: &str, headers: &[(String, String)], body: &[u8], limits: crate::http::Limits) -> std::io::Result<crate::http::Response> {
-    let result = crate::http::send(url, method, headers, body, limits, |stream| {
-        let mut upstreams = lock(&shared.upstreams);
-        match upstreams.active.get_mut(&slot) {
-            Some(entry) => {
-                *entry = Some(stream);
-                true
-            }
-            None => false,
-        }
-    });
-    {
-        let mut upstreams = lock(&shared.upstreams);
-        upstreams.active.remove(&slot);
-        upstreams.baseline.remove(&slot);
-    }
-    result
+/// Sends one upstream request on an admitted slot, which is freed when this
+/// returns. A cut between admission and connect aborts before any byte is
+/// written; a cut later shuts the socket.
+pub(super) fn send_on_slot(slot: Slot<'_>, url: &crate::http::Url, method: &str, headers: &[(String, String)], body: &[u8], limits: crate::http::Limits) -> std::io::Result<crate::http::Response> {
+    crate::http::send(url, method, headers, body, limits, |stream| slot.attach(stream))
 }
 
 /// Standard chat-completion settings an `infer` request may carry. Each is
@@ -297,50 +252,37 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
     }
     // Everything checked and counted below is this body, exactly as it is sent.
     let body = request.to_string();
-    // The model endpoint is an upstream too: the canary must not reach it.
-    if !shared.weak.live_canary_unchecked() && !live.canary.is_empty() && body.contains(&live.canary) {
-        // The call is refused either way. A model on this host only restricts the
-        // agent; a remote one means the canary was about to leave, so freeze.
-        let local = crate::http::is_loopback_literal(&live.model_url.host);
-        let level = if local { Level::Restrict } else { Level::Freeze };
-        shared.apply(Some(if local { "canary_to_local_model" } else { "canary_exfil" }), received, |now_ms| Event::HardRule { now_ms, level });
-        return denied("denied");
-    }
-    // Reserve the call's maximum (prompt estimate plus completion) first, so
-    // concurrent calls cannot overspend. The reservation belongs to this lease.
-    let reserve = max_tokens + body.len() as u64 / 3;
-    let lease = live.lease.load(Ordering::SeqCst);
-    let reserved = live.tokens.try_update(Ordering::SeqCst, Ordering::SeqCst, |used| (used + reserve <= budget).then_some(used + reserve));
-    if reserved.is_err() {
-        shared.apply(Some("budget_tokens"), received, |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
-        return denied("token budget for this lease is used up");
-    }
-    let release = |used: u64| {
-        // Same lock as the reset, so the lease cannot change under this release.
-        let _guard = lock(&live.used);
-        if live.lease.load(Ordering::SeqCst) != lease {
-            // A reset started a new lease; this call's charge belongs to the old one.
-            return live.tokens.load(Ordering::SeqCst);
-        }
-        live.tokens.try_update(Ordering::SeqCst, Ordering::SeqCst, |t| Some(t.saturating_sub(reserve) + used)).map_or(0, |t| t.saturating_sub(reserve) + used)
-    };
+    // The call reserves its maximum, the prompt estimate plus the completion,
+    // and settles to what it used once the model has answered.
+    let cost = Cost { requests: 1, bytes: body.len() as u64, tokens: max_tokens.saturating_add(body.len() as u64 / 3) };
+    // The model endpoint is an upstream too: the canary must not reach it. A
+    // model on this host only restricts the agent; a remote one freezes it.
+    let kind = Kind::Model { local: crate::http::is_loopback_literal(&live.model_url.host) };
+    let attempt = Attempt { kind, cost, carries_canary: carries_canary(shared, live, &[&body]) };
     // Inference is baseline egress: allowed in Restrict, refused in Hold and above.
-    let Some(slot) = admit(shared, true, true) else {
-        release(0);
-        return denied("inference is not allowed in the current mode");
+    let grant = Grant { write: true, baseline: true, limit: Limit { tokens: Some(budget), ..Limit::NONE } };
+    let Permit { slot, charge } = match shared.admit(attempt, Some(grant), Account::Model, received) {
+        Ok(permit) => permit,
+        Err(by) => return denied(match by {
+            Layer::Canary => "denied",
+            Layer::Policy | Layer::Kernel => "inference is not allowed in the current mode",
+            Layer::Budget => "token budget for this lease is used up",
+        }),
     };
     let mut headers = vec![("Content-Type".to_owned(), "application/json".to_owned())];
     headers.extend(live.model_header.clone());
     // Sabotage: the policy's timeout is ignored and the fixed limits apply.
     let limits = if shared.weak.live_model_timeout_ignored() { crate::http::Limits::MODEL } else { live.model_limits };
-    let response = match send_on_slot(shared, slot, &live.model_url, "POST", &headers, body.as_bytes(), limits) {
+    let response = match send_on_slot(slot, &live.model_url, "POST", &headers, body.as_bytes(), limits) {
         Ok(r) => r,
         Err(e) => {
             // Refused or cut before any byte was written: nothing was spent. Any other
             // failure may have reached the model, so the reservation stays charged.
             let unsent = matches!(e.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
                 | std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::InvalidInput);
-            release(if unsent { 0 } else { reserve });
+            if unsent {
+                charge.settle(Cost::default());
+            }
             let timed_out = matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut);
             return denied(&match (timed_out, live.policy.model.timeout_seconds) {
                 (true, Some(seconds)) => format!("model server: no whole reply within model.timeout_seconds ({seconds} s)"),
@@ -349,20 +291,20 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
             });
         }
     };
+    // The model did the work, so without a JSON reply the reservation stands.
     let Ok(reply) = serde_json::from_slice::<Value>(&response.body) else {
-        // The model did the work; charge the reservation.
-        release(reserve);
         return denied(&format!("model server returned HTTP {} without JSON", response.status));
     };
     let used = reply["usage"]["total_tokens"].as_u64().unwrap_or((body.len() + response.body.len()) as u64 / 4);
-    let total = release(used);
-    if total + reserve > budget {
+    let spent = charge.settle(Cost { tokens: used, ..cost });
+    // Restrict now if another call this size would no longer fit.
+    if grant.limit.admits(&spent, &cost).is_none() {
         shared.apply(Some("budget_tokens"), boot_ns(), |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
     }
     let choice = &reply["choices"][0];
     let answer = redact(live, json!({"message": choice["message"], "finish_reason": choice["finish_reason"]}));
     json!({"ok": true, "message": answer["message"], "finish_reason": answer["finish_reason"],
-        "usage": {"call": used, "lease_total": total, "budget": budget, "max_tokens": max_tokens}})
+        "usage": {"call": used, "lease_total": spent.tokens, "budget": budget, "max_tokens": max_tokens}})
 }
 
 /// Removes exact credential values from anything returned to the agent, in
@@ -459,42 +401,45 @@ pub(super) fn live_http(shared: &Shared, live: &LiveState, message: &Value, rece
     }
     let url_text = message["url"].as_str().unwrap_or("");
     let body = message["body"].as_str().unwrap_or("");
-    // The canary only exists in the agent's workspace. Seeing it leave is a hard rule.
-    if !shared.weak.live_canary_unchecked() && !live.canary.is_empty() && (url_text.contains(&live.canary) || body.contains(&live.canary)) {
-        shared.apply(Some("canary_exfil"), received, |now_ms| Event::HardRule { now_ms, level: Level::Freeze });
-        return denied("denied");
-    }
-    let Some(url) = crate::http::Url::parse(url_text) else { return denied("not an http(s) URL the gateway accepts") };
+    let canary = carries_canary(shared, live, &[url_text, body]);
+    let url = crate::http::Url::parse(url_text);
     let writes = !matches!(method.as_str(), "GET" | "HEAD");
-    if !writes && !body.is_empty() {
-        return denied("GET and HEAD requests cannot carry a body");
-    }
-    let rule = live.hosts.get(&url.origin());
-    let granted = rule.is_some_and(|(r, _)| !writes || r.access == crate::live::Access::Write || shared.weak.live_write_unchecked());
-    let Some(slot) = admit(shared, granted, false) else {
-        if !granted && shared.denied.fetch_add(1, Ordering::SeqCst) + 1 >= 3 {
-            shared.apply(Some("denied_requests"), received, |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
+    // A malformed request is refused here, unless it carries the canary: the
+    // canary's rule fires however the request is written.
+    if !canary {
+        if url.is_none() {
+            return denied("not an http(s) URL the gateway accepts");
         }
-        return denied(if granted { "not allowed in the current mode" } else { "host or method is not in the policy" });
+        if !writes && !body.is_empty() {
+            return denied("GET and HEAD requests cannot carry a body");
+        }
+    }
+    let origin = url.as_ref().map(crate::http::Url::origin);
+    let rule = origin.as_ref().and_then(|origin| live.hosts.get(origin));
+    let grant = rule.map(|(r, _)| Grant {
+        write: r.access == crate::live::Access::Write,
+        baseline: false,
+        limit: Limit { requests: r.budget_requests, bytes: r.budget_bytes, tokens: None },
+    });
+    let account = match (rule, origin) {
+        (Some(_), Some(origin)) => Account::Host(origin),
+        _ => Account::Unmetered,
     };
     // Budgets count admitted requests; path and query bytes count like body bytes.
-    if let Some((r, _)) = rule {
-        let sent = (body.len() + url.path.len()) as u64;
-        let mut used = lock(&live.used);
-        let entry = used.entry(url.origin()).or_default();
-        let over = !shared.weak.live_budget_unchecked()
-            && (r.budget_requests.is_some_and(|b| entry.requests + 1 > b) || r.budget_bytes.is_some_and(|b| entry.bytes + sent > b));
-        if over {
-            drop(used);
-            let mut upstreams = lock(&shared.upstreams);
-            upstreams.active.remove(&slot);
-            drop(upstreams);
-            shared.apply(Some("budget_exhausted"), received, |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
-            return denied("the budget for this host and lease is used up");
-        }
-        entry.requests += 1;
-        entry.bytes += sent;
-    }
+    let cost = Cost { requests: 1, bytes: (body.len() + url.as_ref().map_or(0, |u| u.path.len())) as u64, tokens: 0 };
+    let attempt = Attempt { kind: Kind::Web { write: writes }, cost, carries_canary: canary };
+    let permit = match shared.admit(attempt, grant, account, received) {
+        Ok(permit) => permit,
+        Err(by) => return denied(match by {
+            Layer::Canary => "denied",
+            Layer::Policy => "host or method is not in the policy",
+            Layer::Kernel => "not allowed in the current mode",
+            Layer::Budget => "the budget for this host and lease is used up",
+        }),
+    };
+    // Only a request that carries the canary reaches the gate malformed, and
+    // the gate refuses every one of those.
+    let Some(url) = url else { return denied("denied") };
     let mut headers = Vec::new();
     if let Some((_, Some(credential))) = rule {
         headers.push(credential.clone());
@@ -507,7 +452,7 @@ pub(super) fn live_http(shared: &Shared, live: &LiveState, message: &Value, rece
     if writes {
         headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
     }
-    match send_on_slot(shared, slot, &url, &method, &headers, body.as_bytes(), crate::http::Limits::WEB) {
+    match send_on_slot(permit.slot, &url, &method, &headers, body.as_bytes(), crate::http::Limits::WEB) {
         // Sabotage: a cut body is reported whole.
         Ok(r) => redact(live, json!({"ok": true, "status": r.status, "truncated": r.truncated && !shared.weak.live_truncation_hidden(),
             "body": String::from_utf8_lossy(&r.body)})),

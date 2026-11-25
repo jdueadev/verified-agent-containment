@@ -21,13 +21,18 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod admission;
 mod classifier;
 mod enforcer;
+mod gate;
 mod gateway;
 mod reset;
 mod weakness;
 
+use admission::*;
 use classifier::*;
+// Not a glob: the operator sockets have a `Permit` of their own.
+use gate::Gate;
 use enforcer::*;
 use gateway::*;
 use reset::*;
@@ -83,7 +88,7 @@ struct Shared {
     log_overflow: AtomicU64,
     gateway_streams: Mutex<BTreeMap<u64, UnixStream>>,
     next_stream: AtomicU64,
-    upstreams: Mutex<Upstreams>,
+    gate: Gate,
     generation: Mutex<Generation>,
     freeze_faults: AtomicI64,
     kill_faults: AtomicI64,
@@ -241,22 +246,6 @@ impl Shared {
         self.authority_pending.load(Ordering::SeqCst) == 0
     }
 
-    /// Aborts upstream connections. Restrict (`keep_baseline`) keeps baseline
-    /// egress such as inference; a stop cuts everything.
-    fn cut_upstream(&self, keep_baseline: bool) {
-        let mut upstreams = lock(&self.upstreams);
-        upstreams.cuts += 1;
-        let slots: Vec<u64> = upstreams.active.keys().copied().filter(|s| !(keep_baseline && upstreams.baseline.contains(s))).collect();
-        for slot in slots {
-            upstreams.baseline.remove(&slot);
-            if let Some(Some(stream)) = upstreams.active.remove(&slot) {
-                if !abort_stream(&stream) {
-                    upstreams.abort_failures += 1;
-                }
-            }
-        }
-    }
-
     fn write_freeze(&self, value: &str) -> bool {
         if value == "1" && self.freeze_faults.load(Ordering::SeqCst) > 0 {
             self.freeze_faults.fetch_sub(1, Ordering::SeqCst);
@@ -333,11 +322,11 @@ impl Shared {
                 true
             }
             Action::NarrowEgress => {
-                self.cut_upstream(true);
+                self.gate.cut(true);
                 true
             }
             Action::BlockEgress => {
-                self.cut_upstream(false);
+                self.gate.cut(false);
                 for (_, stream) in std::mem::take(&mut *lock(&self.gateway_streams)) {
                     let _ = stream.shutdown(Shutdown::Both);
                 }
@@ -582,14 +571,6 @@ fn clip_field(text: &str, chars: usize) -> String {
     text.chars().take(chars).collect()
 }
 
-fn authorize_for(weak: &Weakness, now: u64, control: Control, request: AccessRequest) -> bool {
-    if weak.gateway_bypass() {
-        return true;
-    }
-    let control = if weak.ignore_expiry() { Control { deadline_ms: u64::MAX, ..control } } else { control };
-    authorize(now, control, request)
-}
-
 fn listener(path: &Path, mode: u32) -> Result<UnixListener, Box<dyn Error>> {
     let value = UnixListener::bind(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
@@ -786,7 +767,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         queue: Mutex::default(), queued: Condvar::new(), enforcer_busy: AtomicBool::new(false),
         enforcer_beat: AtomicU64::new(now), classifier_beat: AtomicU64::new(now),
         transitions: Mutex::default(), actions: Mutex::default(), log_overflow: AtomicU64::new(0),
-        gateway_streams: Mutex::default(), next_stream: AtomicU64::new(0), upstreams: Mutex::default(),
+        gateway_streams: Mutex::default(), next_stream: AtomicU64::new(0), gate: Gate::new(weak.clone()),
         generation: Mutex::new(first), freeze_faults: AtomicI64::new(freeze_faults), kill_faults: AtomicI64::new(kill_faults), actuator_retries: AtomicU64::new(0),
         run_cgroup: run_cgroup.clone(), sink_port, token, record_key,
         authority_pending: AtomicU64::new(0), tick_beat: AtomicU64::new(now), uid_base, sandbox_uid: AtomicU64::new(u64::from(uid_base + 1)),
@@ -980,7 +961,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     // admissions (authority stays pending for good), and every upstream and agent
     // connection is cut, so no gateway work runs while the report is written.
     let authority_pending_at_exit = shared.authority_pending.fetch_add(1, Ordering::SeqCst);
-    shared.cut_upstream(false);
+    shared.gate.cut(false);
     for (_, stream) in std::mem::take(&mut *lock(&shared.gateway_streams)) {
         let _ = stream.shutdown(Shutdown::Both);
     }
@@ -1001,12 +982,12 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         "final_mode": mode_name(final_control.mode), "exit_cause": exit_cause, "program": program.poll().to_json(), "populated": populated, "frozen": frozen, "survivors": survivors, "generation": generation, "limits": limits, "authority_pending": authority_pending_at_exit,
         "transitions": *lock(&shared.transitions), "actions": *lock(&shared.actions), "classifier_signals": *lock(&shared.classifier_signals),
         "system_one_probe": *lock(&shared.s1_probe), "system_one_limits": *lock(&shared.s1_limits),
-        "live": shared.live.as_ref().map(|l| json!({"tokens": l.tokens.load(Ordering::SeqCst), "used": lock(&l.used).iter().map(|(k, v)| (k.clone(), json!({"requests": v.requests, "bytes": v.bytes}))).collect::<serde_json::Map<_, _>>()})), "system_one_restarts": shared.s1_restarts.load(Ordering::Relaxed), "log_overflow": shared.log_overflow.load(Ordering::Relaxed),
+        "live": shared.live.as_ref().map(|_| shared.gate.lease_report()), "system_one_restarts": shared.s1_restarts.load(Ordering::Relaxed), "log_overflow": shared.log_overflow.load(Ordering::Relaxed),
         "dropped_logs": shared.dropped_logs.load(Ordering::Relaxed), "monitor_alive": monitor.try_wait()?.is_none(),
         "sink_alive": sink.try_wait()?.is_none(),
         "renew_denied": shared.renew_denied.load(Ordering::Relaxed), "peer_rejected": shared.peer_rejected.load(Ordering::Relaxed),
         "control_rejected": shared.control_rejected.load(Ordering::Relaxed), "reset_rejected": shared.reset_rejected.load(Ordering::Relaxed),
-        "actuator_retries": shared.actuator_retries.load(Ordering::Relaxed), "upstream_cuts": lock(&shared.upstreams).cuts, "upstream_abort_failures": lock(&shared.upstreams).abort_failures,
+        "actuator_retries": shared.actuator_retries.load(Ordering::Relaxed), "upstream_cuts": lock(&shared.gate.upstreams).cuts, "upstream_abort_failures": lock(&shared.gate.upstreams).abort_failures,
         "gateway_streams": lock(&shared.gateway_streams).len(),
         "open_fds": fs::read_dir("/proc/self/fd").map_or(0, Iterator::count),
         "policy_intact": serde_json::from_str::<Value>(&fs::read_to_string(&policy_path)?).is_ok_and(|value| value == policy),

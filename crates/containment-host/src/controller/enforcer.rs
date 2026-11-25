@@ -40,17 +40,6 @@ impl Generation {
     pub(super) fn frozen(&self) -> bool { self.events().contains("frozen 1") }
 }
 
-#[derive(Default)]
-pub(super) struct Upstreams {
-    pub(super) next: u64,
-    pub(super) active: BTreeMap<u64, Option<TcpStream>>,
-    /// Admitted as baseline egress. Restrict keeps these; a stop cuts everything.
-    pub(super) baseline: BTreeSet<u64>,
-    pub(super) cuts: u64,
-    /// Connections that could only be shut down, not reset (queued bytes may still go).
-    pub(super) abort_failures: u64,
-}
-
 /// Aborts a TCP connection: connect(AF_UNSPEC) makes Linux reset it and drop
 /// any bytes still queued for sending, so nothing handed to the kernel before
 /// the cut leaves after it. Then shuts both directions for the other holders.
