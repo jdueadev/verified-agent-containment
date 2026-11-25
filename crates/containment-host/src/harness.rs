@@ -24,7 +24,7 @@ const SABOTAGE: &[(&str, &str)] = &[
     ("shared_control_socket", "classifier_sends_hard"), ("classifier_down_ignored", "classifier_crash"),
     ("system_one_unconfined", "system_one_isolation"), ("system_one_weak_filter", "system_one_isolation"), ("no_kill", "process_escape"),
     ("writable_policy", "agent_attacks_control"), ("no_parent_death_signal", "controller_crash"),
-    ("host_root", "sandbox_escape"), ("wide_root", "sandbox_escape"), ("ignore_actuator_failure", "actuator_dead"), ("stale_clock", "clock_rollback"),
+    ("host_root", "sandbox_escape"), ("wide_root", "sandbox_escape"), ("host_dev", "sandbox_escape"), ("ignore_actuator_failure", "actuator_dead"), ("stale_clock", "clock_rollback"),
     ("leak_streams", "gateway_churn"), ("drop_overflow", "gateway_flood"), ("unauthenticated_monitor", "forged_renewal"),
     ("no_seccomp", "sandbox_escape"), ("stale_generation_authority", "reset_races_kill"), ("no_enforcer_watchdog", "enforcer_stall"),
     ("single_flag_authority", "double_reset"),

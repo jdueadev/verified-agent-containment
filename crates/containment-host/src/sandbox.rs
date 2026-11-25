@@ -72,6 +72,10 @@ pub struct SandboxSpec {
     pub wide_root: bool,
     /// Sabotage: bind a supplied root's entries without making them read-only.
     pub writable_root: bool,
+    /// Sabotage: bind the host's whole /dev in place of the minimal one.
+    pub host_dev: bool,
+    /// Sabotage: mount /dev/shm without noexec.
+    pub shm_exec: bool,
     pub seccomp: bool,
     pub memfd_exec: bool,
 }
@@ -192,7 +196,7 @@ pub fn spawn(spec: &SandboxSpec, cgroup: &Path, uid: u32, workspace: Option<&Pat
         "exe": spec.exe, "new_root": spec.new_root, "private_dir": spec.private_dir, "gateway": spec.gateway,
         "argv": spec.program.argv, "root": spec.program.root, "uid": uid, "expose_private": spec.expose_private,
         "death_signal": death_signal, "host_root": spec.host_root, "wide_root": spec.wide_root, "writable_root": spec.writable_root,
-        "seccomp": spec.seccomp, "memfd_exec": spec.memfd_exec,
+        "host_dev": spec.host_dev, "shm_exec": spec.shm_exec, "seccomp": spec.seccomp, "memfd_exec": spec.memfd_exec,
         "workspace": workspace, "status_fd": status_fd,
     });
     let mut command = Command::new(&spec.exe);
@@ -305,7 +309,7 @@ fn supply_root(dir: &str, root: &str, writable: bool) -> Result<(), Box<dyn Erro
 /// device, and each holds one node, checked by its number, so a host /dev entry that
 /// is not what its name says is refused rather than passed through. Creating nodes
 /// instead would need a tmpfs without nodev, where any node that appeared would open.
-fn provide_dev(dev: &str) -> Result<(), Box<dyn Error>> {
+fn provide_dev(dev: &str, shm_exec: bool) -> Result<(), Box<dyn Error>> {
     let sealed = libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
     mount("tmpfs", dev, Some("tmpfs"), sealed, Some("mode=755,size=64k"))?;
     for &(name, major, minor) in DEVICES {
@@ -329,7 +333,8 @@ fn provide_dev(dev: &str) -> Result<(), Box<dyn Error>> {
     // pages are charged to the sandbox's cgroup, so memory.max bounds them as well.
     let shm = format!("{dev}/shm");
     fs::create_dir(&shm)?;
-    mount("tmpfs", &shm, Some("tmpfs"), sealed, Some("mode=1777,size=16m"))?;
+    let shm_flags = if shm_exec { libc::MS_NOSUID | libc::MS_NODEV } else { sealed };
+    mount("tmpfs", &shm, Some("tmpfs"), shm_flags, Some("mode=1777,size=16m"))?;
     mount("none", dev, None, libc::MS_REMOUNT | libc::MS_BIND | libc::MS_RDONLY | sealed, None)
 }
 
@@ -405,7 +410,12 @@ fn pivot_to_minimal_root(config: &Value) -> Result<(), Box<dyn Error>> {
     // Only process directories, and only processes the viewer may ptrace.
     mount("proc", &under("/proc"), Some("proc"), libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC, Some("subset=pid,hidepid=invisible"))?;
     mount("tmpfs", &under("/tmp"), Some("tmpfs"), libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC, Some("mode=1777,size=16m"))?;
-    provide_dev(&under("/dev"))?;
+    if config["host_dev"] == true {
+        // Sabotage: every device node and mount of the host's /dev.
+        mount("/dev", &under("/dev"), None, libc::MS_BIND | libc::MS_REC, None)?;
+    } else {
+        provide_dev(&under("/dev"), config["shm_exec"] == true)?;
+    }
     let new_root = c(root)?;
     let old_root = c(&under("/.old"))?;
     // SAFETY: both paths are live NUL-terminated strings.

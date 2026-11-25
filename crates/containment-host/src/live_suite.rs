@@ -45,6 +45,8 @@ const SABOTAGE: &[(&str, &str, &str, &[&str])] = &[
     ("lag_from_receipt", "slow_model_no_false_lag", "no_classifier_signal", &["agent_finished_slowly"]),
     ("start_leak", "failed_start_leaves_nothing", "late_failure_left_nothing", &["rejected_policy_start_failed", "late_failure_start_failed"]),
     ("writable_root", "outside_program", "supplied_root_is_read_only", &["granted_request_arrived_through_gate", "program_saw_supplied_root"]),
+    ("host_dev", "outside_program", "dev_is_exactly_the_minimal_set", &["granted_request_arrived_through_gate", "program_saw_supplied_root"]),
+    ("shm_exec", "outside_program", "dev_shm_refuses_exec", &["dev_is_exactly_the_minimal_set", "dev_shm_takes_a_file"]),
     ("unstarted_as_finished", "program_never_starts", "exec_failed_reported_not_started", &["exec_failed_run_ended", "ran_and_failed_reported_with_exit_code"]),
     ("start_leak", "dead_controller_leaves_nothing", "nothing_left_after_kill", &["agent_was_working_before_the_kill", "controller_was_killed", "evidence_saved"]),
 ];
