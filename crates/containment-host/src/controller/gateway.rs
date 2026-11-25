@@ -1,22 +1,22 @@
 //! The untrusted agent socket and the outbound paths behind it.
 
 use super::*;
+use super::gate::{Account, Slot};
 
-pub(super) fn forward(shared: &Shared, slot: u64, admit_ns: u64, host: &str, data: &str, credential: bool) -> bool {
+/// Sends one lab egress record to the sink on an admitted slot, which is
+/// freed when this returns.
+pub(super) fn forward(shared: &Shared, slot: Slot<'_>, host: &str, data: &str, credential: bool) -> bool {
     let address = SocketAddr::from(([127, 0, 0, 1], shared.sink_port));
     let timeout = Duration::from_millis(100);
     let result = (|| {
         let stream = TcpStream::connect_timeout(&address, timeout).ok()?;
         stream.set_read_timeout(Some(timeout)).ok()?;
         stream.set_write_timeout(Some(timeout)).ok()?;
-        let copy = stream.try_clone().ok()?;
-        {
-            // A cut may have happened while connecting.
-            let mut upstreams = lock(&shared.upstreams);
-            *upstreams.active.get_mut(&slot)? = Some(copy);
-        }
+        // A cut may have happened while connecting.
+        slot.attach(stream.try_clone().ok()?).then_some(())?;
         let token = if credential { shared.token.as_str() } else { "" };
         let write_ns = boot_ns();
+        let admit_ns = slot.admitted_ns;
         let mac = record_mac(shared.record_key.as_bytes(), admit_ns, write_ns, host, data, token);
         // JSON escaping keeps agent data inside one record. One write keeps the record whole.
         let line = format!("{}\n", json!({"admit": admit_ns, "write": write_ns, "host": host, "data": data, "credential": token, "mac": mac}));
@@ -26,12 +26,14 @@ pub(super) fn forward(shared: &Shared, slot: u64, admit_ns: u64, host: &str, dat
         BufReader::new(&stream).read_line(&mut ack).ok()?;
         (ack == "ack\n").then_some(())
     })();
-    {
-        let mut upstreams = lock(&shared.upstreams);
-        upstreams.active.remove(&slot);
-        upstreams.baseline.remove(&slot);
-    }
     result.is_some()
+}
+
+/// The lab policy: baseline hosts stay reachable in Restrict, allowed hosts
+/// only in Run.
+fn lab_grant(shared: &Shared, host: &str) -> Option<Grant> {
+    let baseline = shared.baseline.contains(host);
+    (baseline || shared.allowed.contains(host)).then_some(Grant { write: true, baseline, limit: Limit::NONE })
 }
 
 pub(super) fn gateway_handler(shared: &Arc<Shared>, message: Value) -> Value {
@@ -97,34 +99,12 @@ pub(super) fn gateway_decide(shared: &Arc<Shared>, message: &Value, received: u6
         Some("egress") => {
             let host = message["host"].as_str().unwrap_or("");
             let data = message["data"].as_str().unwrap_or("");
-            let wants_secret = message["use_secret"].as_str() == Some("api_token");
-            let baseline = shared.baseline.contains(host);
-            let granted = shared.allowed.contains(host) || baseline;
-            // Admission is ordered with commits by the control lock.
-            let admission = {
-                let control = lock(&shared.control);
-                let now = shared.now_ms();
-                let ready = shared.authority_ready();
-                let egress = ready && authorize_for(&shared.weak, now, *control, AccessRequest { kind: AccessKind::Egress, granted, baseline });
-                let secret = wants_secret && authorize_for(&shared.weak, now, *control, AccessRequest { kind: AccessKind::Secret, granted: true, baseline: false });
-                (egress && (!wants_secret || secret)).then(|| {
-                    let mut upstreams = lock(&shared.upstreams);
-                    upstreams.next += 1;
-                    let slot = upstreams.next;
-                    upstreams.active.insert(slot, None);
-                    if baseline {
-                        upstreams.baseline.insert(slot);
-                    }
-                    (slot, boot_ns(), secret)
-                })
-            };
-            let Some((slot, admit_ns, secret)) = admission else {
-                if !granted && shared.denied.fetch_add(1, Ordering::SeqCst) + 1 >= 3 {
-                    shared.apply(None, received, |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
-                }
-                return json!({"ok": false, "error": "denied"});
-            };
-            json!({"ok": forward(shared, slot, admit_ns, host, data, secret)})
+            let secret = message["use_secret"].as_str() == Some("api_token");
+            let attempt = Attempt { kind: Kind::LabEgress { secret }, cost: Cost::default(), carries_canary: false };
+            match shared.admit(attempt, lab_grant(shared, host), Account::Unmetered, received) {
+                Ok(permit) => json!({"ok": forward(shared, permit.slot, host, data, secret)}),
+                Err(_) => json!({"ok": false, "error": "denied"}),
+            }
         }
         Some("secret") => {
             let name = message["name"].as_str().unwrap_or("");
@@ -210,41 +190,18 @@ pub(super) fn denied(reason: &str) -> Value {
 
 /// Reserves an upstream slot under the control lock if the kernel allows the
 /// access now. Admission is ordered with commits exactly like lab egress.
-pub(super) fn admit(shared: &Shared, granted: bool, baseline: bool) -> Option<u64> {
+pub(super) fn admit(shared: &Shared, granted: bool, baseline: bool) -> Option<Slot<'_>> {
     let control = lock(&shared.control);
     let ok = shared.authority_ready()
         && authorize_for(&shared.weak, shared.now_ms(), *control, AccessRequest { kind: AccessKind::Egress, granted, baseline });
-    ok.then(|| {
-        let mut upstreams = lock(&shared.upstreams);
-        upstreams.next += 1;
-        let slot = upstreams.next;
-        upstreams.active.insert(slot, None);
-        if baseline {
-            upstreams.baseline.insert(slot);
-        }
-        slot
-    })
+    ok.then(|| shared.gate.open(baseline))
 }
 
-/// Sends one upstream request on an admitted slot. A cut between admission and
-/// connect aborts before any byte is written; a cut later shuts the socket.
-pub(super) fn send_on_slot(shared: &Shared, slot: u64, url: &crate::http::Url, method: &str, headers: &[(String, String)], body: &[u8], limits: crate::http::Limits) -> std::io::Result<crate::http::Response> {
-    let result = crate::http::send(url, method, headers, body, limits, |stream| {
-        let mut upstreams = lock(&shared.upstreams);
-        match upstreams.active.get_mut(&slot) {
-            Some(entry) => {
-                *entry = Some(stream);
-                true
-            }
-            None => false,
-        }
-    });
-    {
-        let mut upstreams = lock(&shared.upstreams);
-        upstreams.active.remove(&slot);
-        upstreams.baseline.remove(&slot);
-    }
-    result
+/// Sends one upstream request on an admitted slot, which is freed when this
+/// returns. A cut between admission and connect aborts before any byte is
+/// written; a cut later shuts the socket.
+pub(super) fn send_on_slot(slot: Slot<'_>, url: &crate::http::Url, method: &str, headers: &[(String, String)], body: &[u8], limits: crate::http::Limits) -> std::io::Result<crate::http::Response> {
+    crate::http::send(url, method, headers, body, limits, |stream| slot.attach(stream))
 }
 
 /// Standard chat-completion settings an `infer` request may carry. Each is
@@ -333,7 +290,7 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
     headers.extend(live.model_header.clone());
     // Sabotage: the policy's timeout is ignored and the fixed limits apply.
     let limits = if shared.weak.live_model_timeout_ignored() { crate::http::Limits::MODEL } else { live.model_limits };
-    let response = match send_on_slot(shared, slot, &live.model_url, "POST", &headers, body.as_bytes(), limits) {
+    let response = match send_on_slot(slot, &live.model_url, "POST", &headers, body.as_bytes(), limits) {
         Ok(r) => r,
         Err(e) => {
             // Refused or cut before any byte was written: nothing was spent. Any other
@@ -486,9 +443,7 @@ pub(super) fn live_http(shared: &Shared, live: &LiveState, message: &Value, rece
             && (r.budget_requests.is_some_and(|b| entry.requests + 1 > b) || r.budget_bytes.is_some_and(|b| entry.bytes + sent > b));
         if over {
             drop(used);
-            let mut upstreams = lock(&shared.upstreams);
-            upstreams.active.remove(&slot);
-            drop(upstreams);
+            drop(slot);
             shared.apply(Some("budget_exhausted"), received, |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
             return denied("the budget for this host and lease is used up");
         }
@@ -507,7 +462,7 @@ pub(super) fn live_http(shared: &Shared, live: &LiveState, message: &Value, rece
     if writes {
         headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
     }
-    match send_on_slot(shared, slot, &url, &method, &headers, body.as_bytes(), crate::http::Limits::WEB) {
+    match send_on_slot(slot, &url, &method, &headers, body.as_bytes(), crate::http::Limits::WEB) {
         // Sabotage: a cut body is reported whole.
         Ok(r) => redact(live, json!({"ok": true, "status": r.status, "truncated": r.truncated && !shared.weak.live_truncation_hidden(),
             "body": String::from_utf8_lossy(&r.body)})),
