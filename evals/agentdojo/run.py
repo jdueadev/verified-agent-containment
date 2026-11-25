@@ -342,8 +342,15 @@ def summarise(records, grants_by_suite, benign_total):
             "injection_cases_total_in_suite": len(grants["user_tasks"]) * len(grants["injection_tasks"]) if grants else None,
             "benign_cases": {"run": len(benign), "completed": sum(bool(r.get("benign_completed")) for r in benign),
                              "with_refusals": sum(r.get("user_refused", 0) > 0 for r in benign), "errors": sum(r["outcome"] == "error" for r in benign)},
+            # AgentDojo's utility also fails when the attacker changed anything (workspace checks pre == post),
+            # so the gate's effect on the user task is the second count.
             "user_task_completed_under_attack": sum(bool(r.get("benign_completed")) for r in injected if r["outcome"] != "error"),
+            "user_task_requests_all_allowed_under_attack": sum(r.get("user_refused") == 0 for r in injected if r["outcome"] != "error"),
             "agentdojo_injection_succeeded": sum(bool((r.get("agentdojo") or {}).get("injection_succeeded")) for r in injected),
+            # AgentDojo judges some goals by the calls the agent attempted, not by what ran.
+            "agentdojo_disagrees": _count(f"{r['outcome']}, agentdojo says injection_succeeded={r['agentdojo']['injection_succeeded']}"
+                                          for r in injected if r["outcome"] in ("blocked", "succeeded")
+                                          and r["agentdojo"]["injection_succeeded"] != (r["outcome"] == "succeeded")),
             "explain": {
                 "succeeded_all_destinations_granted": sum(all(q["granted"] for q in attacker([r])) for r in succeeded),
                 "succeeded_would_be_refused_if_only_this_user_tasks_destinations": sum(
@@ -475,13 +482,18 @@ def main():
                 detail = record.get("reason") or (record.get("blocked_at") or {}).get("gate_error") or ""
                 print(f"{cid}: {record['outcome']} {detail} [{record['wall_seconds']}s]"
                       + (f" DISAGREEMENTS {record['disagreements']}" if record.get("disagreements") else ""), flush=True)
-                summary = summarise(records, grants_by_suite, sum(len(g["user_tasks"]) for g in grants_by_suite.values()))
-                (out / "summary.json.tmp").write_text(json.dumps(summary, indent=2) + "\n")
-                os.replace(out / "summary.json.tmp", out / "summary.json")
+                write_summary(out, records, grants_by_suite)
         finally:
             fixtures.stop()
     if records:
-        print(json.dumps(summarise(records, grants_by_suite, sum(len(g["user_tasks"]) for g in grants_by_suite.values()))["suites"], indent=1))
+        print(json.dumps(write_summary(out, records, grants_by_suite)["suites"], indent=1))
+
+
+def write_summary(out, records, grants_by_suite):
+    summary = summarise(records, grants_by_suite, sum(len(g["user_tasks"]) for g in grants_by_suite.values()))
+    (out / "summary.json.tmp").write_text(json.dumps(summary, indent=2) + "\n")
+    os.replace(out / "summary.json.tmp", out / "summary.json")
+    return summary
 
 
 if __name__ == "__main__":

@@ -40,6 +40,7 @@ Each sandbox run takes the lock `/tmp/vac-lab.lock`. If a run waits for minutes,
 | `gen_grants.py` | Derives each suite's granted destinations from its benign user tasks |
 | `grants/v1/*.json` | The generated grants; do not edit by hand |
 | `run.py` | Starts the fixture servers, runs the cases, judges them |
+| `show_case.py` | Prints the raw evidence for one case, for a check by hand |
 | `build_root.sh`, `root/` | The sandbox root and its pins |
 
 ## Outcomes
