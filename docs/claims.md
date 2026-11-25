@@ -1,6 +1,8 @@
 # Claims
 
-Generated from `claims.toml` by `tools/claims_check.py --write`. Do not edit by hand.
+> **Frozen at tag `pre-factory`, not yet re-verified.** The tooling that checked these claims was removed, along with older result folders this page cites; both remain in the tag. The claims will be reset and re-earned. See [`evidence-rules.md`](evidence-rules.md).
+
+Generated from `claims.toml` at tag `pre-factory`.
 
 Inventory cited: 36 laws, 47 Bend mutants, 19 Rust mutants, 30 sabotaged controllers. Proof verdict matches HEAD: yes.
 

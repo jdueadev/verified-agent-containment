@@ -82,10 +82,7 @@ OVERRIDES="$(grep -E "$BUILD_OVERRIDES" <<<"$ENV_NAMES")" || [ $? -eq 1 ] || fai
 for cfg in /root/.cargo/config /root/.cargo/config.toml /.cargo/config /.cargo/config.toml; do
   [ ! -e "$cfg" ] || fail "$cfg exists; only the repository's .cargo/config.toml may configure the build"
 done
-# Read with tools/pins_check.py's tomllib parser, the one `drift` uses; the exact
-# X.Y.Z check follows.
-PIN="$(python3 -c 'import sys; sys.path.insert(0, "tools"); import pins_check; print(pins_check.toolchain_channel(open("rust-toolchain.toml", encoding="utf-8").read()) or "")')" \
-  || fail "could not read rust-toolchain.toml"
+PIN="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" || fail "could not read rust-toolchain.toml"
 [[ "$PIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "rust-toolchain.toml channel '$PIN' is not an exact version"
 # Installed explicitly, with what check.yml installs, so nothing depends on
 # whether this rustup auto-installs an override.
@@ -101,7 +98,9 @@ for tool in rustc cargo; do
   TOOL_BIN="$(readlink -f "$TOOL_BIN")"
   cmp -s "$TOOL_BIN" "$RUSTUP_BIN" || fail "$tool on PATH ($TOOL_BIN) is not the rustup proxy"
 done
-python3 tools/pins_check.py drift --rustc --cargo || fail "the active rustc or cargo is not the pinned Rust $PIN"
+for tool in rustc cargo; do
+  [[ "$("$tool" --version | head -1)" == "$tool $PIN ("* ]] || fail "the active $tool is not the pinned Rust $PIN"
+done
 RUSTC_VV="$(rustc -vV)" || fail "rustc -vV failed"
 HOST="$(sed -n 's/^host: //p' <<<"$RUSTC_VV")"
 [ -n "$HOST" ] || fail "rustc -vV reported no host"

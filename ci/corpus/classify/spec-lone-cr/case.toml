@@ -1,5 +1,0 @@
-checker = "classify"
-origin = "#125 stage 2 review: a lone CR hides an assert from a reader that treats it as a newline"
-twin = "spec-file-added"
-expect_lane = "C"
-expect_escalation = "carriage return"

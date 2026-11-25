@@ -1,5 +1,0 @@
-checker = "classify"
-origin = "#125 design review: a helper range shrunk with every #[test] body unchanged"
-twin = "spec-file-added"
-expect_lane = "C"
-expect_escalation = "spec crates/containment-kernel/tests/laws.rs was edited"

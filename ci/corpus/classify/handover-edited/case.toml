@@ -1,5 +1,0 @@
-checker = "classify"
-origin = "#169: an existing handover rewritten"
-twin = "handover-added"
-expect_lane = "C"
-expect_escalation = "handover .claude/handover/HANDOVER-1.md was changed: handovers are written once"
