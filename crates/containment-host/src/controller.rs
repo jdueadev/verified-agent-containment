@@ -993,7 +993,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         "final_mode": mode_name(final_control.mode), "exit_cause": exit_cause, "program": program.poll().to_json(), "populated": populated, "frozen": frozen, "survivors": survivors, "generation": generation, "limits": limits, "authority_pending": authority_pending_at_exit,
         "transitions": *lock(&shared.transitions), "actions": *lock(&shared.actions), "classifier_signals": *lock(&shared.classifier_signals),
         "system_one_probe": *lock(&shared.s1_probe), "system_one_limits": *lock(&shared.s1_limits),
-        "live": shared.live.as_ref().map(|l| json!({"tokens": l.tokens.load(Ordering::SeqCst), "used": lock(&l.used).iter().map(|(k, v)| (k.clone(), json!({"requests": v.requests, "bytes": v.bytes}))).collect::<serde_json::Map<_, _>>()})), "system_one_restarts": shared.s1_restarts.load(Ordering::Relaxed), "log_overflow": shared.log_overflow.load(Ordering::Relaxed),
+        "live": shared.live.as_ref().map(|l| json!({"tokens": l.tokens.load(Ordering::SeqCst), "used": shared.gate.lease_report()["used"]})), "system_one_restarts": shared.s1_restarts.load(Ordering::Relaxed), "log_overflow": shared.log_overflow.load(Ordering::Relaxed),
         "dropped_logs": shared.dropped_logs.load(Ordering::Relaxed), "monitor_alive": monitor.try_wait()?.is_none(),
         "sink_alive": sink.try_wait()?.is_none(),
         "renew_denied": shared.renew_denied.load(Ordering::Relaxed), "peer_rejected": shared.peer_rejected.load(Ordering::Relaxed),
