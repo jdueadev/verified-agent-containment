@@ -11,6 +11,7 @@ Docker, for the pinned image: `scripts/factory.sh` builds it and runs everything
 ```bash
 scripts/factory.sh check      # scripts/check.sh in the check image
 scripts/factory.sh verdict    # scripts/verdict.sh, the Lean recheck, in the proofs image
+scripts/factory.sh kani       # scripts/kani.sh, the Kani proofs of admission, in the kani image
 ```
 
 `scripts/check.sh` runs the kernel-purity and sabotage checks, confirms `formal/PROOF.bend` is what `tools/generate_proof.py` writes, checks the Bend proofs, runs clippy and the tests for both feature sets, the Rust-to-Bend and Rust-to-wasm differentials, the mutation check with law witnesses, the TLA+ model, and the tool tests. It fails if a tool is missing. Its measurements go to `target/verify/`; it does not touch `results/`.

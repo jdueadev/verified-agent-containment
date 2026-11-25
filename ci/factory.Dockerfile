@@ -159,6 +159,42 @@ RUN cd /tmp/prefetch; \
     mv /opt/cargo/registry /out/registry
 
 
+# Kani comes in two parts. The cargo-kani front end is built from crates.io with
+# the lock file it was published with; it needs a linker, so this stage has gcc.
+# The release bundle (CBMC, kani-compiler, kani-driver) is checked against our
+# sum, and setup unpacks it into KANI_HOME and installs through rustup the
+# nightly toolchain kani-compiler is linked against. The toolchain leaves in
+# /out/toolchains so the kani image copies it without a second stable toolchain.
+FROM get-rust AS get-kani
+ARG TARGETARCH
+ARG KANI_VERSION
+ARG FACTORY_KANI_SHA256_AMD64
+ARG FACTORY_KANI_SHA256_ARM64
+ENV KANI_HOME=/opt/kani
+RUN apt-get update; \
+    apt-get install -y --no-install-recommends gcc libc6-dev; \
+    rm -rf /var/lib/apt/lists/*
+RUN case "$TARGETARCH" in \
+      amd64) triple=x86_64-unknown-linux-gnu; sum="$FACTORY_KANI_SHA256_AMD64" ;; \
+      arm64) triple=aarch64-unknown-linux-gnu; sum="$FACTORY_KANI_SHA256_ARM64" ;; \
+      *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/kani.tar.gz "https://github.com/model-checking/kani/releases/download/kani-${KANI_VERSION}/kani-${KANI_VERSION}-${triple}.tar.gz"; \
+    echo "${sum}  /tmp/kani.tar.gz" | sha256sum --check --strict; \
+    cargo install --locked --root /out kani-verifier --version "$KANI_VERSION"; \
+    rustup set auto-self-update disable; \
+    /out/bin/cargo-kani setup --use-local-bundle /tmp/kani.tar.gz; \
+    rm /tmp/kani.tar.gz; \
+    kani_dir="$KANI_HOME/kani-$KANI_VERSION"; \
+    chown -R 0:0 "$kani_dir"; \
+    toolchain="$(cat "$kani_dir/rust-toolchain-version")"; \
+    [ "$(readlink "$kani_dir/toolchain")" = "$RUSTUP_HOME/toolchains/$toolchain" ] || { echo "kani: the toolchain link is not $RUSTUP_HOME/toolchains/$toolchain" >&2; exit 1; }; \
+    [ "$("$kani_dir/toolchain/bin/rustc" --version)" = "$(cat "$kani_dir/rustc-version")" ] || { echo "kani: the nightly rustup installed is not the rustc the bundle was built with" >&2; exit 1; }; \
+    PATH="/out/bin:$PATH" cargo kani --version; \
+    mkdir /out/toolchains; \
+    mv "$RUSTUP_HOME/toolchains/$toolchain" /out/toolchains/
+
+
 FROM os AS proofs
 COPY --from=get-lean /opt/lean /opt/lean
 COPY --from=get-bend /opt/bend /opt/bend
@@ -186,6 +222,17 @@ COPY --from=get-rust /opt/rustup /opt/rustup
 COPY --from=get-rust /opt/cargo /opt/cargo
 COPY --from=get-crates /out/registry /opt/cargo/registry
 CMD ["scripts/check.sh"]
+
+
+# Its own image, not part of check: the bundle and the nightly toolchain add 1.1 GB
+# (measured unpacked on amd64) that scripts/check.sh never reads. It shares every
+# layer of check, so a machine that has check fetches only that.
+FROM check AS kani
+ENV KANI_HOME=/opt/kani
+COPY --from=get-kani /out/toolchains/ /opt/rustup/toolchains/
+COPY --from=get-kani /opt/kani /opt/kani
+COPY --from=get-kani /out/bin/cargo-kani /out/bin/kani /usr/local/bin/
+CMD ["scripts/kani.sh"]
 
 
 FROM check AS dev

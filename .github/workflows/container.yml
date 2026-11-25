@@ -15,6 +15,7 @@ on:
       - uv.lock
       - scripts/check.sh
       - scripts/verdict.sh
+      - scripts/kani.sh
       - tools/**
   workflow_dispatch:
 
@@ -40,7 +41,8 @@ jobs:
           fetch-depth: 0
 
       - name: Build the check, proofs and dev images
-        run: scripts/factory.sh build
+        id: images
+        run: scripts/factory.sh build check proofs dev
 
       - name: Tool versions in the check image, which has no Lean
         run: docker run --rm vac-factory:check bash -euo pipefail -c 'cargo --version; rustup target list --installed; bun --version; node --version; java -version; uv --version; uv run --no-project python --version; command -v bend; if command -v python3; then echo "the check image contains a system python3" >&2; exit 1; fi; if command -v lean; then echo "the check image contains Lean" >&2; exit 1; fi'
@@ -55,6 +57,29 @@ jobs:
 
       - name: Lean recheck in the proofs image
         run: docker run --rm -v "$PWD:/work" vac-factory:proofs scripts/verdict.sh
+
+      # The kani image is built on top of the check image built above, so this
+      # step's time is the Kani stage's. It runs even when a check above failed.
+      - name: Build the kani image, and print its build time and size
+        id: kani-image
+        if: ${{ !cancelled() && steps.images.outcome == 'success' }}
+        run: |
+          start=$SECONDS
+          scripts/factory.sh build kani
+          seconds=$((SECONDS - start))
+          check=$(docker image inspect --format '{{.Size}}' vac-factory:check)
+          kani=$(docker image inspect --format '{{.Size}}' vac-factory:kani)
+          {
+            echo "kani stage build on ${{ matrix.runner }}: ${seconds}s"
+            echo "check image: ${check} bytes"
+            echo "kani image: ${kani} bytes, $((kani - check)) bytes more than check"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          docker image ls vac-factory
+          docker run --rm --network=none vac-factory:kani cargo kani --version
+
+      - name: Kani proofs of admission in the kani image, with no network
+        if: ${{ !cancelled() && steps.kani-image.outcome == 'success' }}
+        run: scripts/factory.sh kani
 
   publish:
     if: github.repository_owner == 'vac-dev-team' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
@@ -81,13 +106,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build the check, proofs and dev images
+      - name: Build the check, proofs, kani and dev images
         run: scripts/factory.sh build
 
       - name: Push the images for this architecture
         run: |
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
-          for stage in check proofs dev; do
+          for stage in check proofs kani dev; do
             docker tag "vac-factory:$stage" "$REGISTRY_IMAGE:$stage-$ARCH"
             docker push "$REGISTRY_IMAGE:$stage-$ARCH"
           done
@@ -107,7 +132,7 @@ jobs:
       - name: Publish the multi-architecture images and print their digests
         run: |
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
-          for stage in check proofs dev; do
+          for stage in check proofs kani dev; do
             docker buildx imagetools create -t "$REGISTRY_IMAGE:$stage" "$REGISTRY_IMAGE:$stage-amd64" "$REGISTRY_IMAGE:$stage-arm64"
             docker buildx imagetools inspect "$REGISTRY_IMAGE:$stage" --format '{{.Name}}@{{.Manifest.Digest}}'
             echo
