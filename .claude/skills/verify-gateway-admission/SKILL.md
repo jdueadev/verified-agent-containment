@@ -84,14 +84,14 @@ Coverage record. Each harness runs exactly this product code:
 | | `crates/containment-host/src/controller/weakness.rs`, `controller.rs` | `Weakness` in the default build, `lock` |
 | | `crates/containment-kernel/src/lib.rs` | `authorize`, `effective_time` |
 
-**Sync commit: `38c1cc5c45ab523e057a4482c5de1b5b8c75d8d4`** ("Catch a gate mutant in a
-state the gate can reach, and pin Kani's bundles"). At that commit the harnesses were confirmed to describe the code
-above, and `scripts/kani.sh` and `scripts/kani.sh mutants` both passed. If the branch was
-rebased after this was written, the hash may name nothing: use the commit with that subject
-instead. To see whether the covered code has changed since:
+**Sync commit: the commit on `main` whose subject starts "Prove the gateway's admission
+decision with Kani".** The pull request was squash-merged, so that one commit holds the
+harnesses and the code they were confirmed against. At it, `scripts/kani.sh` and
+`scripts/kani.sh mutants` both passed. To see whether the covered code has changed since:
 
 ```bash
-git diff --stat 38c1cc5c45ab523e057a4482c5de1b5b8c75d8d4 -- crates/containment-host/src/controller/admission.rs \
+sync=$(git log -1 --format=%H --grep="^Prove the gateway's admission decision with Kani" origin/main)
+git diff --stat "$sync" -- crates/containment-host/src/controller/admission.rs \
   crates/containment-host/src/controller/gate.rs crates/containment-host/src/controller/weakness.rs \
   crates/containment-host/src/controller.rs crates/containment-kernel/src/lib.rs formal/kani
 ```
@@ -101,7 +101,7 @@ If your diff, or that one, touches a function in the table, run the check. A cha
 proved, but it can change what the promises mean in practice (an `Attempt` built with a
 zero cost passes any budget); say so in the pull request if it does.
 
-Move the sync commit forward only after you have read the diff since it, confirmed the
+Move the sync commit forward (name the new commit's subject here) only after you have read the diff since it, confirmed the
 harnesses and the restated rules still describe the code, and seen both commands pass at
 the new commit.
 
