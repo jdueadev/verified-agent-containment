@@ -2,13 +2,15 @@
 //!
 //! `containment-lab live --policy FILE --task TEXT [--out DIR] [--hud PORT]` starts a
 //! controller with a real agent harness, streams what the agent does and every
-//! mode change, and saves the run when it ends.
+//! mode change, and saves the run when it ends. With `-- PROGRAM [ARGS...]` in place
+//! of `--task`, the sandbox runs that program instead of the built-in agent.
 //!
 //! `containment-lab ctl --run DIR status|stop|reset MODE` talks to a running
 //! controller. Resets are signed with the run's operator key. That key is a
 //! file readable by root, not a hardware key: reset v3 (design spec section 6)
 //! is not built yet, so a live reset only proves root on this host approved it.
 use crate::common::*;
+use crate::live::Workload;
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{json, Value};
 use std::error::Error;
@@ -103,7 +105,7 @@ pub fn sweep(root: &Path, run_id: &str) {
 }
 
 /// Starts a live controller. `env` adds variables (credentials) to its environment.
-pub fn start(policy: &Path, task: &str, env: &[(String, String)], weakness: &str) -> Result<LiveRun, Box<dyn Error>> {
+pub fn start(policy: &Path, workload: &Workload, env: &[(String, String)], weakness: &str) -> Result<LiveRun, Box<dyn Error>> {
     // SAFETY: geteuid has no preconditions.
     if unsafe { libc::geteuid() } != 0 {
         return Err("live runs need root (namespaces, cgroups and seccomp); run with sudo".into());
@@ -149,7 +151,7 @@ pub fn start(policy: &Path, task: &str, env: &[(String, String)], weakness: &str
     let policy = fs::canonicalize(policy)?;
     let mut command = Command::new(std::env::current_exe()?);
     command.arg("controller").arg(&root).arg("live").arg(weakness).arg(hex_encode(key.verifying_key().as_bytes())).arg(&run_id)
-        .arg(&policy).arg(task).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::inherit());
+        .arg(&policy).args(workload.to_args()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::inherit());
     for (k, v) in env {
         command.env(k, v);
     }
@@ -243,15 +245,16 @@ pub fn summarise(report: &Value) -> String {
         report["live"])
 }
 
-/// Runs a live agent under a policy, streams what it does and saves the run.
+/// Runs a live agent, or an outside program, under a policy, streams what it does and saves the run.
 #[derive(clap::Parser)]
+#[command(override_usage = "containment-lab live [OPTIONS] --policy <POLICY> (--task <TASK> | -- <PROGRAM> [ARGS]...)")]
 struct LiveArgs {
     /// Policy file (TOML), for example examples/live/policy.toml
     #[arg(long)]
     policy: PathBuf,
-    /// The task given to the agent
-    #[arg(long)]
-    task: String,
+    /// The task given to the built-in agent
+    #[arg(long, required_unless_present = "program", conflicts_with = "program")]
+    task: Option<String>,
     /// Where to save report.json, transcript.jsonl and events.jsonl [default: results/live/<run id>]
     #[arg(long)]
     out: Option<PathBuf>,
@@ -261,15 +264,23 @@ struct LiveArgs {
     /// Allow running without cgroup limits for System One
     #[arg(long)]
     allow_missing_limits: bool,
+    /// Run this program instead of the built-in agent: its absolute path inside the
+    /// sandbox, then its arguments. The policy's [root] dir, if set, is its root.
+    #[arg(last = true, value_name = "PROGRAM")]
+    program: Vec<String>,
 }
 
 pub fn live(args: &[String]) -> Result<(), Box<dyn Error>> {
-    let Some(LiveArgs { policy, task, out, hud: hud_port, allow_missing_limits }) = parse_args::<LiveArgs>("live", args)? else { return Ok(()) };
+    let Some(LiveArgs { policy, task, out, hud: hud_port, allow_missing_limits, program }) = parse_args::<LiveArgs>("live", args)? else { return Ok(()) };
+    let workload = match task {
+        Some(task) => Workload::Task(task),
+        None => Workload::Program(program),
+    };
     if allow_missing_limits {
         // SAFETY: set before the controller is started; no other threads yet.
         unsafe { std::env::set_var(LIMITS_WAIVER_ENV, "1") };
     }
-    let mut run = start(&policy, &task, &[], "none")?;
+    let mut run = start(&policy, &workload, &[], "none")?;
     eprintln!("run {} started; operator: sudo containment-lab ctl --run {} status|stop|reset MODE", run.run_id, run.root.display());
     if let Some(port) = hud_port {
         let root = run.root.clone();

@@ -4,26 +4,71 @@ use std::ffi::CString;
 use std::fs;
 use std::io;
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{symlink, PermissionsExt};
+use std::os::unix::fs::{symlink, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::ptr;
 
+/// The built-in agent: this binary, bound at this path in the sandbox root.
+pub const AGENT: &str = "/agent";
+/// The gateway socket, as the program sees it.
+const GATEWAY: &str = "/gateway.sock";
+/// Top-level names the sandbox provides itself. A supplied root's entries with
+/// these names are skipped, and no other program may live under them.
+pub const RESERVED: &[&str] = &["proc", "tmp", "workspace", "gateway.sock", ".old", "agent"];
+
+/// What runs inside the sandbox.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Program {
+    /// Absolute path as seen inside the sandbox, then its arguments.
+    pub argv: Vec<String>,
+    /// A host directory whose top-level entries become the sandbox's read-only root.
+    /// None: the root is planned from the program's own ELF, as for the built-in agent.
+    pub root: Option<PathBuf>,
+}
+
+impl Program {
+    /// The built-in agent playing `scenario`.
+    pub fn agent(scenario: &str, probe: &Value) -> Self {
+        Self { argv: vec![AGENT.to_owned(), "agent".to_owned(), scenario.to_owned(), probe.to_string()], root: None }
+    }
+
+    /// Any other program. Its path must be absolute and must not lead under one of
+    /// the sandbox's own entries, which would hide it or stand in for it.
+    pub fn outside(argv: Vec<String>, root: Option<PathBuf>) -> Result<Self, String> {
+        let path = Path::new(argv.first().ok_or("no program was given")?);
+        let mut parts = path.components();
+        if parts.next() != Some(Component::RootDir) || parts.clone().any(|c| !matches!(c, Component::Normal(_))) {
+            return Err(format!("the program path {} must be absolute, without . or ..", path.display()));
+        }
+        match parts.next().and_then(|c| c.as_os_str().to_str()) {
+            None => return Err("the program path names no file".into()),
+            Some(top) if RESERVED.contains(&top) => return Err(format!("the program path {} is under /{top}, which the sandbox provides itself", path.display())),
+            Some(_) => {}
+        }
+        if argv.iter().any(|a| a.contains('\0')) {
+            return Err("a program argument contains a NUL byte".into());
+        }
+        Ok(Self { argv, root })
+    }
+}
+
 pub struct SandboxSpec {
     pub exe: PathBuf,
+    pub program: Program,
     pub new_root: PathBuf,
     pub private_dir: PathBuf,
     pub gateway: PathBuf,
-    pub scenario: String,
     pub output: PathBuf,
-    pub probe: Value,
     pub share_network: bool,
     pub expose_private: bool,
     pub no_parent_death_signal: bool,
     pub host_root: bool,
     /// Sabotage: keep the pivot but bind the host's whole /usr and /lib* again (#88).
     pub wide_root: bool,
+    /// Sabotage: bind a supplied root's entries without making them read-only.
+    pub writable_root: bool,
     pub seccomp: bool,
     pub memfd_exec: bool,
 }
@@ -58,8 +103,8 @@ pub fn spawn(spec: &SandboxSpec, cgroup: &Path, uid: u32, workspace: Option<&Pat
     let controller = unsafe { libc::getpid() };
     let config = json!({
         "exe": spec.exe, "new_root": spec.new_root, "private_dir": spec.private_dir, "gateway": spec.gateway,
-        "scenario": spec.scenario, "uid": uid, "probe": spec.probe, "expose_private": spec.expose_private,
-        "death_signal": death_signal, "host_root": spec.host_root, "wide_root": spec.wide_root,
+        "argv": spec.program.argv, "root": spec.program.root, "uid": uid, "expose_private": spec.expose_private,
+        "death_signal": death_signal, "host_root": spec.host_root, "wide_root": spec.wide_root, "writable_root": spec.writable_root,
         "seccomp": spec.seccomp, "memfd_exec": spec.memfd_exec,
         "workspace": workspace,
     });
@@ -129,19 +174,66 @@ fn bind(source: &str, target: &str, extra: libc::c_ulong) -> Result<(), Box<dyn 
     mount("none", target, None, libc::MS_REMOUNT | libc::MS_BIND | libc::MS_NOSUID | libc::MS_NODEV | extra, None)
 }
 
+/// Puts each top-level entry of a supplied directory into the new root, read-only.
+/// Directories and files are bound, but not recursively, so mounts below `dir` stay
+/// behind; symlinks are recreated. Not noexec: the program and its libraries run
+/// from here. The sandbox's own entries win over same-named ones.
+fn supply_root(dir: &str, root: &str, writable: bool) -> Result<(), Box<dyn Error>> {
+    let flags = if writable { 0 } else { libc::MS_RDONLY };
+    for entry in fs::read_dir(dir).map_err(|e| format!("root {dir}: {e}"))? {
+        let entry = entry?;
+        let name = entry.file_name().into_string().map_err(|n| format!("root {dir}: {n:?} is not UTF-8"))?;
+        if RESERVED.contains(&name.as_str()) {
+            continue;
+        }
+        // The type is read from the same descriptor that is bound, so an entry that
+        // changes between the two cannot turn a recreated symlink into a followed one.
+        let opened = fs::OpenOptions::new().read(true).custom_flags(libc::O_PATH | libc::O_NOFOLLOW).open(entry.path())
+            .map_err(|e| format!("root {dir}/{name}: {e}"))?;
+        let kind = opened.metadata()?.file_type();
+        let source = format!("/proc/self/fd/{}", opened.as_raw_fd());
+        let target = format!("{root}/{name}");
+        if kind.is_symlink() {
+            symlink(fs::read_link(entry.path())?, &target)?;
+        } else if kind.is_dir() {
+            fs::create_dir(&target)?;
+            bind(&source, &target, flags).map_err(|e| format!("root {dir}/{name}: {e}"))?;
+        } else if kind.is_file() {
+            fs::write(&target, "")?;
+            bind(&source, &target, flags).map_err(|e| format!("root {dir}/{name}: {e}"))?;
+        } else {
+            return Err(format!("root {dir}/{name}: not a file, directory or symlink").into());
+        }
+    }
+    Ok(())
+}
+
 /// Builds a minimal read-only root. Host paths outside this list do not exist
 /// in the sandbox, including WSL interop paths and Windows drive mounts.
 fn pivot_to_minimal_root(config: &Value) -> Result<(), Box<dyn Error>> {
     let root = config["new_root"].as_str().ok_or("new root")?;
     let exe = config["exe"].as_str().ok_or("exe")?;
     let gateway = config["gateway"].as_str().ok_or("gateway")?;
-    // What the agent needs from the host: its loader and the libraries it links, read
-    // from the executable before anything is mounted (#88). If that cannot be worked out
-    // exactly, the sandbox does not start.
-    let view = crate::sandbox_view::plan(&fs::read(exe)?, Path::new("/")).map_err(|e| format!("sandbox view: {e}"))?;
+    let program = config["argv"][0].as_str().ok_or("argv")?;
+    let supplied = config["root"].as_str();
+    // What the program needs from the host, read before anything is mounted (#88): the
+    // built-in agent's loader and libraries; for any other program the same, plus the
+    // program itself at its own path. A supplied root takes the place of all of it. If
+    // the view cannot be worked out exactly, the sandbox does not start.
+    let view = match supplied {
+        Some(_) => Ok(crate::sandbox_view::Plan::new()),
+        None if program == AGENT => fs::read(exe).map_err(|e| format!("{exe}: {e}")).and_then(|b| crate::sandbox_view::plan(&b, Path::new("/"))),
+        None => crate::sandbox_view::plan_program(Path::new(program), Path::new("/")),
+    }.map_err(|e| format!("sandbox view: {e}"))?;
+    let shadowed = view.keys().find(|p| p.components().nth(1).and_then(|c| c.as_os_str().to_str()).is_some_and(|top| RESERVED.contains(&top)));
+    if let Some(path) = shadowed {
+        return Err(format!("sandbox view: {} is under an entry the sandbox provides itself", path.display()).into());
+    }
     mount("tmpfs", root, Some("tmpfs"), libc::MS_NOSUID | libc::MS_NODEV, Some("mode=755,size=4m"))?;
     let under = |p: &str| format!("{root}/{}", p.trim_start_matches('/'));
-    if config["wide_root"] == true {
+    if let Some(dir) = supplied {
+        supply_root(dir, root, config["writable_root"] == true)?;
+    } else if config["wide_root"] == true {
         // Sabotage: the old root, which showed the agent the host's whole /usr and /lib*.
         for dir in ["/usr", "/lib", "/lib64", "/lib32", "/libx32"] {
             let Ok(meta) = fs::symlink_metadata(dir) else { continue };
@@ -170,10 +262,12 @@ fn pivot_to_minimal_root(config: &Value) -> Result<(), Box<dyn Error>> {
     for dir in ["/proc", "/tmp", "/.old"] {
         fs::create_dir(under(dir))?;
     }
-    fs::write(under("/agent"), "")?;
-    bind(exe, &under("/agent"), libc::MS_RDONLY)?;
-    fs::write(under("/gateway.sock"), "")?;
-    bind(gateway, &under("/gateway.sock"), libc::MS_NOEXEC)?;
+    if program == AGENT {
+        fs::write(under(AGENT), "")?;
+        bind(exe, &under(AGENT), libc::MS_RDONLY)?;
+    }
+    fs::write(under(GATEWAY), "")?;
+    bind(gateway, &under(GATEWAY), libc::MS_NOEXEC)?;
     // The only writable path: this generation's copy-on-rebuild workspace.
     if let Some(workspace) = config["workspace"].as_str() {
         fs::create_dir(under("/workspace"))?;
@@ -367,18 +461,24 @@ fn drop_authority(uid: u32, seccomp: bool) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn prepare(config: &Value) -> Result<(String, String), Box<dyn Error>> {
+/// Where the program, the gateway socket and the workspace are once the root is set up.
+struct Placed {
+    program: String,
+    gateway: String,
+    workspace: Option<&'static str>,
+}
+
+fn prepare(config: &Value) -> Result<Placed, Box<dyn Error>> {
     mount("none", "/", None, libc::MS_REC | libc::MS_PRIVATE, None)?;
-    let exe = config["exe"].as_str().ok_or("exe")?.to_owned();
-    let gateway = config["gateway"].as_str().ok_or("gateway")?.to_owned();
-    let paths = if config["host_root"] == true {
+    let program = config["argv"][0].as_str().ok_or("argv")?;
+    if config["host_root"] == true {
+        // Sabotage: no pivot, so everything is where it is on the host.
         mount("proc", "/proc", Some("proc"), libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC, None)?;
-        (exe, gateway)
-    } else {
-        pivot_to_minimal_root(config)?;
-        ("/agent".to_owned(), "/gateway.sock".to_owned())
-    };
-    Ok(paths)
+        let program = if program == AGENT { config["exe"].as_str().ok_or("exe")? } else { program };
+        return Ok(Placed { program: program.to_owned(), gateway: config["gateway"].as_str().ok_or("gateway")?.to_owned(), workspace: None });
+    }
+    pivot_to_minimal_root(config)?;
+    Ok(Placed { program: program.to_owned(), gateway: GATEWAY.to_owned(), workspace: config["workspace"].is_string().then_some("/workspace") })
 }
 
 /// The launcher forks a root-owned init that becomes PID 1 of the sandbox's PID
@@ -425,7 +525,8 @@ pub fn launch(args: &[String]) -> Result<(), Box<dyn Error>> {
     if config["memfd_exec"] != true {
         fs::write("/proc/sys/vm/memfd_noexec", "2").map_err(|e| format!("vm.memfd_noexec: {e}"))?;
     }
-    let (exe, gateway) = prepare(&config)?;
+    let placed = prepare(&config)?;
+    let argv: Vec<&str> = config["argv"].as_array().ok_or("argv")?.iter().map(|a| a.as_str().ok_or("argv")).collect::<Result<_, _>>()?;
     // SAFETY: init is single-threaded here.
     let agent = unsafe { libc::fork() };
     if agent < 0 {
@@ -433,14 +534,15 @@ pub fn launch(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     if agent == 0 {
         drop_authority(config["uid"].as_u64().ok_or("uid")? as u32, config["seccomp"] != false)?;
-        let error = Command::new(Path::new(&exe))
-            .arg("agent")
-            .arg(gateway)
-            .arg(config["scenario"].as_str().ok_or("scenario")?)
-            .arg(config["probe"].to_string())
-            .env_clear()
-            .exec();
-        return Err(error.into());
+        // Nothing of the controller's environment: only where the gateway is, and a
+        // home and search path inside the sandbox.
+        let mut command = Command::new(&placed.program);
+        command.args(&argv[1..]).env_clear()
+            .env("VAC_GATE", &placed.gateway).env("HOME", "/workspace").env("PATH", "/usr/local/bin:/usr/bin:/bin");
+        if let Some(dir) = placed.workspace {
+            command.current_dir(dir);
+        }
+        return Err(command.exec().into());
     }
     // Init reaps orphans and ends the sandbox when the agent exits.
     loop {

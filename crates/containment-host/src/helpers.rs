@@ -83,6 +83,27 @@ pub fn sink(args: &[String]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Run by the live suite as an outside program, from a root it assembled: asks the
+/// gateway for `url`, lists `/` and `/tmp`, tries to create each of `writes`, and
+/// prints what happened as one transcript line. Nothing here is trusted by the
+/// check that a request went through the gateway; that is read from the server.
+pub fn probe_root(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let [url, writes @ ..] = args else { return Err("probe-root arguments are invalid".into()) };
+    let gateway = std::env::var("VAC_GATE").map_err(|_| "VAC_GATE is not set")?;
+    let reply = crate::common::request(Path::new(&gateway), &json!({"op": "http", "method": "GET", "url": url}))
+        .unwrap_or_else(|e| json!({"ok": false, "error": e.to_string()}));
+    let names = |dir: &str| -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        names
+    };
+    let written: serde_json::Map<String, serde_json::Value> = writes.iter()
+        .map(|path| (path.clone(), json!(std::fs::write(path, "probe").map_err(|e| e.raw_os_error()).err())))
+        .collect();
+    println!("{}", json!({"event": "probe_root", "value": {"gateway": reply, "root": names("/"), "tmp": names("/tmp"), "write_errors": written}}));
+    Ok(())
+}
+
 /// Run as an unprivileged uid by the harness: tries operator requests,
 /// including a validly signed reset it was handed, and prints the replies.
 pub fn probe_operator(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {

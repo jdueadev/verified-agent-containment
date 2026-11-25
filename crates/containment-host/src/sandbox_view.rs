@@ -201,13 +201,30 @@ fn valid_name(name: &str) -> bool {
 /// The plan for an executable whose bytes are `exe`, read from the host rooted at `host`
 /// (normally `/`). The executable itself is not part of the plan: it is bound at `/agent`.
 pub fn plan(exe: &[u8], host: &Path) -> Result<Plan, String> {
-    let needs = parse(exe)?;
     let mut plan = Plan::new();
+    add_needs(&mut plan, host, exe)?;
+    Ok(plan)
+}
+
+/// The plan for the program at `path`, which is where the sandbox will see it and
+/// where it is on the host: the program itself, with every directory and symlink on
+/// the way to it, then its loader and libraries.
+pub fn plan_program(path: &Path, host: &Path) -> Result<Plan, String> {
+    let mut plan = Plan::new();
+    let file = add_path(&mut plan, host, path)?;
+    let bytes = fs::read(on_host(host, &file)).map_err(|e| format!("{}: {e}", file.display()))?;
+    add_needs(&mut plan, host, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(plan)
+}
+
+/// Adds the loader and the libraries the ELF file `exe` needs.
+fn add_needs(plan: &mut Plan, host: &Path, exe: &[u8]) -> Result<(), String> {
+    let needs = parse(exe)?;
     let interp = needs.interp.ok_or("the executable has no dynamic loader (PT_INTERP)")?;
     if !interp.starts_with('/') || interp.contains("..") {
         return Err(format!("dynamic loader path {interp:?} is not a plain absolute path"));
     }
-    add_path(&mut plan, host, Path::new(&interp))?;
+    add_path(plan, host, Path::new(&interp))?;
     let mut queue: VecDeque<String> = needs.needed.into();
     let mut seen = std::collections::BTreeSet::new();
     while let Some(name) = queue.pop_front() {
@@ -221,12 +238,12 @@ pub fn plan(exe: &[u8], host: &Path) -> Result<Plan, String> {
             .iter()
             .find(|dir| on_host(host, &Path::new(dir).join(&name)).is_file())
             .ok_or_else(|| format!("library {name} is not in any system directory"))?;
-        let file = add_path(&mut plan, host, &Path::new(dir).join(&name))?;
+        let file = add_path(plan, host, &Path::new(dir).join(&name))?;
         let bytes = fs::read(on_host(host, &file)).map_err(|e| format!("{}: {e}", file.display()))?;
         let lib = parse(&bytes).map_err(|e| format!("{}: {e}", file.display()))?;
         queue.extend(lib.needed);
     }
-    Ok(plan)
+    Ok(())
 }
 
 /// Every path the agent should see: the plan, and the fixed entries the sandbox adds.
@@ -385,6 +402,29 @@ mod tests {
         let mut thirty_two = elf(Some(&loader), &[], &[]);
         thirty_two[4] = 1;
         assert!(plan(&thirty_two, &host).is_err(), "32-bit ELF was accepted");
+        let _ = fs::remove_dir_all(host);
+    }
+
+    #[test]
+    fn a_program_is_planned_at_its_own_path_with_its_needs() {
+        let host = temp();
+        let dir = host.join(SYSTEM_DIRS[0].trim_start_matches('/'));
+        fs::create_dir_all(&dir).expect("dir");
+        fs::write(dir.join("ld.so"), elf(None, &[], &[])).expect("ld");
+        fs::write(dir.join("liba.so"), elf(None, &[], &[])).expect("a");
+        let loader = format!("{}/ld.so", SYSTEM_DIRS[0]);
+        fs::create_dir_all(host.join("usr/bin")).expect("usr/bin");
+        fs::write(host.join("usr/bin/tool"), elf(Some(&loader), &["liba.so"], &[])).expect("tool");
+        symlink("usr/bin", host.join("bin")).expect("bin link");
+        let p = plan_program(Path::new("/bin/tool"), &host).expect("plan");
+        assert_eq!(p.get(Path::new("/bin")), Some(&Entry::Symlink(PathBuf::from("usr/bin"))));
+        assert_eq!(p.get(Path::new("/usr/bin/tool")), Some(&Entry::File));
+        let files: Vec<_> = p.iter().filter(|(_, e)| **e == Entry::File).map(|(k, _)| k.display().to_string()).collect();
+        assert_eq!(files.len(), 3, "{files:?}");
+        // A program the view cannot cover is refused like the agent would be.
+        fs::write(host.join("usr/bin/script"), "#!/bin/sh\n").expect("script");
+        assert!(plan_program(Path::new("/usr/bin/script"), &host).is_err());
+        assert!(plan_program(Path::new("/usr/bin/missing"), &host).is_err());
         let _ = fs::remove_dir_all(host);
     }
 

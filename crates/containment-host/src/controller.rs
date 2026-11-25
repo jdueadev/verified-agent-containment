@@ -1,6 +1,6 @@
 use crate::common::*;
-use crate::live::LiveState;
-use crate::sandbox::{self, SandboxSpec};
+use crate::live::{LiveState, Workload};
+use crate::sandbox::{self, Program, SandboxSpec};
 use containment_kernel::*;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::{json, Value};
@@ -113,6 +113,7 @@ struct Shared {
     recreate_requested: AtomicBool,
     recreate_done: (Mutex<bool>, Condvar),
     private_dir: PathBuf,
+    scenario: String,
     spec: SandboxSpec,
     stop: AtomicBool,
 }
@@ -384,7 +385,7 @@ impl Shared {
         let mut failing_since: Option<Instant> = None;
         let began = Instant::now();
         loop {
-            if self.spec.scenario == "enforcer_stall" && began.elapsed() > Duration::from_millis(150) {
+            if self.scenario == "enforcer_stall" && began.elapsed() > Duration::from_millis(150) {
                 thread::park();
                 continue;
             }
@@ -659,7 +660,7 @@ impl Drop for Started {
 pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let (root, scenario, weakness, public_key, run_id, live_args) = match args {
         [root, scenario, weakness, key, id] => (root, scenario, weakness, key, id, None),
-        [root, scenario, weakness, key, id, policy, task] if scenario == "live" => (root, scenario, weakness, key, id, Some((policy, task))),
+        [root, scenario, weakness, key, id, policy, workload @ ..] if scenario == "live" => (root, scenario, weakness, key, id, Some((policy, Workload::from_args(workload)?))),
         _ => return Err("controller arguments are invalid".into()),
     };
     // A panic in any thread must stop the run, not leave a half-working monitor.
@@ -670,9 +671,13 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let weak = Weakness::parse(weakness)?;
     // A live policy is validated before anything is created, so one the loader
     // rejects leaves nothing to tear down.
-    let live = match live_args {
-        Some((policy, task)) => Some(Arc::new(LiveState::load(Path::new(policy), task.clone(), format!("cnry_{}", random_hex(12)?))?)),
+    let live = match &live_args {
+        Some((policy, workload)) => Some(Arc::new(LiveState::load(Path::new(policy), workload, format!("cnry_{}", random_hex(12)?))?)),
         None => None,
+    };
+    let outside = match (&live_args, &live) {
+        (Some((_, Workload::Program(argv))), Some(l)) => Some(Program::outside(argv.clone(), l.policy.root.as_ref().map(|r| r.dir.clone()))?),
+        _ => None,
     };
     // Sabotage: a failed controller leaves what it started.
     let mut started = Started { cgroups: Vec::new(), pids: Vec::new(), shared: None, armed: !weak.start_leak() };
@@ -750,22 +755,24 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     // Each generation gets its own uid: base + generation.
     let uid_base = SANDBOX_UID_BASE + std::process::id() * 16;
     let visible_private = if weak.writable_policy() { PathBuf::from("/private") } else { private_dir.clone() };
-    let probe = if let Some(l) = &live {
-        json!({"task": l.task, "max_steps": l.policy.run.max_steps})
-    } else { json!({
-        "sink_port": sink_port,
-        "host_pids": [std::process::id(), monitor.id(), sink.id()],
-        "policy_path": visible_private.join("policy.json"),
-        "canary_path": visible_private.join("canary"),
-        "host_marker": host_marker,
-        "drop_dir": drop_dir,
-        "gateway": if weak.host_root() { gateway.clone() } else { PathBuf::from("/gateway.sock") },
-    }) };
+    let program = match (outside, &live, &live_args) {
+        (Some(program), _, _) => program,
+        (None, Some(l), Some((_, Workload::Task(task)))) => Program::agent(scenario, &json!({"task": task, "max_steps": l.policy.run.max_steps})),
+        _ => Program::agent(scenario, &json!({
+            "sink_port": sink_port,
+            "host_pids": [std::process::id(), monitor.id(), sink.id()],
+            "policy_path": visible_private.join("policy.json"),
+            "canary_path": visible_private.join("canary"),
+            "host_marker": host_marker,
+            "drop_dir": drop_dir,
+            "gateway": if weak.host_root() { gateway.clone() } else { PathBuf::from("/gateway.sock") },
+        })),
+    };
     let spec = SandboxSpec {
-        exe: exe.clone(), new_root, private_dir: private_dir.clone(), gateway: gateway.clone(),
-        scenario: scenario.clone(), output: private_dir.join("agent.jsonl"), probe,
+        exe: exe.clone(), program, new_root, private_dir: private_dir.clone(), gateway: gateway.clone(),
+        output: private_dir.join("agent.jsonl"),
         share_network: weak.shared_network(), expose_private: weak.writable_policy(),
-        no_parent_death_signal: weak.no_parent_death_signal(), host_root: weak.host_root(), wide_root: weak.wide_root(), seccomp: !weak.no_seccomp(), memfd_exec: weak.memfd_exec(),
+        no_parent_death_signal: weak.no_parent_death_signal(), host_root: weak.host_root(), wide_root: weak.wide_root(), writable_root: weak.writable_root(), seccomp: !weak.no_seccomp(), memfd_exec: weak.memfd_exec(),
     };
     let freeze_faults = match scenario.as_str() { "actuator_retry" => 2, "actuator_dead" => i64::MAX, "reset_races_kill" => 1, "double_reset" => 2, _ => 0 };
     let kill_faults = match scenario.as_str() { "actuator_dead" => i64::MAX, "reset_races_kill" | "double_reset" => 3, _ => 0 };
@@ -788,7 +795,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         public_key: VerifyingKey::from_bytes(&key)?, run_id: run_id.clone(),
         weak: weak.clone(), monitor_pid: AtomicU64::new(u64::from(monitor.id())),
         recreate_requested: AtomicBool::new(false), recreate_done: (Mutex::new(false), Condvar::new()),
-        private_dir: private_dir.clone(), spec, stop: AtomicBool::new(false),
+        private_dir: private_dir.clone(), scenario: scenario.clone(), spec, stop: AtomicBool::new(false),
     });
     started.shared = Some(Arc::clone(&shared));
 

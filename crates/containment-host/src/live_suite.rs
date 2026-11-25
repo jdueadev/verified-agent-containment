@@ -4,6 +4,7 @@
 //! reached the upstream servers, not what the agent says. Each claim has a
 //! sabotaged controller that must fail its scenario.
 use crate::common::*;
+use crate::live::Workload;
 use crate::mock::Server;
 use crate::run_live;
 use serde_json::{json, Value};
@@ -27,7 +28,7 @@ impl Checks {
 const SCENARIOS: &[&str] = &[
     "benign", "canary_exfil", "unlisted_host", "write_to_read_host", "request_budget", "token_budget",
     "stop_cuts_upstream", "rebuild_discards_workspace", "credential_scoped", "hud_log_redacted", "slow_model_no_false_lag",
-    "failed_start_leaves_nothing",
+    "failed_start_leaves_nothing", "outside_program",
 ];
 /// (weakness, scenario, the check it must break, checks that must still pass).
 /// A sabotage counts as caught only when its own target check fails while the
@@ -43,6 +44,7 @@ const SABOTAGE: &[(&str, &str, &str, &[&str])] = &[
     ("hud_log_unredacted", "hud_log_redacted", "hud_log_has_no_secrets", &["canary_url_refused"]),
     ("lag_from_receipt", "slow_model_no_false_lag", "no_classifier_signal", &["agent_finished_slowly"]),
     ("start_leak", "failed_start_leaves_nothing", "late_failure_left_nothing", &["rejected_policy_start_failed", "late_failure_start_failed"]),
+    ("writable_root", "outside_program", "supplied_root_is_read_only", &["granted_request_arrived_through_gate", "program_saw_supplied_root"]),
 ];
 
 /// Small enough that the budget runs out within the script's ten calls.
@@ -177,7 +179,7 @@ fn failed_start(weakness: &str, dir: &Path) -> Result<Value, Box<dyn Error>> {
         let path = dir.join(format!("{name}.toml"));
         fs::write(&path, policy)?;
         let before = run_traces();
-        let started = run_live::start(&path, "t", &[], weakness);
+        let started = run_live::start(&path, &Workload::Task("t".into()), &[], weakness);
         let failed = started.is_err();
         let left: Vec<String> = run_traces().into_iter().filter(|t| !before.contains(t)).collect();
         checks.add(&format!("{name}_start_failed"), failed, json!(started.as_ref().err().map(ToString::to_string)));
@@ -198,6 +200,34 @@ fn failed_start(weakness: &str, dir: &Path) -> Result<Value, Box<dyn Error>> {
     Ok(json!({"scenario": "failed_start_leaves_nothing", "weakness": weakness, "passed": checks.passed(), "final_mode": null, "checks": checks.0, "live": null}))
 }
 
+/// A root directory for an outside program, assembled the way a user would: this
+/// binary at /bin/probe with the loader and libraries the resolver lists for it,
+/// copied in at their paths. Also a directory anyone may write to (only the
+/// read-only mount stops a write there), a symlink, and decoys named like two of the
+/// sandbox's own entries, which the sandbox's entries must win over.
+fn program_root(root: &Path) -> Result<(), Box<dyn Error>> {
+    let exe = std::env::current_exe()?;
+    let plan = crate::sandbox_view::plan(&fs::read(&exe)?, Path::new("/"))?;
+    let inside = |path: &Path| root.join(path.strip_prefix("/").unwrap_or(path));
+    fs::create_dir_all(root)?;
+    for (path, entry) in &plan {
+        match entry {
+            crate::sandbox_view::Entry::Dir => fs::create_dir_all(inside(path))?,
+            crate::sandbox_view::Entry::Symlink(target) => std::os::unix::fs::symlink(target, inside(path))?,
+            crate::sandbox_view::Entry::File => drop(fs::copy(path, inside(path))?),
+        }
+    }
+    fs::create_dir_all(root.join("bin"))?;
+    fs::copy(&exe, root.join("bin/probe"))?;
+    fs::create_dir_all(root.join("data"))?;
+    fs::set_permissions(root.join("data"), std::os::unix::fs::PermissionsExt::from_mode(0o777))?;
+    std::os::unix::fs::symlink("bin", root.join("link"))?;
+    fs::create_dir_all(root.join("tmp"))?;
+    fs::write(root.join("tmp/decoy"), "from the supplied root")?;
+    fs::write(root.join("agent"), "from the supplied root")?;
+    Ok(())
+}
+
 fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn Error>> {
     let dir = work.join(format!("{scenario}-{weakness}"));
     let _ = fs::remove_dir_all(&dir);
@@ -216,8 +246,16 @@ fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn
     let script_text = serde_json::to_string(&script(scenario, &write.url(), &read.url(), &unlisted.url()))?.replace("CANARY_FILE", &dir.join("canary.txt").display().to_string());
     fs::write(dir.join("script.json"), script_text)?;
     let model = Server::start("mock-model", &dir.join("script.json"), dir.join("model.jsonl"))?;
-    fs::write(dir.join("policy.toml"), policy(&model.url(), &write.url(), &read.url(), scenario, &dir.join("seed")))?;
-    let mut run = run_live::start(&dir.join("policy.toml"), "Work through the task.", &[("FIXTURE_TOKEN".into(), token.clone())], weakness)?;
+    let mut policy_text = policy(&model.url(), &write.url(), &read.url(), scenario, &dir.join("seed"));
+    let workload = if scenario == "outside_program" {
+        program_root(&dir.join("root"))?;
+        policy_text += &format!("\n[root]\ndir = \"{}\"\n", dir.join("root").display());
+        Workload::Program(["/bin/probe", "probe-root", &format!("{}/index.html", write.url()), "/data/probe", "/probe"].map(String::from).to_vec())
+    } else {
+        Workload::Task("Work through the task.".into())
+    };
+    fs::write(dir.join("policy.toml"), policy_text)?;
+    let mut run = run_live::start(&dir.join("policy.toml"), &workload, &[("FIXTURE_TOKEN".into(), token.clone())], weakness)?;
     let mut checks = Checks(Vec::new());
     let mut marker = None;
     match scenario {
@@ -356,6 +394,23 @@ fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn
             checks.add("no_inference_after_stop", late(model.try_entries()?) == Some(0), json!(late(model.try_entries()?)));
             checks.add("no_upstream_request_after_stop", late(write.try_entries()?) == Some(0), json!(late(write.try_entries()?)));
             checks.add("positive_control_requests_before_stop", write.try_entries()?.len() >= 2, json!(write.try_entries()?.len()));
+        }
+        "outside_program" => {
+            // From outside the program: the server got the request with the credential,
+            // which only the gateway holds, and the controller counted it.
+            let through_gate = writes.iter().any(|e| e["method"] == "GET" && e["path"] == "/index.html"
+                && e["headers"]["authorization"] == json!(format!("Bearer {token}")));
+            let counted = report["live"]["used"][write.url()]["requests"].as_u64().unwrap_or(0);
+            checks.add("granted_request_arrived_through_gate", through_gate && counted >= 1, json!({"server": writes, "counted": counted}));
+            let probe = transcript.iter().find(|e| e["event"] == "probe_root").map_or(Value::Null, |e| e["value"].clone());
+            // What was supplied, less the names the sandbox keeps for itself, plus those.
+            let mut expected: Vec<String> = fs::read_dir(dir.join("root"))?.flatten().map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| !crate::sandbox::RESERVED.contains(&n.as_str())).chain(["proc", "tmp", "workspace", "gateway.sock"].map(String::from)).collect();
+            expected.sort();
+            checks.add("program_saw_supplied_root", probe["root"] == json!(expected), json!({"seen": probe["root"], "expected": expected}));
+            checks.add("sandbox_entries_win_over_supplied", probe["tmp"].as_array().is_some_and(|t| !t.contains(&json!("decoy"))), probe["tmp"].clone());
+            let refused = probe["write_errors"].as_object().is_some_and(|w| w.len() == 2 && w.values().all(|e| e == libc::EROFS));
+            checks.add("supplied_root_is_read_only", refused && !dir.join("root/data/probe").exists(), probe["write_errors"].clone());
         }
         "credential_scoped" => {
             let reads = read.try_entries()?;

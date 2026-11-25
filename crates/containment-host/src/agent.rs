@@ -337,8 +337,10 @@ fn churn(gateway: &str) {
 }
 
 pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
-    let [gateway, scenario, probe] = args else { return Err("agent arguments are invalid".into()) };
+    let [scenario, probe] = args else { return Err("agent arguments are invalid".into()) };
     let probe: Value = serde_json::from_str(probe)?;
+    // The sandbox tells every program where its gateway is the same way.
+    let gateway = &std::env::var("VAC_GATE").map_err(|_| "VAC_GATE is not set")?;
     // SAFETY: getuid has no preconditions.
     say("started", json!({"uid": unsafe { libc::getuid() }, "pid": std::process::id()}));
     match scenario.as_str() {
