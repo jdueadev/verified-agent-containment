@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // Replays Rust kernel traces through the Bend kernel compiled to JavaScript.
 import { readFileSync } from "node:fs";
+import { fields, groups } from "./fingerprints.mjs";
 const [moduleFile, casesFile] = process.argv.slice(2);
 if (!moduleFile || !casesFile) throw new Error("usage: differential.mjs KERNEL_MJS CASES_JSONL");
 const exports_ = (await import(new URL(moduleFile, `file://${process.cwd()}/`).href)).default;
@@ -32,6 +33,7 @@ const plan = (value) => {
   return out;
 };
 let sequences = 0, transitions = 0;
+const found = groups();
 for (const line of readFileSync(casesFile, "utf8").trim().split("\n")) {
   const item = JSON.parse(line);
   sequences += 1;
@@ -39,16 +41,17 @@ for (const line of readFileSync(casesFile, "utf8").trim().split("\n")) {
   let control = tag("ControlState", { mode: tag(modes[item.initial.mode]), deadline: item.initial.deadline, clock: item.initial.clock, reset_counter: item.initial.counter });
   for (const expected of item.steps) {
     transitions += 1;
+    const fromMode = modeNames[control.mode.$];
     const result = step(config, control, event(expected.event));
     control = result.control;
     const gotMode = modeNames[control.mode.$], gotPlan = plan(result.actions);
     const a = expected.access;
     const request = tag("AccessRequest", { kind: tag(a.kind === "egress" ? "EgressAccess" : "SecretAccess"), granted: BOOL(a.granted), baseline: BOOL(a.baseline) });
     const allowed = unbool(authorize(expected.event.now, control, request));
-    if (gotMode !== expected.mode || control.deadline !== expected.deadline || control.clock !== expected.clock || control.reset_counter !== expected.counter || JSON.stringify(gotPlan) !== JSON.stringify(expected.actions) || allowed !== a.allowed) {
-      console.error(JSON.stringify({ mismatch: true, event: expected.event, rust: expected, bend: { mode: gotMode, deadline: control.deadline, clock: control.clock, counter: control.reset_counter, actions: gotPlan, allowed } }));
-      process.exit(1);
-    }
+    const want = { mode: expected.mode, deadline: expected.deadline, clock: expected.clock, counter: expected.counter, actions: expected.actions, allowed: a.allowed };
+    const got = { mode: gotMode, deadline: control.deadline, clock: control.clock, counter: control.reset_counter, actions: gotPlan, allowed };
+    const differing = fields(want, got);
+    if (differing.length) found.add(expected.event, fromMode, differing, { event: expected.event, rust: want, bend: got });
   }
 }
-console.log(JSON.stringify({ sequences, transitions, mismatches: 0 }));
+found.finish({ sequences, transitions });
