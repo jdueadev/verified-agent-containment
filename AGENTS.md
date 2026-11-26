@@ -26,6 +26,9 @@ On a pull request, the required `check` workflow runs the same checks. It lives 
 - Lab results count only when `tools/lab_evidence.py verify` accepts them: a full pass, sealed and signed by the `lab` workflow. A lab run on your own machine is for finding out, not for proving.
 - Do not weaken or delete a check, law, mutant or scenario to make something pass. If one is wrong, say so in the pull request.
 - Before a new AgentDojo run folder is committed, compare it with the last one: `uv run tools/eval_diff.py OLD NEW --expected evals/agentdojo/expected-differences.toml`. Each fingerprint is fixed or listed there with its reason. A new entry there needs the owner, like a change to `claims.toml`.
+- A pull request that removes a check, law, mutant, Kani harness, test or scenario names each one in `ci/verifier-removals.toml` with the reason. `tools/verifier_ratchet.py`, run from `main`'s copy, refuses it otherwise.
+- Making two outputs match by copying the expected value in (a constant, a fixture, a grant) is not a fix. Find why they differ.
+- A correction found in review becomes a check in the same pull request: a test, a law, a mutant, a scenario or an entry in `evals/agentdojo/expected-differences.toml`. If it cannot, add a row to the run's decision log under `docs/runs/` saying why.
 - Python is run with `uv` (`uv run tools/<name>.py`). The Python version is in `.python-version`; every other tool version is in `ci/pins.env` and `rust-toolchain.toml`.
 - Run the root lab only in a disposable Linux or WSL2 machine.
 
