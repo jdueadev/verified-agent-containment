@@ -8,9 +8,11 @@ This repository is a containment controller for AI agents. The work that matters
 scripts/factory.sh check
 ```
 
-It builds the pinned image and runs `scripts/check.sh` inside it: the kernel-purity and sabotage checks, the `unwrap`/`expect` ratchet on the host, the throwaway-marker check, the Bend proofs, clippy and tests for both feature sets, the Rust-to-Bend and Rust-to-wasm differentials, the mutation check, the TLA+ model, and the tool tests. Results go to `target/verify/`. If you have the tools installed, `scripts/check.sh` runs the same thing directly.
+It builds the pinned image and runs `scripts/check.sh` inside it: ShellCheck and cargo-deny's offline checks (`scripts/lint.sh`), the kernel-purity and sabotage checks, the `unwrap`/`expect` ratchet on the host, the throwaway-marker check, the Bend proofs, clippy and tests for both feature sets, the Rust-to-Bend and Rust-to-wasm differentials, the mutation check, the TLA+ model, and the tool tests. Results go to `target/verify/`. If you have the tools installed, `scripts/check.sh` runs the same thing directly.
 
 A change to `crates/containment-host/src/controller/admission.rs`, `controller/gate.rs` or the kernel's `authorize` also needs `scripts/kani.sh`, the Kani proofs of the gateway's admission (`.claude/skills/verify-gateway-admission/SKILL.md`). `scripts/factory.sh kani` runs it in the factory's `kani` image, with no network; `check` does not run it. The `kani` workflow runs it on every pull request and push to `main`.
+
+RustSec advisories need the network, so they are not in `check`: `scripts/advisories.sh` runs them, and the `supply-chain` workflow runs it daily and when the dependencies change.
 
 `scripts/factory.sh verdict` rechecks the proofs with Lean. `scripts/factory.sh lab` runs the root attack and live suites in a privileged container; only on a disposable machine. The `lab` workflow runs it on a GitHub runner for every pull request and push to `main`, and signs the results; `docs/verification.md` says how to check a run.
 

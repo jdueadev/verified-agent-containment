@@ -22,6 +22,8 @@ usage() {
 }
 
 build() {
+  # FACTORY_BUILD_OPTIONS holds several options, so it is split on spaces on purpose.
+  # shellcheck disable=SC2086
   "$engine" build ${FACTORY_BUILD_OPTIONS:-} -f ci/factory.Dockerfile "${pins[@]}" --target "$1" -t "$image:$1" .
 }
 

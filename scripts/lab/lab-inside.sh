@@ -134,12 +134,15 @@ RUSTC_ON_PATH="$(command -v rustc)" || fail "rustc is not on PATH"
   echo "rustup active toolchain: $ACTIVE"
   echo "rustc path: $RUSTC_PATH"
   echo "rustc on PATH: $RUSTC_ON_PATH (rustup proxy $RUSTUP_BIN)"
+  # sed prefixes every line of a multi-line value; ${var//} cannot anchor per line.
+  # shellcheck disable=SC2001
   sed 's/^/rustc: /' <<<"$RUSTC_VV"
   echo "cargo: $CARGO_V"
   echo "Cargo.lock sha256: $LOCK_SHA"
   echo ".cargo/config.toml sha256: $CFG_SHA"
   echo "cc: $CC_V"
   echo "ld: $LD_V"
+  # shellcheck disable=SC2001
   sed 's/^/package: /' <<<"$PKGS"
   echo "build overrides: none set (pattern checked before the build: $BUILD_OVERRIDES)"
 } > "$RES/environment.txt"
@@ -178,7 +181,7 @@ SAB_SHA="$(sha256sum "$SAB_BIN" | cut -d' ' -f1)" || fail "could not hash $SAB_B
 } >> "$RES/environment.txt" 2>&1
 say "  built $COMMIT with Rust $PIN; environment in results/$STAMP/environment.txt"
 
-# shellcheck source=pins.env
+# shellcheck source=scripts/lab/pins.env
 . /root/vac/scripts/lab/pins.env
 
 # ---- 5. suites, no waivers ----------------------------------------------------
@@ -245,6 +248,8 @@ if [ ! -x /root/llama.cpp/build/bin/llama-server ]; then
   else
     [ "$GPU" = cpu ] || say "  CUDA build failed; building for CPU instead"
     GPU=cpu; rm -rf build
+    # fail runs if either cmake step fails, which is the intent.
+    # shellcheck disable=SC2015
     cmake -B build -DLLAMA_CURL=OFF >/dev/null && cmake --build build --config Release -j "$JOBS" --target llama-server >/dev/null \
       || fail "llama.cpp build failed"
     say "  built llama-server for CPU ($(git rev-parse --short HEAD))"

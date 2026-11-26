@@ -18,6 +18,8 @@ if [ ! -w /sys/fs/cgroup/cgroup.subtree_control ]; then
 fi
 mkdir -p /sys/fs/cgroup/factory-lab-shell
 echo $$ > /sys/fs/cgroup/factory-lab-shell/cgroup.procs
+# The file is one line of space-separated names, so splitting on words is the intent.
+# shellcheck disable=SC2013
 for controller in $(cat /sys/fs/cgroup/cgroup.controllers); do
   echo "+$controller" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null \
     || echo "factory-lab: could not delegate the $controller controller" >&2

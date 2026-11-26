@@ -102,6 +102,40 @@ RUN mkdir -p /opt/tla; \
     echo "${TLA_SHA256}  ${TLA2TOOLS}" | sha256sum --check --strict
 
 
+FROM os AS get-shellcheck
+ARG TARGETARCH
+ARG SHELLCHECK_VERSION
+ARG FACTORY_SHELLCHECK_SHA256_AMD64
+ARG FACTORY_SHELLCHECK_SHA256_ARM64
+RUN case "$TARGETARCH" in \
+      amd64) arch=x86_64; sum="$FACTORY_SHELLCHECK_SHA256_AMD64" ;; \
+      arm64) arch=aarch64; sum="$FACTORY_SHELLCHECK_SHA256_ARM64" ;; \
+      *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/shellcheck.tar.xz "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.${arch}.tar.xz"; \
+    echo "${sum}  /tmp/shellcheck.tar.xz" | sha256sum --check --strict; \
+    tar -xJf /tmp/shellcheck.tar.xz -C /tmp; \
+    install -D -m 0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /out/shellcheck; \
+    /out/shellcheck --version
+
+
+FROM os AS get-cargo-deny
+ARG TARGETARCH
+ARG CARGO_DENY_VERSION
+ARG FACTORY_CARGO_DENY_SHA256_AMD64
+ARG FACTORY_CARGO_DENY_SHA256_ARM64
+RUN case "$TARGETARCH" in \
+      amd64) triple=x86_64-unknown-linux-musl; sum="$FACTORY_CARGO_DENY_SHA256_AMD64" ;; \
+      arm64) triple=aarch64-unknown-linux-musl; sum="$FACTORY_CARGO_DENY_SHA256_ARM64" ;; \
+      *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/cargo-deny.tar.gz "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/cargo-deny-${CARGO_DENY_VERSION}-${triple}.tar.gz"; \
+    echo "${sum}  /tmp/cargo-deny.tar.gz" | sha256sum --check --strict; \
+    tar -xzf /tmp/cargo-deny.tar.gz -C /tmp; \
+    install -D -m 0755 "/tmp/cargo-deny-${CARGO_DENY_VERSION}-${triple}/cargo-deny" /out/cargo-deny; \
+    /out/cargo-deny --version
+
+
 FROM os AS get-python
 ARG TARGETARCH
 ARG FACTORY_UV_VERSION
@@ -212,6 +246,8 @@ RUN apt-get update; \
     rm -rf /var/lib/apt/lists/*; \
     java -version
 COPY --from=get-tla /opt/tla /opt/tla
+COPY --from=get-shellcheck /out/shellcheck /usr/local/bin/shellcheck
+COPY --from=get-cargo-deny /out/cargo-deny /usr/local/bin/cargo-deny
 COPY --from=get-node /opt/node /opt/node
 COPY --from=get-python /opt/python /opt/python
 COPY --from=get-python /out/uv /usr/local/bin/uv

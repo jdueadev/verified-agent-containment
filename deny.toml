@@ -1,0 +1,27 @@
+# cargo-deny policy for the workspace. Its version is in ci/pins.env.
+#   scripts/check.sh runs `cargo deny check bans sources` offline on every change.
+#   scripts/advisories.sh runs `cargo deny check advisories` against the RustSec
+#   database, which needs the network; the advisories workflow runs it.
+# Licenses are not checked yet.
+
+[graph]
+all-features = true
+
+[advisories]
+# Every RustSec advisory fails, unmaintained and unsound ones included. A waiver
+# goes in `ignore` with the advisory id and a reason.
+unmaintained = "all"
+yanked = "deny"
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# The workspace crates depend on each other by path and are not published.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

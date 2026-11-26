@@ -45,7 +45,7 @@ jobs:
         run: scripts/factory.sh build check proofs dev
 
       - name: Tool versions in the check image, which has no Lean
-        run: docker run --rm vac-factory:check bash -euo pipefail -c 'cargo --version; rustup target list --installed; bun --version; node --version; java -version; uv --version; uv run --no-project python --version; command -v bend; if command -v python3; then echo "the check image contains a system python3" >&2; exit 1; fi; if command -v lean; then echo "the check image contains Lean" >&2; exit 1; fi'
+        run: docker run --rm vac-factory:check bash -euo pipefail -c 'cargo --version; rustup target list --installed; bun --version; node --version; java -version; uv --version; uv run --no-project python --version; command -v bend; shellcheck --version; cargo-deny --version; if command -v python3; then echo "the check image contains a system python3" >&2; exit 1; fi; if command -v lean; then echo "the check image contains Lean" >&2; exit 1; fi'
 
       - name: Tool versions in the proofs and dev images
         run: |

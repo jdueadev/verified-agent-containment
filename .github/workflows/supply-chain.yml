@@ -1,0 +1,60 @@
+name: supply-chain
+
+# ShellCheck and cargo-deny's offline checks (scripts/lint.sh), and the RustSec
+# advisories (scripts/advisories.sh), in the check image built from this
+# checkout. The advisories run here, not in scripts/check.sh: the database
+# changes every day whatever this repository does, and the checks run with no
+# network. The daily run is what reports a new advisory against an unchanged
+# Cargo.lock.
+
+on:
+  pull_request:
+    paths:
+      - "**/*.sh"
+      - Cargo.lock
+      - Cargo.toml
+      - crates/*/Cargo.toml
+      - deny.toml
+      - ci/factory.Dockerfile
+      - ci/pins.env
+      - .github/workflows/supply-chain.yml
+  push:
+    branches: [main]
+    paths:
+      - "**/*.sh"
+      - Cargo.lock
+      - Cargo.toml
+      - crates/*/Cargo.toml
+      - deny.toml
+      - ci/factory.Dockerfile
+      - ci/pins.env
+      - .github/workflows/supply-chain.yml
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supply-chain-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Build the check image
+        run: scripts/factory.sh build check
+
+      - name: ShellCheck, cargo-deny bans and sources, with no network
+        run: docker run --rm --network=none -e CARGO_NET_OFFLINE=true -v "$PWD:/work" vac-factory:check scripts/lint.sh
+
+      - name: RustSec advisories, and the canary that must be refused
+        if: ${{ !cancelled() }}
+        run: docker run --rm -v "$PWD:/work" vac-factory:check scripts/advisories.sh
