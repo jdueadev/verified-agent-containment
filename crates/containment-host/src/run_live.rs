@@ -248,7 +248,7 @@ pub fn wait(run: &mut LiveRun, mut on_line: impl FnMut(&Value), mut on_mode: imp
 }
 
 /// Saves what the run in `root` left to `out`: the report if there is one, the
-/// transcript, the HUD's events and a fail-stop record. A file this run did not
+/// transcript, the HUD's events, the kernel trace and a fail-stop record. A file this run did not
 /// leave is removed from `out`, so `out` describes this run alone. Then the run
 /// directory goes. A failed copy keeps it, so nothing is lost.
 pub fn save(root: &Path, report: Option<&Value>, out: &Path) -> Result<(), Box<dyn Error>> {
@@ -257,7 +257,7 @@ pub fn save(root: &Path, report: Option<&Value>, out: &Path) -> Result<(), Box<d
         Some(report) => write_replace(&out.join("report.json"), &serde_json::to_vec_pretty(report)?)?,
         None => remove_stale(&out.join("report.json"))?,
     }
-    for (from, to) in [("agent.jsonl", "transcript.jsonl"), ("events.jsonl", "events.jsonl"), ("failstop.json", "failstop.json")] {
+    for (from, to) in [("agent.jsonl", "transcript.jsonl"), ("events.jsonl", "events.jsonl"), ("kernel.jsonl", "kernel.jsonl"), ("failstop.json", "failstop.json")] {
         let source = root.join("private").join(from);
         if source.exists() {
             fs::copy(&source, out.join(to)).map_err(|e| format!("saving {to}: {e}; the run is still in {}", root.display()))?;
@@ -347,7 +347,7 @@ struct LiveArgs {
     /// The task given to the built-in agent
     #[arg(long, required_unless_present = "program", conflicts_with = "program")]
     task: Option<String>,
-    /// Where to save report.json, transcript.jsonl, events.jsonl and any failstop.json [default: results/live/<run id>]
+    /// Where to save report.json, transcript.jsonl, events.jsonl, kernel.jsonl and any failstop.json [default: results/live/<run id>]
     #[arg(long)]
     out: Option<PathBuf>,
     /// Also serve the read-only HUD on this local port (0 picks a free one)

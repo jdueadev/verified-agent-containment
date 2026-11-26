@@ -95,6 +95,16 @@ sudo target/release/containment-lab ctl --run $R stop
 
 Each run saves `report.json` and `transcript.jsonl` under `results/live/`.
 
+It also saves `kernel.jsonl`: every step the kernel took, whether or not the mode changed. Replay it through the Bend and wasm kernels like the random differential traces:
+
+```bash
+target/release/containment-lab kernel-cases results/live/<run id>/kernel.jsonl > kernel-cases.jsonl
+bun tools/differential.mjs target/generated/kernel.mjs kernel-cases.jsonl
+node tools/wasm_check.mjs target/wasm32-unknown-unknown/release/containment_wasm.wasm kernel-cases.jsonl
+```
+
+A gap in the trace starts a new case, so a replay never joins two states the kernel did not join.
+
 ## 5. Red-team the model
 
 ```bash
