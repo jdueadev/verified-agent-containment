@@ -22,6 +22,9 @@ uv run tools/generate_proof.py --check
 (cd formal && bend PROOF.bend --check-only)
 bend formal/kernel.bend -o target/generated/kernel.mjs >/dev/null
 
+# The kernel and wasm crates are rustfmt-clean. The --config repeats what their own
+# rustfmt.toml says, so losing that file cannot turn this into a no-op.
+cargo fmt --check -p containment-kernel -p containment-wasm -- --config disable_all_formatting=false
 cargo clippy -q --locked -p containment-kernel -p containment-host --all-targets -- -D warnings
 cargo test -q --locked -p containment-kernel
 cargo test -q --locked -p containment-host

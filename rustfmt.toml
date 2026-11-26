@@ -2,4 +2,6 @@
 # reformatting a file listed in claims.toml makes its lab evidence stale. This
 # guard makes a reflexive `cargo fmt` a no-op until the sweeps tracked in the
 # issue tracker land with fresh evidence. Do not remove it in an unrelated change.
+# The kernel and wasm crates are formatted already and override this guard with
+# their own rustfmt.toml (#56).
 disable_all_formatting = true

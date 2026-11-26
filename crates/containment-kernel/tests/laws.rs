@@ -1,15 +1,36 @@
 use containment_kernel::*;
 
-const MODES: [Mode; 5] = [Mode::Run, Mode::Restrict, Mode::Hold, Mode::Freeze, Mode::Kill];
+const MODES: [Mode; 5] = [
+    Mode::Run,
+    Mode::Restrict,
+    Mode::Hold,
+    Mode::Freeze,
+    Mode::Kill,
+];
 const LEVELS: [Level; 4] = [Level::Restrict, Level::Hold, Level::Freeze, Level::Kill];
-const CONFIG: Config = Config { max_lease_ms: 5, freeze_grace_ms: 3 };
+const CONFIG: Config = Config {
+    max_lease_ms: 5,
+    freeze_grace_ms: 3,
+};
 
 fn control(mode: Mode, deadline_ms: u64, clock_ms: u64, reset_counter: u64) -> Control {
-    Control { mode, deadline_ms, clock_ms, reset_counter }
+    Control {
+        mode,
+        deadline_ms,
+        clock_ms,
+        reset_counter,
+    }
 }
 
 fn reset(now_ms: u64, signed: bool, counter: u64, from_mode: Mode, not_after_ms: u64) -> Event {
-    Event::Reset { now_ms, signed, counter, from_mode, not_after_ms, ttl_ms: 100 }
+    Event::Reset {
+        now_ms,
+        signed,
+        counter,
+        from_mode,
+        not_after_ms,
+        ttl_ms: 100,
+    }
 }
 
 fn events(now_ms: u64, ttl_ms: u64) -> Vec<Event> {
@@ -19,7 +40,14 @@ fn events(now_ms: u64, ttl_ms: u64) -> Vec<Event> {
         Event::AgentRequest { now_ms },
     ];
     for from_mode in MODES {
-        out.push(Event::Reset { now_ms, signed: false, counter: 9, from_mode, not_after_ms: 9, ttl_ms });
+        out.push(Event::Reset {
+            now_ms,
+            signed: false,
+            counter: 9,
+            from_mode,
+            not_after_ms: 9,
+            ttl_ms,
+        });
     }
     for level in LEVELS {
         out.push(Event::Classifier { now_ms, level });
@@ -36,7 +64,12 @@ fn each_case(mut check: impl FnMut(Control, Event, u64, StepResult)) {
                     for ttl_ms in [0, 3, 9] {
                         for event in events(now_ms, ttl_ms) {
                             let before = control(mode, deadline_ms, clock_ms, 2);
-                            check(before, event, effective_time(now_ms, clock_ms), step(CONFIG, before, event));
+                            check(
+                                before,
+                                event,
+                                effective_time(now_ms, clock_ms),
+                                step(CONFIG, before, event),
+                            );
                         }
                     }
                 }
@@ -48,11 +81,17 @@ fn each_case(mut check: impl FnMut(Control, Event, u64, StepResult)) {
 #[test]
 fn unsigned_events_keep_or_tighten_and_fail_closed() {
     each_case(|before, event, at, result| {
-        assert!(result.control.mode >= before.mode, "{before:?} {event:?} {result:?}");
+        assert!(
+            result.control.mode >= before.mode,
+            "{before:?} {event:?} {result:?}"
+        );
         assert!(result.control.clock_ms >= before.clock_ms);
         assert_eq!(result.control.reset_counter, before.reset_counter);
         if at >= before.deadline_ms {
-            assert!(result.control.mode >= Mode::Hold, "{before:?} {event:?} {result:?}");
+            assert!(
+                result.control.mode >= Mode::Hold,
+                "{before:?} {event:?} {result:?}"
+            );
         }
     });
 }
@@ -75,7 +114,11 @@ fn every_stop_has_a_real_enforcement_plan() {
 fn classifier_stops_at_hold_and_hold_does_not_expire() {
     for mode in [Mode::Run, Mode::Restrict] {
         for level in [Level::Hold, Level::Freeze, Level::Kill] {
-            let result = step(CONFIG, control(mode, 10, 0, 0), Event::Classifier { now_ms: 1, level });
+            let result = step(
+                CONFIG,
+                control(mode, 10, 0, 0),
+                Event::Classifier { now_ms: 1, level },
+            );
             assert_eq!(result.control.mode, Mode::Hold);
             let later = step(CONFIG, result.control, Event::Tick { now_ms: u64::MAX });
             assert_eq!(later.control.mode, Mode::Hold);
@@ -86,9 +129,29 @@ fn classifier_stops_at_hold_and_hold_does_not_expire() {
 
 #[test]
 fn freeze_escalates_at_its_fixed_deadline() {
-    let frozen = step(CONFIG, control(Mode::Run, 10, 0, 0), Event::HardRule { now_ms: 1, level: Level::Freeze }).control;
+    let frozen = step(
+        CONFIG,
+        control(Mode::Run, 10, 0, 0),
+        Event::HardRule {
+            now_ms: 1,
+            level: Level::Freeze,
+        },
+    )
+    .control;
     assert_eq!((frozen.mode, frozen.deadline_ms), (Mode::Freeze, 4));
-    assert_eq!(step(CONFIG, frozen, Event::Renew { now_ms: 2, ttl_ms: 5 }).control.deadline_ms, 4);
+    assert_eq!(
+        step(
+            CONFIG,
+            frozen,
+            Event::Renew {
+                now_ms: 2,
+                ttl_ms: 5
+            }
+        )
+        .control
+        .deadline_ms,
+        4
+    );
     let killed = step(CONFIG, frozen, Event::Tick { now_ms: 4 });
     assert_eq!(killed.control.mode, Mode::Kill);
     assert!(killed.actions.contains(Action::KillProcesses));
@@ -97,8 +160,24 @@ fn freeze_escalates_at_its_fixed_deadline() {
 #[test]
 fn stale_time_cannot_revive_authority() {
     let state = control(Mode::Run, 5, 6, 0);
-    assert_eq!(step(CONFIG, state, Event::Renew { now_ms: 1, ttl_ms: 5 }).control.mode, Mode::Freeze);
-    let request = AccessRequest { kind: AccessKind::Egress, granted: true, baseline: true };
+    assert_eq!(
+        step(
+            CONFIG,
+            state,
+            Event::Renew {
+                now_ms: 1,
+                ttl_ms: 5
+            }
+        )
+        .control
+        .mode,
+        Mode::Freeze
+    );
+    let request = AccessRequest {
+        kind: AccessKind::Egress,
+        granted: true,
+        baseline: true,
+    };
     assert!(!authorize(1, state, request));
     assert!(authorize(4, control(Mode::Run, 5, 0, 0), request));
     assert!(!authorize(5, control(Mode::Run, 5, 0, 0), request));
@@ -123,7 +202,11 @@ fn reset_checks_every_signed_field() {
         assert_eq!(result.control.mode, Mode::Kill, "{bad:?}");
         assert_eq!(result.control.reset_counter, 4);
     }
-    let run = step(CONFIG, control(Mode::Run, 10, 0, 0), reset(1, true, 1, Mode::Run, 10));
+    let run = step(
+        CONFIG,
+        control(Mode::Run, 10, 0, 0),
+        reset(1, true, 1, Mode::Run, 10),
+    );
     assert_eq!(run.control.deadline_ms, 10);
     assert_eq!(run.control.reset_counter, 0);
 }

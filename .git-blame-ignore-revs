@@ -1,0 +1,5 @@
+# Commits that only reformat code. Use with
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# Format the kernel and wasm crates with rustfmt (#56)
+ad950da20f1b2bdbf7a262ef0901330bbb5cc68f
