@@ -979,7 +979,10 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
          fs::read_to_string(generation.path.join("cgroup.procs")).unwrap_or_default().lines().count(), generation.number, generation.limits())
     };
     let report = json!({
-        "final_mode": mode_name(final_control.mode), "exit_cause": exit_cause, "program": program.poll().to_json(), "populated": populated, "frozen": frozen, "survivors": survivors, "generation": generation, "limits": limits, "authority_pending": authority_pending_at_exit,
+        "final_mode": mode_name(final_control.mode), "exit_cause": exit_cause, "program": program.poll().to_json(),
+        // The supplied root, as the sandbox bound it: every entry nosuid and nodev, read-only unless sabotaged.
+        "root": shared.spec.program.root.as_ref().map(|dir| json!({"dir": dir, "read_only": !shared.spec.writable_root, "nosuid": true, "nodev": true})),
+        "populated": populated, "frozen": frozen, "survivors": survivors, "generation": generation, "limits": limits, "authority_pending": authority_pending_at_exit,
         "transitions": *lock(&shared.transitions), "actions": *lock(&shared.actions), "classifier_signals": *lock(&shared.classifier_signals),
         "system_one_probe": *lock(&shared.s1_probe), "system_one_limits": *lock(&shared.s1_limits),
         "live": shared.live.as_ref().map(|_| shared.gate.lease_report()), "system_one_restarts": shared.s1_restarts.load(Ordering::Relaxed), "log_overflow": shared.log_overflow.load(Ordering::Relaxed),

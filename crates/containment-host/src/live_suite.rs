@@ -522,6 +522,8 @@ fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn
             checks.add("sandbox_entries_win_over_supplied", probe["tmp"].as_array().is_some_and(|t| !t.contains(&json!("decoy"))), probe["tmp"].clone());
             let refused = probe["write_errors"].as_object().is_some_and(|w| w.len() == 2 && w.values().all(|e| e == libc::EROFS));
             checks.add("supplied_root_is_read_only", refused && !dir.join("root/data/probe").exists(), probe["write_errors"].clone());
+            let listed = json!({"dir": fs::canonicalize(dir.join("root"))?, "read_only": true, "nosuid": true, "nodev": true});
+            checks.add("report_lists_supplied_root", report["root"] == listed, json!({"report": report["root"], "expected": listed}));
             // The /dev that ordinary programs assume, and nothing of the host's: no tty,
             // no console, no disk, not the supplied root's decoy.
             let devices = ["full", "null", "random", "shm", "urandom", "zero"];
@@ -587,8 +589,9 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         // SAFETY: set before any controller is started.
         unsafe { std::env::set_var(LIMITS_WAIVER_ENV, "1") };
     }
-    // Each invocation has its own scratch directory, removed when it ends.
-    let work = PathBuf::from(format!("/run/verified-agent-containment/live-suite-{}", std::process::id()));
+    // Each invocation has its own scratch directory, removed when it ends. Not under
+    // /run: it holds the outside program's supplied root, which may not lie there.
+    let work = PathBuf::from(format!("/var/lib/verified-agent-containment/live-suite-{}", std::process::id()));
     fs::create_dir_all(&work)?;
     struct RemoveDir(PathBuf);
     impl Drop for RemoveDir {
