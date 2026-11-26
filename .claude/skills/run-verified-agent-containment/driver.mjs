@@ -85,6 +85,11 @@ async function browser() {
 
 async function sim() {
   const page = resolve(flag("--page", join(root, "web/dist/agent-containment-simulator.html")));
+  // The page declares no charset, and headless Chromium reads a file:// page
+  // without one as Latin-1 (arrows and middle dots turn into mojibake). Serve it
+  // over loopback HTTP as UTF-8 instead. --file-url loads it the raw way.
+  // Take the flag out of argv before the step check, or it hides the default flow.
+  const raw = argv.includes("--file-url") && argv.splice(argv.indexOf("--file-url"), 1);
   // The default flow asserts what it reads; your own steps can too, with expect=.
   const steps = argv.length ? argv : [
     "expect=[aria-current=step]=Run", "ss=1-start",
@@ -92,10 +97,6 @@ async function sim() {
     'click=[data-signal="3"][data-level="3"]', "wait=500", "expect=[aria-current=step]=Kill", "text=#log", "ss=2-after-kill",
     "click=#runAll", "wait=3000", "expect=#runAll=Caught 10 of 10", "ss=3-sabotaged-kernels",
   ];
-  // The page declares no charset, and headless Chromium reads a file:// page
-  // without one as Latin-1 (arrows and middle dots turn into mojibake). Serve it
-  // over loopback HTTP as UTF-8 instead. --file-url loads it the raw way.
-  const raw = argv.includes("--file-url") && argv.splice(argv.indexOf("--file-url"), 1);
   const http = raw ? null : createServer((_, res) => {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(readFileSync(page));
