@@ -10,11 +10,12 @@ while IFS= read -r pin; do pins+=(--build-arg "$pin"); done < <(grep -E '^[A-Z0-
 if [ -n "${FACTORY_BASE_IMAGE:-}" ]; then pins+=(--build-arg "FACTORY_BASE_IMAGE=$FACTORY_BASE_IMAGE"); fi
 
 usage() {
-  echo "usage: scripts/factory.sh build [image...] | shell | check [check.sh options] | verdict | kani [kani.sh options] | lab [repeat]" >&2
-  echo "  build    build the named images, or check, proofs, kani and dev, from ci/factory.Dockerfile" >&2
+  echo "usage: scripts/factory.sh build [image...] | shell | check [check.sh options] | verdict | page | kani [kani.sh options] | lab [repeat]" >&2
+  echo "  build    build the named images, or check, proofs, kani, dev and page, from ci/factory.Dockerfile" >&2
   echo "  shell    open a shell in the dev image with this checkout mounted at /work" >&2
   echo "  check    run scripts/check.sh in the check image" >&2
   echo "  verdict  run scripts/verdict.sh (the Lean recheck) in the proofs image" >&2
+  echo "  page     run scripts/page-check.sh (build the simulator page to target/page/ and drive it) in the page image, with no network" >&2
   echo "  kani     run scripts/kani.sh (the Kani proofs of admission) in the kani image, with no network" >&2
   echo "  lab      run the root attack and live suites in a privileged container" >&2
   echo "           only on a disposable machine: set FACTORY_LAB_DISPOSABLE=1 to confirm" >&2
@@ -33,7 +34,7 @@ case "${1:-}" in
   build)
     shift
     targets=("$@")
-    [ "${#targets[@]}" -gt 0 ] || targets=(check proofs kani dev)
+    [ "${#targets[@]}" -gt 0 ] || targets=(check proofs kani dev page)
     for target in "${targets[@]}"; do build "$target"; done
     ;;
   shell)
@@ -48,6 +49,10 @@ case "${1:-}" in
   verdict)
     build proofs
     exec "$engine" run --rm "${mounts[@]}" "$image:proofs" scripts/verdict.sh
+    ;;
+  page)
+    build page
+    exec "$engine" run --rm --network=none -e CARGO_NET_OFFLINE=true "${mounts[@]}" "$image:page" scripts/page-check.sh
     ;;
   kani)
     shift

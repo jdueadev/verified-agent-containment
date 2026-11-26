@@ -13,6 +13,7 @@ It builds the pinned image and runs `scripts/check.sh` inside it: ShellCheck and
 A change to `crates/containment-host/src/controller/admission.rs`, `controller/gate.rs` or the kernel's `authorize` also needs `scripts/kani.sh`, the Kani proofs of the gateway's admission (`.claude/skills/verify-gateway-admission/SKILL.md`). `scripts/factory.sh kani` runs it in the factory's `kani` image, with no network; `check` does not run it. The `kani` workflow runs it on every pull request and push to `main`.
 
 RustSec advisories need the network, so they are not in `check`: `scripts/advisories.sh` runs them, and the `supply-chain` workflow runs it daily and when the dependencies change.
+A change to the kernel, `crates/containment-wasm`, `web/`, `tools/kernel_mutants.py` or the results the page shows also needs `scripts/factory.sh page`: it builds the browser simulator from the tree into `target/page/` with the pinned binaryen, drives it in the pinned headless Chromium, and fails unless `web/dist/agent-containment-simulator.html` is the page it built. The `page` workflow runs it on every pull request and push to `main`.
 
 `scripts/factory.sh verdict` rechecks the proofs with Lean. `scripts/factory.sh lab` runs the root attack and live suites in a privileged container; only on a disposable machine. The `lab` workflow runs it on a GitHub runner for every pull request and push to `main`, and signs the results; `docs/verification.md` says how to check a run.
 

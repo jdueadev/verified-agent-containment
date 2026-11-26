@@ -1,0 +1,34 @@
+name: page
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: page-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Builds the browser simulator from this checkout with the pinned binaryen,
+  # drives it in the pinned headless Chromium, and fails unless the committed
+  # page is the one the tree builds. It runs in the page image built from this
+  # checkout, not in the required check: that one runs scripts/check.sh in a
+  # published check image that has neither binaryen nor Chromium. Until the
+  # organization's required workflow runs scripts/page-check.sh, this is the job
+  # to require.
+  simulator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Build the page from the tree and drive it, with no network
+        run: scripts/factory.sh page
