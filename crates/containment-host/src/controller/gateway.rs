@@ -283,17 +283,13 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
             if unsent {
                 charge.settle(Cost::default());
             }
-            let timed_out = matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut);
-            return denied(&match (timed_out, live.policy.model.timeout_seconds) {
-                (true, Some(seconds)) => format!("model server: no whole reply within model.timeout_seconds ({seconds} s)"),
-                (true, None) => format!("model server: {e}; to allow slower calls, set model.timeout_seconds in the policy"),
-                (false, _) => format!("model server: {e}"),
-            });
+            return model_failure(&live.secret_values, &e, live.policy.model.timeout_seconds);
         }
     };
-    // The model did the work, so without a JSON reply the reservation stands.
-    let Ok(reply) = serde_json::from_slice::<Value>(&response.body) else {
-        return denied(&format!("model server returned HTTP {} without JSON", response.status));
+    // The model did the work, so without a whole JSON reply the reservation stands.
+    let reply = match model_reply(&response) {
+        Ok(reply) => reply,
+        Err(reason) => return denied(&reason),
     };
     let used = reply["usage"]["total_tokens"].as_u64().unwrap_or((body.len() + response.body.len()) as u64 / 4);
     let spent = charge.settle(Cost { tokens: used, ..cost });
@@ -301,10 +297,60 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
     if grant.limit.admits(&spent, &cost).is_none() {
         shared.apply(Some("budget_tokens"), boot_ns(), |now_ms| Event::HardRule { now_ms, level: Level::Restrict });
     }
+    infer_answer(&live.secret_values, &reply, used, spent.tokens, budget, max_tokens)
+}
+
+/// The agent's view of a failed model call. An error text can quote what the
+/// server sent, so it is redacted like a reply.
+fn model_failure(secrets: &[String], e: &std::io::Error, timeout_seconds: Option<u64>) -> Value {
+    let timed_out = matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut);
+    redact_value(secrets, denied(&match (timed_out, timeout_seconds) {
+        (true, Some(seconds)) => format!("model server: no whole reply within model.timeout_seconds ({seconds} s)"),
+        (true, None) => format!("model server: {e}; to allow slower calls, set model.timeout_seconds in the policy"),
+        (false, _) => format!("model server: {e}"),
+    }))
+}
+
+/// The model's reply, read only when it arrived whole. A reply cut at the
+/// read limit is refused, so no part of a cut body reaches the agent.
+fn model_reply(response: &crate::http::Response) -> Result<Value, String> {
+    if response.truncated {
+        return Err(format!("model server: the reply is longer than the {} bytes the gateway reads", response.body.len()));
+    }
+    serde_json::from_slice(&response.body).map_err(|_| format!("model server returned HTTP {} without JSON", response.status))
+}
+
+/// The agent's view of a model reply. All of it is redacted, the usage
+/// numbers too: `call` and `lease_total` come from the server, which can
+/// echo a numeric credential there.
+fn infer_answer(secrets: &[String], reply: &Value, used: u64, lease_total: u64, budget: u64, max_tokens: u64) -> Value {
     let choice = &reply["choices"][0];
-    let answer = redact(live, json!({"message": choice["message"], "finish_reason": choice["finish_reason"]}));
-    json!({"ok": true, "message": answer["message"], "finish_reason": answer["finish_reason"],
-        "usage": {"call": used, "lease_total": spent.tokens, "budget": budget, "max_tokens": max_tokens}})
+    redact_value(secrets, json!({"ok": true, "message": choice["message"], "finish_reason": choice["finish_reason"],
+        "usage": {"call": used, "lease_total": lease_total, "budget": budget, "max_tokens": max_tokens}}))
+}
+
+/// The text of an upstream body as the agent is given it, before redaction.
+///
+/// Redaction finds whole credentials only. A body cut at the read limit can
+/// end inside one, for example when an origin echoes the request headers and
+/// the agent moves the cut with the length of its path. So a cut body first
+/// loses a trailing partial character (which would otherwise become U+FFFD),
+/// and then any tail that is the start of a credential is replaced by the
+/// marker.
+fn cut_body(secrets: &[String], mut body: Vec<u8>, truncated: bool) -> String {
+    if truncated {
+        let last_char = (body.len().saturating_sub(4)..body.len()).rev().find(|&i| body[i] & 0xc0 != 0x80);
+        if let Some(start) = last_char.filter(|&i| std::str::from_utf8(&body[i..]).is_err_and(|e| e.error_len().is_none())) {
+            body.truncate(start);
+        }
+        // The longest such tail covers every shorter one.
+        let tail = secrets.iter().filter_map(|secret| (1..secret.len()).rev().find(|&n| body.ends_with(&secret.as_bytes()[..n]))).max();
+        if let Some(n) = tail {
+            body.truncate(body.len() - n);
+            body.extend_from_slice(REDACTED.as_bytes());
+        }
+    }
+    String::from_utf8_lossy(&body).into_owned()
 }
 
 /// Removes exact credential values from anything returned to the agent, in
@@ -455,7 +501,7 @@ pub(super) fn live_http(shared: &Shared, live: &LiveState, message: &Value, rece
     match send_on_slot(permit.slot, &url, &method, &headers, body.as_bytes(), crate::http::Limits::WEB) {
         // Sabotage: a cut body is reported whole.
         Ok(r) => redact(live, json!({"ok": true, "status": r.status, "truncated": r.truncated && !shared.weak.live_truncation_hidden(),
-            "body": String::from_utf8_lossy(&r.body)})),
+            "body": cut_body(&live.secret_values, r.body, r.truncated)})),
         Err(e) => redact(live, denied(&format!("upstream: {e}"))),
     }
 }
@@ -468,6 +514,85 @@ mod tests {
         let mut out: Vec<String> = values.iter().map(|v| v.to_string()).collect();
         out.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
         out
+    }
+
+    #[test]
+    fn usage_numbers_from_the_model_server_are_redacted() {
+        let all = secrets(&["424242", "sk-live-9"]);
+        let reply = json!({"choices": [{"message": {"content": "sk-live-9"}, "finish_reason": "stop"}]});
+        let answer = infer_answer(&all, &reply, 424242, 1424242, 5000, 64);
+        assert_eq!(answer["message"], json!({"content": "[redacted]"}));
+        assert_eq!(answer["usage"], json!({"call": "[redacted]", "lease_total": "[redacted]", "budget": 5000, "max_tokens": 64}));
+        assert!(!answer.to_string().contains("424242"), "{answer}");
+    }
+
+    #[test]
+    fn a_model_server_error_text_is_redacted() {
+        let e = std::io::Error::other("upstream said Bearer sk-live-9");
+        for timeout in [None, Some(30)] {
+            let failure = model_failure(&secrets(&["sk-live-9"]), &e, timeout);
+            assert_eq!(failure, json!({"ok": false, "error": "model server: upstream said Bearer [redacted]"}));
+        }
+    }
+
+    #[test]
+    fn a_cut_model_reply_is_refused_even_when_it_parses() {
+        let cut = crate::http::Response { status: 200, body: br#"{"choices": []}  "#.to_vec(), truncated: true };
+        assert!(model_reply(&cut).is_err_and(|e| e.contains("longer than")));
+        let whole = crate::http::Response { truncated: false, ..cut };
+        assert_eq!(model_reply(&whole), Ok(json!({"choices": []})));
+    }
+
+    #[test]
+    fn a_cut_body_loses_a_partial_character_and_a_credential_prefix() {
+        let all = secrets(&["sk-live-9", "cl\u{00e9}f"]);
+        // Only a cut body is touched: a whole body that happens to end like a credential is the upstream's own text.
+        assert_eq!(cut_body(&all, b"see sk-li".to_vec(), false), "see sk-li");
+        assert_eq!(cut_body(&all, b"see sk-li".to_vec(), true), "see [redacted]");
+        assert_eq!(cut_body(&all, b"see s".to_vec(), true), "see [redacted]");
+        // Cut inside the multibyte character of a credential, and inside one that is not.
+        assert_eq!(cut_body(&all, "x cl\u{00e9}".as_bytes()[..5].to_vec(), true), "x [redacted]");
+        assert_eq!(cut_body(&all, "x \u{1f511}".as_bytes()[..4].to_vec(), true), "x ");
+        assert_eq!(cut_body(&all, b"nothing to hide".to_vec(), true), "nothing to hide");
+    }
+
+    /// An origin that echoes the request is allowed; the agent picks the path,
+    /// so it can move the 64 KiB cut to any byte of the echoed credential.
+    #[test]
+    fn an_echoed_credential_leaves_no_prefix_wherever_the_cut_falls() {
+        use std::io::{Read as _, Write as _};
+        let credential = "Zq7-echoed-credential-value";
+        let all = secrets(&[credential]);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let pad = crate::http::Limits::WEB.body_bytes - 150;
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).is_ok_and(|n| n == 1) {
+                    head.push(byte[0]);
+                }
+                let mut body = vec![b'.'; pad];
+                body.extend_from_slice(&head);
+                let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+                let _ = stream.write_all(&body);
+            }
+        });
+        let (mut whole, mut masked) = (0, 0);
+        for n in 0..=150 {
+            let url = crate::http::Url::parse(&format!("http://127.0.0.1:{port}/{}", "a".repeat(n))).expect("url");
+            let headers = [("X-Key".to_owned(), credential.to_owned())];
+            let response = crate::http::send(&url, "GET", &headers, b"", crate::http::Limits::WEB, |_| true).expect("echo");
+            let text = redact_value(&all, json!(cut_body(&all, response.body, response.truncated))).as_str().expect("text").to_owned();
+            // Nothing else in the echo has a Z, so any Z is the credential's first byte.
+            assert!(!text.contains('Z'), "path of {n} bytes leaks {:?}", &text[text.len().saturating_sub(40)..]);
+            assert!(!text.contains('\u{fffd}'));
+            whole += usize::from(text.contains("X-Key: [redacted]\r\n"));
+            masked += usize::from(text.ends_with("[redacted]") && !text.contains("[redacted]\r\n"));
+        }
+        // The sweep put the cut after, across and before the credential.
+        assert!(whole > 0 && masked > 0, "whole {whole}, masked {masked}");
     }
 
     #[test]
