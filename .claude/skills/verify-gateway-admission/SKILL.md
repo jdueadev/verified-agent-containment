@@ -159,9 +159,10 @@ checkout. A line reads `caught` when the named harness failed with the counterex
 `MISSED` when it passed or the mutant did not compile. The report is
 `target/verify/kani-mutants.json`.
 
-`scripts/check.sh` and the required `check` workflow do not run it. The container
-workflow runs it in the `kani` image on amd64 and arm64, but only when the image or its
-scripts change. Run it yourself before pushing a change to the covered code.
+`scripts/check.sh` and the required `check` workflow do not run it. The `kani` workflow
+runs it in the `kani` image on every pull request and push to `main`, and the container
+workflow runs it again on amd64 and arm64 when the image or its scripts change. Run it
+yourself before pushing a change to the covered code.
 
 ## When it fails: a real bug or a modelling error?
 

@@ -250,10 +250,10 @@ const SECTIONS = [
 <li><strong>stale</strong>: the code changed after the test ran, so the old result no longer counts.</li>
 </ul>
 <p>A combined claim is only as strong as its weakest part. That is why "System One cannot cause Freeze or Kill" (C-SYS-1) stayed planned until every part had evidence; it is now tested, because each of its parts is proved, model-checked or tested.</p>
-<p><code>tools/claims_check.py</code> enforces all of this on every check run. It fails if a law is never cited, if the proof files changed since the last verdict, if code changed after a recorded test run, or if the spec cites a claim id that does not exist.</p>`,
+<p>Nothing checks the claims now. The checker that enforced these rules was removed after tag <code>pre-factory</code>, and <code>claims.toml</code> is frozen there until the claims are re-earned; <code>docs/evidence-rules.md</code> keeps the rules.</p>`,
   terms: [
     T("falsifier", "Falsifier", `<p>The specific result that would show a claim is false, written down in advance. A claim with no possible falsifier cannot be tested. Writing the falsifier first keeps the evidence honest.</p>`, [L("Falsifiability", "https://en.wikipedia.org/wiki/Falsifiability")]),
-    T("weakest", "Weakest link (composite claims)", `<p>If claim A needs B and C to hold, A can be no more certain than the least certain of B and C. The checker enforces this as rule CI-5.</p>`),
+    T("weakest", "Weakest link (composite claims)", `<p>If claim A needs B and C to hold, A can be no more certain than the least certain of B and C.</p>`),
     T("assurance", "Assurance case", `<p>A structured argument that a system is safe enough: claims, the evidence for each, and the reasoning linking them. Aviation and medical devices use them. The claims table is a lightweight version.</p>`, [L("Safety case", "https://en.wikipedia.org/wiki/Safety_case")]),
   ],
   reading: [

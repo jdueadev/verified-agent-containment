@@ -23,7 +23,7 @@ Inside it:
 sudo apt-get update && sudo apt-get install -y build-essential git curl python3
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 . "$HOME/.cargo/env"
-git clone https://github.com/jdueadev/verified-agent-containment.git
+git clone https://github.com/vac-dev-team/verified-agent-containment.git
 cd verified-agent-containment
 cargo build --release -p containment-host
 ```

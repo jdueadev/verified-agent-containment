@@ -18,7 +18,7 @@
 // No dependencies: Node 22+ (built-in WebSocket and fetch) and a Chromium binary.
 // It never needs root and writes only under --out (default: target/vac-driver, which git ignores).
 // It deliberately does not wrap attack-suite, live, live-suite or redteam: those
-// need root and a throwaway machine (AGENTS.md, INV-11).
+// need root and a disposable Linux or WSL2 machine (AGENTS.md).
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";

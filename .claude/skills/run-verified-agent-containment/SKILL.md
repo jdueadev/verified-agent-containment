@@ -15,8 +15,8 @@ All paths are relative to the repository root. AGENTS.md is the rulebook and win
 this file.
 
 **Out of bounds here.** `containment-lab attack-suite`, `live`, `live-suite` and `redteam`
-need root and change cgroups, and AGENTS.md INV-11 allows them only in a throwaway
-machine. They were not run when this skill was written and the driver does not wrap them.
+need root and change cgroups, and AGENTS.md allows the root lab only in a disposable Linux
+or WSL2 machine. They were not run when this skill was written and the driver does not wrap them.
 Do not run them from a working checkout, and do not try `unshare` to get around `sudo`.
 `ctl` and `hud` attach to a running `live` controller, so they are out of reach too.
 
@@ -46,7 +46,7 @@ node .claude/skills/run-verified-agent-containment/driver.mjs sim
 ```
 
 The default flow asserts each reading: the mode starts at **Run**, "Classifier: asks for
-Kill" stops at **Hold** (INV-4), "Hard rule: kill" reaches **Kill**, and the sabotage
+Kill" stops at **Hold** (the classifier never reaches Kill), "Hard rule: kill" reaches **Kill**, and the sabotage
 bench button ends up reading `Caught 10 of 10`. It prints an `ok` or `FAIL` line for each
 and the decision trace. Screenshots land in `target/vac-driver/` (`1-start.png`,
 `2-after-kill.png`, `3-sabotaged-kernels.png`). Look at them. The exit code is 1 if an

@@ -64,23 +64,25 @@ at the commit you are looking at.
 
 ## Where the evidence lands
 
-- A root lab run writes `results/attack-suite.json` and
-  `results/live-suite.json`. The maintainer commits a run as evidence under
-  `results/<platform>/lab-<commit>/` in a follow-up pull request, and adds the
-  platform to the claim's `platforms` list. Agents never write either
-  (INV-1).
-- [`tools/claims_check.py`](../../tools/claims_check.py) then checks that the
-  cited scenarios passed and the cited controls were caught in the recorded
-  results it reads: the top-level `results/attack-suite.json` and
-  `results/live-suite.json`, and the newest CI lab run. It marks the claim stale when a file the claim lists changes after the
-  recorded commit. `--strict` also requires the honest runs and the controls
-  to come from two different builds, and a full unwaived timed run.
-- The rendered result is the claim's row in [`docs/claims.md`](../claims.md).
+- The `lab` workflow runs the attack and live suites on a GitHub runner for
+  every pull request and push to `main`, seals the output with
+  [`tools/lab_evidence.py`](../../tools/lab_evidence.py) `manifest`, and has
+  GitHub sign the manifest.
+- `tools/lab_evidence.py verify` then refuses the run unless every file
+  matches the manifest, every scenario passed, every sabotage control was
+  caught, no cgroup limit was waived, the honest runs and the controls came
+  from two different binaries, and the signature names `lab.yml`, the commit
+  and the ref. Lab results count only when it accepts them;
+  [`docs/verification.md`](../verification.md) shows how to run it on a
+  downloaded run.
+- Nothing is written under `results/` by hand. Nothing ties a run to the
+  claim's row now: [`claims.toml`](../../claims.toml) is frozen at tag
+  `pre-factory`.
 
 ## Reproduce
 
 The lab needs root and changes cgroups, so run it only in a disposable Linux
-or WSL2 machine (INV-11). [`docs/verification.md`](../verification.md) has the
+or WSL2 machine, as [`AGENTS.md`](../../AGENTS.md) says. [`docs/verification.md`](../verification.md) has the
 commands, and [`scripts/lab/README.md`](../../scripts/lab/README.md) the
 one-click Windows route that creates and deletes a throwaway WSL2 distro.
 

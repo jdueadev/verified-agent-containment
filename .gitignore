@@ -2,13 +2,10 @@ target/
 results/*.tmp
 *.wasm.tmp
 __pycache__/
-# Shared Claude Code configuration. Everything else under .claude/ stays local:
-# scratch files, worktrees, settings.local.json, session state.
+# The project skills are shared. Everything else under .claude/ stays local:
+# scratch files, worktrees, settings, session state.
 /.claude/*
-!/.claude/settings.json
-!/.claude/hooks/
 !/.claude/skills/
-!/.claude/agents/
 
 # TLC trace dumps
 formal/host/*_TTrace_*

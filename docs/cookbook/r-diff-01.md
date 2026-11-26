@@ -36,26 +36,8 @@ Three steps of [`scripts/check.sh`](../../scripts/check.sh), in order:
    does the same with the release wasm build.
 
 "Passed" means zero mismatches on every transition. The counts are written to
-[`results/differential.json`](../../results/differential.json) and
-[`results/wasm-differential.json`](../../results/wasm-differential.json). Those
-files are output that `check` regenerates on every run, not lab artifacts.
-
-## How the claim is judged
-
-[`tools/claims_check.py`](../../tools/claims_check.py), the last step of
-`scripts/check.sh`, turns those files into the claim's row in
-[`docs/claims.md`](../claims.md). For each item in the claim's `evidence`:
-
-- `diff:rust-bend` and `diff:rust-wasm` count as caught only if
-  `results/differential.json` and `results/wasm-differential.json` record zero
-  mismatches;
-- each `rust-mutant:NAME` counts only if `results/mutation-check.json` records
-  that mutant as rejected.
-
-A `tested` claim needs at least one such falsifier, and every one it cites must
-hold (rule CI-3 in the checker's header). Otherwise `check` fails. The checker
-also requires every Rust mutant in the repository to be cited by some claim
-(CI-2), so a mutant cannot sit unused.
+`target/verify/differential.json` and `target/verify/wasm-differential.json`
+on every run.
 
 ## Watch the control
 
@@ -65,8 +47,8 @@ kernel on purpose. For each entry of `RUST_MUTANTS` in
 [`tools/kernel_mutants.py`](../../tools/kernel_mutants.py), it applies a small
 edit, matched by tokens, to a scratch copy of the Rust kernel, rebuilds, generates 2000
 traces, and replays them through the Bend kernel. The mutant counts as
-rejected only if the replay finds a mismatch. Every Rust mutant R-DIFF-01
-cites must be rejected, or `check` fails.
+rejected only if the replay finds a mismatch. Every Rust mutant must be
+rejected, or `check` fails.
 
 For example, `lease_off_by_one` changes the expiry check in the Rust kernel's
 `settle` from "strictly before the deadline" to "at or before". A step at
@@ -75,30 +57,26 @@ and Freeze does not escalate to Kill. The Bend model does start it, so the
 replay stops at the first such step, where the mode and the action plan
 differ.
 
-The results go to
-[`results/mutation-check.json`](../../results/mutation-check.json), again
-regenerated output. Read the `rust` entries at the commit you are looking at.
+The results go to `target/verify/mutation-check.json`; read its `rust`
+entries.
 
 ## Reproduce
 
 These are the commands `scripts/check.sh` runs, without its `tee` into
-`results/`. The commands need no root; the Bend install in
+`target/verify/`. The commands need no root; the Bend install in
 [`docs/verification.md`](../verification.md) uses `sudo`, or install it under
 your home directory.
 
 ```bash
-mkdir -p target/generated
+mkdir -p target/generated target/verify
 bend formal/kernel.bend -o target/generated/kernel.mjs
 cargo build -q --locked -p containment-host
 target/debug/containment-lab differential-cases 5000 24301 > target/generated/differential.jsonl
 bun tools/differential.mjs target/generated/kernel.mjs target/generated/differential.jsonl
 scripts/build-wasm.sh
 node tools/wasm_check.mjs target/wasm32-unknown-unknown/release/containment_wasm.wasm target/generated/differential.jsonl
-python3 tools/mutation_check.py target/generated/kernel.mjs target/mutation-check.json  # every mutant; slow
+uv run tools/mutation_check.py target/generated/kernel.mjs target/verify/mutation-check.json  # every mutant; slow
 ```
-
-The last line writes to `target/` so that it leaves the committed
-`results/mutation-check.json` alone.
 
 ## What this does not prove
 
