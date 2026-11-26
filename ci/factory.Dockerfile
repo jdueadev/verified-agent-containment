@@ -134,24 +134,13 @@ RUN case "$TARGETARCH" in \
     tar -xzf /tmp/cargo-deny.tar.gz -C /tmp; \
     install -D -m 0755 "/tmp/cargo-deny-${CARGO_DENY_VERSION}-${triple}/cargo-deny" /out/cargo-deny; \
     /out/cargo-deny --version
+# binaryen's npm package: wasm-opt and wasm2js compiled to WebAssembly, one file each,
+# run by Node. Unlike the native release builds, they give the same output on amd64
+# and arm64 (see ci/pins.env).
 FROM os AS get-binaryen
-ARG TARGETARCH
 ARG BINARYEN_VERSION
-ARG FACTORY_BINARYEN_SHA256_AMD64
-ARG FACTORY_BINARYEN_SHA256_ARM64
-RUN case "$TARGETARCH" in \
-      amd64) arch=x86_64; sum="$FACTORY_BINARYEN_SHA256_AMD64" ;; \
-      arm64) arch=aarch64; sum="$FACTORY_BINARYEN_SHA256_ARM64" ;; \
-      *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
-    esac; \
-    dir="binaryen-version_${BINARYEN_VERSION}"; \
-    curl -fsSL -o /tmp/binaryen.tar.gz "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/${dir}-${arch}-linux.tar.gz"; \
-    echo "${sum}  /tmp/binaryen.tar.gz" | sha256sum --check --strict; \
-    mkdir /out; \
-    tar -xzf /tmp/binaryen.tar.gz -C /out --strip-components=2 "${dir}/bin/wasm-opt" "${dir}/bin/wasm2js"; \
-    rm /tmp/binaryen.tar.gz; \
-    /out/wasm-opt --version; \
-    /out/wasm2js --version
+ARG FACTORY_BINARYEN_NPM_SHA256
+RUN curl -fsSL -o /tmp/binaryen.tgz "https://registry.npmjs.org/binaryen/-/binaryen-${BINARYEN_VERSION}.0.0.tgz";     echo "${FACTORY_BINARYEN_NPM_SHA256}  /tmp/binaryen.tgz" | sha256sum --check --strict;     mkdir -p /opt/binaryen;     tar -xzf /tmp/binaryen.tgz -C /opt/binaryen --strip-components=1       package/LICENSE package/bin/package.json package/bin/wasm-opt package/bin/wasm2js;     rm /tmp/binaryen.tgz
 
 
 # Chrome for Testing's headless shell. Its shared libraries are installed in the
@@ -285,8 +274,9 @@ RUN apt-get update; \
 COPY --from=get-tla /opt/tla /opt/tla
 COPY --from=get-shellcheck /out/shellcheck /usr/local/bin/shellcheck
 COPY --from=get-cargo-deny /out/cargo-deny /usr/local/bin/cargo-deny
-COPY --from=get-binaryen /out/wasm-opt /out/wasm2js /usr/local/bin/
 COPY --from=get-node /opt/node /opt/node
+COPY --from=get-binaryen /opt/binaryen /opt/binaryen
+RUN ln -s /opt/binaryen/bin/wasm-opt /opt/binaryen/bin/wasm2js /usr/local/bin/;     wasm-opt --version;     wasm2js --version
 COPY --from=get-python /opt/python /opt/python
 COPY --from=get-python /out/uv /usr/local/bin/uv
 COPY --from=get-bend /opt/bend /opt/bend
