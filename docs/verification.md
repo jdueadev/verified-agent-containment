@@ -78,8 +78,18 @@ The deliberate defects exist only in a build with the `sabotage` feature. A defa
 
 ## Browser showcase
 
+To check the committed page, `web/dist/agent-containment-simulator.html`, drive it in headless Chromium:
+
 ```bash
-scripts/build-page.sh     # also compiles the 10 sabotaged kernels from tools/kernel_mutants.py
+node .claude/skills/run-verified-agent-containment/driver.mjs sim
 ```
 
-If `rustup target add wasm32-unknown-unknown` is unavailable but `rust-src` is installed, use `BUILD_STD=1`.
+It clicks through the modes and the sabotage bench, fails (exit 1) unless the bench reads `Caught 10 of 10`, and writes nothing outside `target/vac-driver/`. [The skill](../.claude/skills/run-verified-agent-containment/SKILL.md) covers its prerequisites and how to build a page from the working tree to another path.
+
+To rebuild the committed page:
+
+```bash
+scripts/build-page.sh     # replaces web/dist/agent-containment-simulator.html; also compiles the 10 sabotaged kernels from tools/kernel_mutants.py
+```
+
+Run it only when you mean to replace the committed page, not to check it. If `rustup target add wasm32-unknown-unknown` is unavailable but `rust-src` is installed, use `BUILD_STD=1`.
