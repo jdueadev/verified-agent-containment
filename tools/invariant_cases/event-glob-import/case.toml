@@ -1,0 +1,4 @@
+checker = "invariants"
+origin = "#120: the variants imported by glob, then built bare"
+expect = "reject"
+expect_error = "imports `Event`'s variants by glob or group"

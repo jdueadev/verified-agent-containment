@@ -1,0 +1,20 @@
+checker = "invariants"
+origin = "#120: the construction moved into a macro"
+expect = "reject"
+expect_error = "names `Event::Renew` in `(no function)`"
+
+[[replace]]
+file = "crates/containment-host/src/controller/reset.rs"
+old = '''pub(super) fn control_handler('''
+new = '''macro_rules! renew {
+    ($shared:expr, $at:expr) => {
+        $shared.apply(None, $at, |now_ms| Event::Renew { now_ms, ttl_ms: 0 })
+    };
+}
+
+pub(super) fn control_handler('''
+
+[[replace]]
+file = "crates/containment-host/src/controller/reset.rs"
+old = '''Some("status") => {}'''
+new = '''Some("status") => { renew!(shared, received); }'''

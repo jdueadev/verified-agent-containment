@@ -1,0 +1,10 @@
+checker = "invariants"
+origin = "#120: the control socket builds a lease renewal"
+twin = "event-mentions-only"
+expect = "reject"
+expect_error = "`control_handler` may name only HardRule, Tick, not `Event::Renew`"
+
+[[replace]]
+file = "crates/containment-host/src/controller/reset.rs"
+old = '''let _ = shared.apply(None, received, |now_ms| Event::Tick { now_ms });'''
+new = '''let _ = shared.apply(None, received, |now_ms| Event::Renew { now_ms, ttl_ms: 60_000 });'''

@@ -1,0 +1,11 @@
+checker = "invariants"
+origin = "#120: `cfg_attr(.., path = ..)` swaps in source unseen"
+expect = "reject"
+expect_error = "`cfg_attr(.., path = ..)`"
+
+[[replace]]
+file = "crates/containment-host/src/controller/gate.rs"
+old = '''mod proofs;'''
+new = '''mod proofs;
+#[cfg_attr(test, path = "../../../../formal/evil.rs")]
+mod evil;'''

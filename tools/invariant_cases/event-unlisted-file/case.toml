@@ -1,0 +1,4 @@
+checker = "invariants"
+origin = "#120: a new file builds a renewal"
+expect = "reject"
+expect_error = "names `Event::Renew` in `renew`, which the event table does not list"

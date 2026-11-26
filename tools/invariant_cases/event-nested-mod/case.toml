@@ -1,0 +1,16 @@
+checker = "invariants"
+origin = "#120: a function of a listed name inside a nested mod"
+expect = "reject"
+expect_error = "names `Event::Renew` in `inner::control_handler`"
+
+[[replace]]
+file = "crates/containment-host/src/controller/reset.rs"
+old = '''pub(super) fn control_handler('''
+new = '''mod inner {
+    use super::*;
+    pub(super) fn control_handler(shared: &Shared) {
+        shared.apply(None, 0, |now_ms| Event::Renew { now_ms, ttl_ms: 0 });
+    }
+}
+
+pub(super) fn control_handler('''

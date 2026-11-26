@@ -1,0 +1,9 @@
+checker = "invariants"
+origin = "#120: the classifier side builds a lease clock tick"
+expect = "reject"
+expect_error = "names `Tick`, which the classifier's side may never name"
+
+[[replace]]
+file = "crates/containment-host/src/controller/classifier.rs"
+old = '''apply_classifier(shared, Some(label), now, level);'''
+new = '''shared.apply(None, now, |now_ms| Event::Tick { now_ms });'''

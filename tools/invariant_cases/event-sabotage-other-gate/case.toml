@@ -1,0 +1,9 @@
+checker = "invariants"
+origin = "#120: a hard rule from the classifier behind another weak gate"
+expect = "reject"
+expect_error = "the sabotage control `shared_control_socket` in `read_verdicts` is no longer its pinned gated branch"
+
+[[replace]]
+file = "crates/containment-host/src/controller/classifier.rs"
+old = '''if shared.weak.shared_control_socket() && v["op"] == "hard" {'''
+new = '''if shared.weak.excerpt_uncapped() && v["op"] == "hard" {'''
