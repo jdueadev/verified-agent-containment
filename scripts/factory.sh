@@ -25,7 +25,18 @@ build() {
   "$engine" build ${FACTORY_BUILD_OPTIONS:-} -f ci/factory.Dockerfile "${pins[@]}" --target "$1" -t "$image:$1" .
 }
 
-mounts=(-v "$PWD:/work" -v vac-factory-target:/work/target)
+# Git Bash on Windows rewrites any argument that looks like a POSIX path before a Windows program sees it
+# (/work turns into a folder under the Git install). Turn that off for the engine, and name the checkout
+# the way the engine on Windows reads it.
+here() { pwd; }
+case "$(uname -s)" in
+  MINGW*|MSYS*)
+    export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
+    here() { pwd -W; }
+    ;;
+esac
+
+mounts=(-v "$(here):/work" -v vac-factory-target:/work/target)
 
 case "${1:-}" in
   build)
@@ -63,7 +74,7 @@ case "${1:-}" in
     lab=(-e "FACTORY_LAB_COMMIT=$(git rev-parse HEAD)")
     if [ -n "${FACTORY_LAB_OUT:-}" ]; then
       mkdir -p "$FACTORY_LAB_OUT"
-      lab+=(-v "$(cd "$FACTORY_LAB_OUT" && pwd):/work/target/verify/lab")
+      lab+=(-v "$(cd "$FACTORY_LAB_OUT" && here):/work/target/verify/lab")
     fi
     "$engine" image inspect --format '{{.Id}}' "$image:check" > "${FACTORY_LAB_IMAGE_ID:-/dev/null}"
     exec "$engine" run --rm --privileged --cgroupns=private "${mounts[@]}" "${lab[@]}" "$image:check" scripts/factory-lab.sh "$@"
