@@ -594,7 +594,7 @@ falsifier = "The controller aborts, or a gateway message yields HardRule, Classi
 
 [[claim]]
 id = "H-LIVE-01"
-statement = "Credentials in a live policy are added by the gateway only to requests for the origin they belong to, and only over https or to a loopback address. The gateway never sends them to the agent: the exact values, bare and with their prefix, are redacted from response bodies and errors before they reach the sandbox."
+statement = "Credentials in a live policy are added by the gateway only to requests for the origin they belong to, and only over https; a policy that attaches one to a plain http origin, loopback included, is refused when it loads. The gateway never sends them to the agent: the exact values, bare and with their prefix, are redacted from response bodies and errors before they reach the sandbox."
 layer = "host"
 status = "tested"
 evidence = ["live:credential_scoped", "live:benign", "live-sabotage:live_credential_everywhere"]

@@ -18,6 +18,8 @@ pub struct Policy {
     #[serde(default)]
     pub credential: Vec<Credential>,
     #[serde(default)]
+    pub tls: Tls,
+    #[serde(default)]
     pub workspace: Workspace,
     #[serde(default)]
     pub timing: Timing,
@@ -202,6 +204,15 @@ pub struct Credential {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct Tls {
+    /// PEM files of certificate authorities the gateway trusts in addition to
+    /// the built-in web roots, for an https server with its own certificate.
+    #[serde(default)]
+    pub roots: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Workspace {
     /// Directory copied into a fresh workspace for each sandbox generation.
     pub seed: Option<PathBuf>,
@@ -258,6 +269,8 @@ pub struct LiveState {
     pub canary: String,
     /// Exact credential values, redacted from anything returned to the agent.
     pub secret_values: Vec<String>,
+    /// The gateway's TLS client: web roots plus the policy's `[tls] roots`.
+    pub tls: std::sync::Arc<rustls::ClientConfig>,
 }
 
 impl LiveState {
@@ -299,26 +312,57 @@ impl LiveState {
                 return Err(format!("host {}: give an origin without a path", rule.url).into());
             }
             let credential = lookup(&rule.credential)?;
-            if credential.is_some() && !url.https && !crate::http::is_loopback_literal(&url.host) {
-                return Err(format!("host {}: credentials are only sent over https (or to a loopback address)", rule.url).into());
-            }
             hosts.insert(url.origin(), (rule.clone(), credential));
         }
         if hosts.contains_key(&model_url.origin()) {
             return Err("the model endpoint's origin must not also be listed as a host".into());
         }
         let model_header = lookup(&policy.model.credential)?;
-        if model_header.is_some() && !model_url.https && !crate::http::is_loopback_literal(&model_url.host) {
-            return Err("model.credential is only sent over https (or to a loopback address)".into());
-        }
+        let credential_origins = hosts.iter().filter(|(_, (_, credential))| credential.is_some()).map(|(origin, _)| origin.as_str());
+        refuse_plain_http_credentials(&model_url, model_header.is_some(), credential_origins)?;
+        let tls = tls_client(&policy.tls)?;
         // Redact both the bare value and prefix + value, longest first.
         let mut secret_values: Vec<String> = creds.values().map(|(_, v)| v.clone()).chain(raw_values).collect();
         secret_values.sort_by_key(|v| std::cmp::Reverse(v.len()));
         secret_values.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
         secret_values.dedup();
         crate::common::check_redactable(&secret_values)?;
-        Ok(Self { policy, model_url, model_header, model_limits, hosts, canary, secret_values })
+        Ok(Self { policy, model_url, model_header, model_limits, hosts, canary, secret_values, tls })
     }
+}
+
+/// A credential is only ever sent over https. Plain http is refused for every
+/// host, loopback included: any other process on this machine that holds the
+/// port would receive the credential.
+fn refuse_plain_http_credentials(
+    model_url: &Url, model_has_credential: bool, credential_origins: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Result<(), String> {
+    if model_has_credential && !model_url.https {
+        return Err(format!("model.endpoint {}: a credential is only sent over https; use an https:// endpoint", model_url.origin()));
+    }
+    for origin in credential_origins {
+        let origin = origin.as_ref();
+        if !origin.starts_with("https://") {
+            return Err(format!("host {origin}: a credential is only sent over https; use an https:// origin"));
+        }
+    }
+    Ok(())
+}
+
+/// The gateway's TLS client, trusting each PEM certificate authority listed
+/// under `[tls] roots` as well as the built-in web roots.
+fn tls_client(tls: &Tls) -> Result<std::sync::Arc<rustls::ClientConfig>, String> {
+    use rustls::pki_types::{pem::PemObject, CertificateDer};
+    let mut roots = Vec::new();
+    for path in &tls.roots {
+        let pem = fs::read(path).map_err(|e| format!("tls.roots {}: {e}", path.display()))?;
+        let certs = CertificateDer::pem_slice_iter(&pem).collect::<Result<Vec<_>, _>>().map_err(|e| format!("tls.roots {}: {e:?}", path.display()))?;
+        if certs.is_empty() {
+            return Err(format!("tls.roots {}: no PEM certificate in the file", path.display()));
+        }
+        roots.extend(certs);
+    }
+    crate::http::tls_client(&roots).map_err(|e| format!("tls.roots: {e}"))
 }
 
 /// Copies `seed` into `dest` (regular files and directories only; symlinks are
@@ -372,6 +416,8 @@ mod tests {
         let policy: Policy = toml::from_str(text).unwrap();
         assert!(!policy.host.is_empty());
         assert!(Url::parse(&policy.model.endpoint).is_some());
+        // A credential only ever goes over https, so the example must not attach one to http.
+        assert!(policy.host.iter().all(|h| h.credential.is_none() || h.url.starts_with("https://")));
     }
 
     #[test]
@@ -500,6 +546,46 @@ mod tests {
             assert!(load(&policy(good), &task).is_ok(), "{table}.{key} = {good} was refused");
         }
         assert!(load(&format!("{MODEL}[timing]\nfreeze_grace_ms = 0\n"), &task).is_ok());
+    }
+
+    /// A `[[credential]]` table whose value is read from a file this returns.
+    fn credential_table() -> String {
+        let value = std::env::temp_dir().join(format!("vac-cred-{}-{}", std::process::id(), crate::common::boot_ns()));
+        fs::write(&value, "s3cret-value").expect("write credential");
+        format!("[[credential]]\nname = \"k\"\nheader = \"Authorization\"\nvalue_file = \"{}\"\n", value.display())
+    }
+
+    #[test]
+    fn a_credential_is_never_sent_over_plain_http_even_to_loopback() {
+        let task = Workload::Task("t".to_owned());
+        let creds = credential_table();
+        for origin in ["http://127.0.0.1:8099", "http://127.0.0.2:8099", "http://localhost:8099", "http://example.com"] {
+            let host = format!("{MODEL}[[host]]\nurl = \"{origin}\"\naccess = \"write\"\ncredential = \"k\"\n{creds}");
+            assert!(load(&host, &task).is_err_and(|e| e.contains("only sent over https") && e.contains("use an https://")), "{origin}");
+            let model = format!("[model]\nendpoint = \"{origin}/v1/chat/completions\"\nname = \"m\"\ncredential = \"k\"\n{creds}");
+            assert!(load(&model, &task).is_err_and(|e| e.contains("only sent over https")), "model at {origin}");
+        }
+        // An IPv6 literal is not a URL the gateway accepts, so it is refused before any credential check.
+        let v6 = format!("{MODEL}[[host]]\nurl = \"http://[::1]:8099\"\naccess = \"write\"\ncredential = \"k\"\n{creds}");
+        assert!(load(&v6, &task).is_err_and(|e| e.contains("not an http(s) URL")));
+        // Without a credential, plain http to loopback stays allowed, and https carries one.
+        assert!(load(&format!("{MODEL}[[host]]\nurl = \"http://127.0.0.1:8099\"\naccess = \"read\"\n"), &task).is_ok());
+        assert!(load(&format!("{MODEL}[[host]]\nurl = \"https://127.0.0.1:8099\"\naccess = \"write\"\ncredential = \"k\"\n{creds}"), &task).is_ok());
+        let https_model = format!("[model]\nendpoint = \"https://127.0.0.1:1/v1/chat/completions\"\nname = \"m\"\ncredential = \"k\"\n{creds}");
+        assert!(load(&https_model, &task).is_ok());
+    }
+
+    #[test]
+    fn tls_roots_must_be_pem_certificates() {
+        let task = Workload::Task("t".to_owned());
+        let ca = std::env::temp_dir().join(format!("vac-ca-{}-{}.pem", std::process::id(), crate::common::boot_ns()));
+        fs::write(&ca, crate::mock::TLS_CA).expect("write ca");
+        let roots = |path: &Path| format!("{MODEL}[tls]\nroots = [\"{}\"]\n", path.display());
+        assert!(load(&roots(&ca), &task).is_ok());
+        assert!(load(&roots(Path::new("/no/such/ca.pem")), &task).is_err_and(|e| e.contains("tls.roots")));
+        fs::write(&ca, "not a certificate").expect("write ca");
+        assert!(load(&roots(&ca), &task).is_err_and(|e| e.contains("no PEM certificate")));
+        let _ = fs::remove_file(ca);
     }
 
     #[test]

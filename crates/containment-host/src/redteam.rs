@@ -49,8 +49,9 @@ fn copy_filled(from: &Path, to: &Path, site: &str, evil: &str) -> std::io::Resul
 }
 
 /// `model_key`: the model server wants an API key, read from REDTEAM_MODEL_KEY
-/// by the controller (the gateway sends it; the agent never sees it).
-fn policy(endpoint: &str, model: &str, site: &str, seed: &Path, model_key: bool) -> String {
+/// by the controller (the gateway sends it, over https only; the agent never sees it).
+/// `ca`: the certificate authority the https site's certificate chains to.
+fn policy(endpoint: &str, model: &str, site: &str, seed: &Path, ca: &Path, model_key: bool) -> String {
     let (key_ref, key_def) = if model_key {
         ("credential = \"model_key\"\n", "\n[[credential]]\nname = \"model_key\"\nheader = \"Authorization\"\nprefix = \"Bearer \"\nvalue_env = \"REDTEAM_MODEL_KEY\"\n")
     } else {
@@ -75,6 +76,9 @@ header = "Authorization"
 prefix = "Bearer "
 value_env = "REDTEAM_SITE_TOKEN"
 {key_def}
+[tls]
+roots = ["{ca}"]
+
 [workspace]
 seed = "{}"
 
@@ -84,7 +88,7 @@ freeze_grace_ms = 2000
 [run]
 max_steps = 12
 max_seconds = 180
-"#, seed.display())
+"#, seed.display(), ca = ca.display())
 }
 
 struct Outcome {
@@ -365,7 +369,9 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         fs::create_dir_all(&dir)?;
         // Start the servers on empty directories to learn their ports, then fill them.
         fs::create_dir_all(dir.join("site"))?;
-        let site = Server::start("fixture-server", &dir.join("site"), dir.join("site.jsonl"))?;
+        // The site carries a credential, so it speaks https with the test certificate.
+        let site = Server::start_tls(&dir.join("site"), dir.join("site.jsonl"))?;
+        fs::write(dir.join("ca.pem"), crate::mock::TLS_CA)?;
         let evil = Server::start("fixture-server", &dir.join("site"), dir.join("evil.jsonl"))?;
         copy_filled(&pack_dir.join("site"), &dir.join("site"), &site.url(), &evil.url())?;
         copy_filled(&pack_dir.join("workspace"), &dir.join("seed"), &site.url(), &evil.url())?;
@@ -380,7 +386,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             None
         };
         let endpoint = mock.as_ref().map_or_else(|| endpoint.clone().unwrap_or_default(), |m| format!("{}/v1/chat/completions", m.url()));
-        fs::write(dir.join("policy.toml"), policy(&endpoint, &model_name, &site.url(), &dir.join("seed"), model_key.is_some()))?;
+        fs::write(dir.join("policy.toml"), policy(&endpoint, &model_name, &site.url(), &dir.join("seed"), &dir.join("ca.pem"), model_key.is_some()))?;
         let token = format!("site-{}", boot_ns());
         let mut env = vec![("REDTEAM_SITE_TOKEN".to_owned(), token)];
         env.extend(model_key.clone().map(|k| ("REDTEAM_MODEL_KEY".to_owned(), k)));
@@ -466,7 +472,7 @@ mod policy_tests {
     #[test]
     fn policies_parse_with_and_without_a_model_key() {
         for key in [false, true] {
-            let text = policy("http://127.0.0.1:8080/v1/chat/completions", "m", "http://127.0.0.1:9", Path::new("/tmp/seed"), key);
+            let text = policy("https://127.0.0.1:8080/v1/chat/completions", "m", "https://127.0.0.1:9", Path::new("/tmp/seed"), Path::new("/tmp/ca.pem"), key);
             let parsed: crate::live::Policy = toml::from_str(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
             assert_eq!(parsed.model.credential.is_some(), key);
         }

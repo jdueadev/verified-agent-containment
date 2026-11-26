@@ -6,7 +6,7 @@
 //! mid-request, exactly like the lab sink connections.
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// What one upstream request may cost. A body longer than `body_bytes` is cut
@@ -144,25 +144,27 @@ pub struct Response {
     pub truncated: bool,
 }
 
-fn tls_config() -> Arc<rustls::ClientConfig> {
-    static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
-    Arc::clone(CONFIG.get_or_init(|| {
-        let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        Arc::new(
-            rustls::ClientConfig::builder_with_provider(provider)
-                .with_safe_default_protocol_versions()
-                .expect("ring supports the default TLS versions")
-                .with_root_certificates(roots)
-                .with_no_client_auth(),
-        )
-    }))
+/// The TLS client: the built-in web roots, plus `extra_roots` (certificate
+/// authorities a live policy names under `[tls] roots`).
+pub fn tls_client(extra_roots: &[rustls::pki_types::CertificateDer<'static>]) -> Result<Arc<rustls::ClientConfig>, String> {
+    let mut roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+    for root in extra_roots {
+        roots.add(root.clone()).map_err(|e| format!("not a usable certificate authority: {e}"))?;
+    }
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| e.to_string())?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(Arc::new(config))
 }
 
 /// Sends one request with `Connection: close`. `register` receives a clone of
 /// the TCP stream before anything is written; returning false aborts.
 pub fn send(
-    url: &Url, method: &str, headers: &[(String, String)], body: &[u8], limits: Limits, register: impl FnOnce(TcpStream) -> bool,
+    url: &Url, tls: &Arc<rustls::ClientConfig>, method: &str, headers: &[(String, String)], body: &[u8], limits: Limits,
+    register: impl FnOnce(TcpStream) -> bool,
 ) -> io::Result<Response> {
     let literal = url.host.parse::<std::net::IpAddr>().is_ok() || url.host == "localhost";
     let address = (url.host.as_str(), url.port).to_socket_addrs()?.next()
@@ -192,7 +194,7 @@ pub fn send(
     if url.https {
         let name = rustls::pki_types::ServerName::try_from(url.host.clone())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "bad server name"))?;
-        let connection = rustls::ClientConnection::new(tls_config(), name).map_err(io::Error::other)?;
+        let connection = rustls::ClientConnection::new(Arc::clone(tls), name).map_err(io::Error::other)?;
         let mut stream = rustls::StreamOwned::new(connection, Deadline { tcp, until, idle: limits.idle });
         stream.write_all(head.as_bytes())?;
         stream.write_all(body)?;
@@ -353,13 +355,13 @@ mod tests {
     fn the_limits_given_decide_how_long_a_reply_may_take() {
         let url = slow_server(Duration::from_millis(1_500));
         let quick = Limits { idle: Duration::from_millis(300), deadline: Duration::from_secs(5), ..Limits::MODEL };
-        let error = send(&url, "GET", &[], b"", quick, |_| true).err().expect("cut after 300 ms without a byte");
+        let error = send(&url, &tls_client(&[]).expect("web roots"), "GET", &[], b"", quick, |_| true).err().expect("cut after 300 ms without a byte");
         assert!(matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut), "{error}");
         let whole = Limits { idle: Duration::from_secs(5), deadline: Duration::from_millis(700), ..Limits::MODEL };
-        let error = send(&url, "GET", &[], b"", whole, |_| true).err().expect("cut at the 700 ms deadline");
+        let error = send(&url, &tls_client(&[]).expect("web roots"), "GET", &[], b"", whole, |_| true).err().expect("cut at the 700 ms deadline");
         assert!(matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut), "{error}");
         let patient = Limits::model_within(3);
-        assert_eq!(send(&url, "GET", &[], b"", patient, |_| true).map(|r| r.body).ok(), Some(b"ok".to_vec()));
+        assert_eq!(send(&url, &tls_client(&[]).expect("web roots"), "GET", &[], b"", patient, |_| true).map(|r| r.body).ok(), Some(b"ok".to_vec()));
     }
 
     #[test]
