@@ -48,7 +48,9 @@ const ROOT_COMMANDS: &[&str] = &["attack-suite", "live", "live-suite", "redteam"
 /// servers, the differential cases, `ctl` and `hud` (which talk to a controller a
 /// root command already started), and the internal children a root command spawns,
 /// some of them with a cleared environment that could not carry the marker.
-/// `tools/lab_throwaway_check.py` fails if a command is in neither list.
+/// `tools/lab_throwaway_check.py` fails if a command is in neither list; only it and
+/// the tests below read this one.
+#[cfg(test)]
 const NO_MARKER_COMMANDS: &[&str] = &[
     "controller", "sandbox-launch", "agent", "monitor", "sink", "probe-operator", "probe-root", "system-one",
     "ctl", "hud", "mock-model", "fixture-server", "differential-cases",
