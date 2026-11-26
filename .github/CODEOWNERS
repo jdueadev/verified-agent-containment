@@ -1,0 +1,5 @@
+# The decision files: an entry in either turns a refusal into a pass, so the owner reviews every change.
+# See docs/verification.md, "Decision files". The review-decisions workflow fails other authors' changes.
+/evals/agentdojo/expected-differences.toml @jdueadev
+/ci/verifier-removals.toml @jdueadev
+/.github/CODEOWNERS @jdueadev

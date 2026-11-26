@@ -22,6 +22,15 @@ scripts/factory.sh kani       # scripts/kani.sh, the Kani proofs of admission, i
 
 The claims in [`claims.toml`](../claims.toml) are frozen at tag `pre-factory`; see [`evidence-rules.md`](evidence-rules.md).
 
+## Decision files
+
+Two files record a decision that a check would otherwise refuse:
+
+- [`evals/agentdojo/expected-differences.toml`](../evals/agentdojo/expected-differences.toml) lists the differences between two AgentDojo runs that are meant. `tools/eval_diff.py` fails on every difference it does not cover.
+- `ci/verifier-removals.toml` names each check, law, mutant, Kani harness, test or scenario removed on purpose, with the reason. `tools/verifier_ratchet.py` fails on every removal it does not name.
+
+An entry in either file turns a refusal into a pass, so only the owner (`@jdueadev`) adds or changes one. [`.github/CODEOWNERS`](../.github/CODEOWNERS) asks for the owner's review of both files and of itself. The `review-decisions` check ([`.github/workflows/review-decisions.yml`](../.github/workflows/review-decisions.yml)) fails a pull request that changes, deletes or renames either file, or a directory above one, unless the owner's account opened it. The workflow's header lists what it does not catch. If your change needs an entry, ask for it in the pull request.
+
 ## The outer loop
 
 `scripts/check.sh` and the Kani proofs are the inner loop: they run on every push and take minutes at most. The `outer-loop` workflow runs once a night on `main` and takes hours. Each finding comes back to the inner loop as a case it reruns.

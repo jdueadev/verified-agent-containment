@@ -1,0 +1,120 @@
+# Only the owner's pull requests may change a decision file (docs/verification.md, "Decision files"):
+#   evals/agentdojo/expected-differences.toml  a difference between two eval runs that is meant
+#   ci/verifier-removals.toml                  a verifier removed on purpose
+# Each entry there turns a refusal by tools/eval_diff.py or tools/verifier_ratchet.py into a pass, so an
+# agent that wants its change to pass could otherwise write the entry itself.
+#
+# What it does: fails when the pull request adds, changes, deletes or renames either file, or a directory
+# above one (a symlink there would redirect it), and its author is not the owner named in OWNER below.
+# The name is written here for the reasons guard.yml in vac-dev-team/workspace gives: the repository owner
+# is the organization, and any collaborator can set a repository variable.
+#
+# It follows guard.yml: pull_request_target runs this file from the default branch, not from the pull
+# request; no checkout, no action, no code or file content from the pull request, no secrets; the token
+# can only read pull requests; every value from the pull request reaches the script through the
+# environment, never through ${{ }} inside it; file names are compared, never executed.
+#
+# What it does not protect against:
+# - Any of it, until a ruleset requires this check. Until this file is on the default branch it does not
+#   even run, because that is where pull_request_target reads it from.
+# - The author's account, not the person. Anyone working as the owner's account passes, the owner's own
+#   agents included, and so do commits someone else pushes to the owner's pull request branch.
+# - Content. It guards two paths. A change that makes a tool read another file, or stop reading one, is
+#   caught only by review.
+# - A job of the same name. A pull request can add its own workflow with a job named review-decisions that
+#   passes; this check does not look at .github/. GitHub then calls the check "ambiguous".
+# - A missing run. A head branch named like a commit id "may not trigger" this event
+#   ([docs](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target)).
+# - From 2026-12-02 GitHub blocks pull_request_target in public repositories unless an Actions policy allows
+#   it. Blocked means review-decisions never passes.
+# - More than 3000 changed files: GitHub lists no more, so the check fails rather than guess.
+name: review-decisions
+
+on:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] nothing from the pull request is checked out or run
+    # edited: the base branch can change without a new commit, which changes the list of changed files.
+    types: [opened, synchronize, reopened, edited]
+
+permissions: {}
+
+# No concurrency group: group names are shared by every workflow in the repository, so a pull request
+# workflow could name the same group and cancel this run. Overlapping runs are safe; a moved head fails.
+
+jobs:
+  review-decisions:
+    name: review-decisions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read # to list the changed files; nothing else
+    steps:
+      - name: decision files change only in the owner's pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          OWNER: jdueadev # the one account whose pull requests may change a decision file
+          PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        shell: python3 -I {0}
+        # tools/test_review_decisions.py runs everything below "run: |" with a stand-in for the GitHub API.
+        run: |
+          import json, os, re, subprocess, sys
+
+          DECISIONS = ("evals/agentdojo/expected-differences.toml", "ci/verifier-removals.toml")
+          # A changed path hits when it is a decision file or a directory above one. Compared without case,
+          # so a copy that differs only in case cannot stand in for the file on a case-insensitive checkout.
+          GUARDED = {d.rsplit("/", n)[0] for d in DECISIONS for n in range(d.count("/") + 1)}
+
+
+          def hits(files):
+              """The guarded names among the changed files, on either side of a rename."""
+              names = {f["filename"] for f in files} | {f.get("previous_filename") or "" for f in files}
+              return sorted(n for n in names if n.lower() in GUARDED)
+
+
+          def gh(path):
+              return json.loads(subprocess.run(["gh", "api", path], check=True, capture_output=True, text=True).stdout)
+
+
+          def fail(message):
+              print(f"::error::review-decisions: {message}")
+              return 1
+
+
+          def main(env, api):
+              repo, pr, head, owner, author = (env.get(k, "") for k in ("REPO", "PR", "HEAD", "OWNER", "AUTHOR"))
+              if not re.fullmatch(r"[0-9]+", pr):
+                  return fail("no pull request number")
+              if not re.fullmatch(r"[0-9a-f]{40}", head):
+                  return fail("no head commit")
+              if not owner or not author:
+                  return fail("owner or author missing")
+              if author == owner:
+                  print("The author is the owner: the decision files may change in this pull request.")
+                  return 0
+              files = []
+              for page in range(1, 32):
+                  batch = api(f"repos/{repo}/pulls/{pr}/files?per_page=100&page={page}")
+                  files += batch
+                  if len(batch) < 100:
+                      break
+              # The list must be the whole change at the commit this check reports on: GitHub lists at most
+              # 3000 files, and the head may have moved meanwhile (the newer commit gets its own run).
+              now = api(f"repos/{repo}/pulls/{pr}")
+              if (now["head"]["sha"], now["changed_files"]) != (head, len(files)):
+                  return fail(f"listed {len(files)} files at {head}, but the pull request now has "
+                              f"{now['changed_files']} at {now['head']['sha']}")
+              found = hits(files)
+              if not found:
+                  print(f"No decision file changed ({len(files)} files).")
+                  return 0
+              print(f"Decision files changed by {author}:")
+              for name in found:
+                  # "path: " first and the name as JSON, so no file name can start a workflow command.
+                  print("path: " + json.dumps(name))
+              return fail("only the owner's pull requests may change a decision file")
+
+
+          if __name__ == "__main__":
+              sys.exit(main(os.environ, gh))

@@ -47,7 +47,7 @@ case "${1:-}" in
       # A partial run is compared with the same cases of the baseline only.
       before="$out/baseline"
       mkdir -p "$before"
-      python3 -I - "$baseline/cases.jsonl" "$out/agentdojo/cases.jsonl" "$before/cases.jsonl" <<'PY'
+      uv run python -I - "$baseline/cases.jsonl" "$out/agentdojo/cases.jsonl" "$before/cases.jsonl" <<'PY'
 import json, sys
 ran = {json.loads(line)["case"] for line in open(sys.argv[2]) if line.strip()}
 with open(sys.argv[3], "w") as kept:
@@ -88,7 +88,7 @@ PY
     {
       echo "# Outer loop at $(git rev-parse --short HEAD 2>/dev/null || echo 'an unknown commit')"
       if [ -f "$out/eval-diff.json" ]; then
-        new=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["unexpected_groups"])' "$out/eval-diff.json")
+        new=$(uv run python -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["unexpected_groups"])' "$out/eval-diff.json")
         [ "$new" = 0 ] || status=1
         printf '\n## AgentDojo compared with %s: %s new\n\n```\n' "${baseline##*/}" "$new"
         cat "$out/eval-diff.txt"
