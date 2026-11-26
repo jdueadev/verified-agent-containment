@@ -112,6 +112,27 @@ pub(super) struct Enforced {
     pub(super) killed: Option<u64>,
 }
 
+/// The action record an idle reconcile pass owes (#38, H1). A Freeze or Kill
+/// whose own wait timed out is logged `ok:false` and not re-queued; the idle
+/// `drive` may confirm it later. While such a failure is `outstanding` and
+/// `held` reports the confirmation, this names the action to record as
+/// `ok:true, via:"reconcile"` and clears the debt, so the evidence shows the
+/// confirmation and its real, later time. Nothing outstanding, nothing owed.
+pub(super) fn reconcile_record(outstanding: &mut bool, enforced: Enforced, held: bool) -> Option<&'static str> {
+    if !*outstanding || !held {
+        return None;
+    }
+    *outstanding = false;
+    if enforced.killed.is_some() {
+        Some("kill_processes")
+    } else if enforced.frozen {
+        Some("freeze_processes")
+    } else {
+        // Thawed since: nothing left to confirm.
+        None
+    }
+}
+
 pub(super) fn enable_limits(parent: &Path) -> Vec<&'static str> {
     let Some(root) = parent.parent() else { return Vec::new() };
     let mut enabled = Vec::new();
@@ -164,6 +185,25 @@ mod tests {
         let seen = (generation.empty(), generation.frozen(), generation.thawed(), generation.state().is_err());
         let _ = fs::remove_dir_all(&parent);
         assert_eq!(seen, (false, false, false, true), "(empty, frozen, thawed, read failed)");
+    }
+
+    /// A reconcile pass records only a confirmation that is owed, once.
+    #[test]
+    fn reconcile_records_only_an_outstanding_confirmation() {
+        let frozen = Enforced { frozen: true, killed: None };
+        let killed = Enforced { frozen: true, killed: Some(2) };
+        let mut owed = false;
+        assert_eq!(reconcile_record(&mut owed, frozen, true), None, "nothing failed");
+        owed = true;
+        assert_eq!(reconcile_record(&mut owed, frozen, false), None, "not confirmed yet");
+        assert!(owed, "an unconfirmed pass keeps the debt");
+        assert_eq!(reconcile_record(&mut owed, frozen, true), Some("freeze_processes"));
+        assert_eq!(reconcile_record(&mut owed, frozen, true), None, "recorded once");
+        owed = true;
+        assert_eq!(reconcile_record(&mut owed, killed, true), Some("kill_processes"));
+        owed = true;
+        assert_eq!(reconcile_record(&mut owed, Enforced::default(), true), None, "thawed since");
+        assert!(!owed);
     }
 
     /// Only an explicit `0` or `1` line confirms; a missing or garbled one does not.
