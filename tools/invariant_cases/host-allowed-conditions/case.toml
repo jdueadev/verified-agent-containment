@@ -1,0 +1,3 @@
+checker = "invariants"
+origin = "#121 twin: allowed conditions, and refused ones only in comments, docs and strings"
+expect = "accept"

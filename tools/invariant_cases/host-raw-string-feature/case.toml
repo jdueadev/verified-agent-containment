@@ -1,0 +1,5 @@
+checker = "invariants"
+origin = "#121: a raw-string feature name outside the registry"
+twin = "host-allowed-conditions"
+expect = "reject"
+expect_error = '`feature = "sabotage"` is allowed only'

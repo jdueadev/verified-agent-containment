@@ -1,0 +1,5 @@
+checker = "invariants"
+origin = "#121: a build script that sets its own cfg"
+twin = "host-allowed-conditions"
+expect = "reject"
+expect_error = "has a build script"
