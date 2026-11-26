@@ -5,9 +5,14 @@
 #![no_std]
 #![forbid(unsafe_code)]
 // A panic in the kernel stops the controller (release builds abort), so explicit
-// panics and unwrapping are refused. clippy::indexing_slicing follows once
-// Actions::extend has a fail-stop that is not an index panic (#56).
-#![deny(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+// panics, unwrapping and indexing are refused. The one index left is the
+// overflow fail-stop in Actions::extend, allowed where it stands.
+#![deny(
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing
+)]
 
 /// Current containment mode, ordered from least to most contained.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -157,6 +162,9 @@ impl Actions {
         out
     }
 
+    // A plan longer than MAX_ACTIONS is a kernel bug. The index panic stops the
+    // controller instead of dropping an action, which could be RevokeSecrets.
+    #[expect(clippy::indexing_slicing, reason = "overflow fail-stop (INV-8)")]
     fn extend(&mut self, values: &[Action]) {
         for value in values {
             self.items[self.len] = Some(*value);
