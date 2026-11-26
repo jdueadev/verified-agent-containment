@@ -26,8 +26,9 @@ Already present on the machine this was written on; nothing was installed:
 
 - Rust via `rustup` (the toolchain is pinned by `rust-toolchain.toml`), `uv`
 - Node 22 or newer (the driver uses the built-in `WebSocket` and `fetch`; no `npm install`)
-- A Chromium binary. The driver finds one in `~/.cache/ms-playwright/` or takes
-  `CHROMIUM=/path/to/chrome`.
+- A Chromium binary. The driver uses `CHROMIUM=/path/to/chrome` if set, then one in
+  `~/.cache/ms-playwright/`, then the first of `google-chrome`, `google-chrome-stable`,
+  `chromium` or `chromium-browser` on `PATH`.
 
 ## Build
 
@@ -171,7 +172,7 @@ or stop.
 
 | Symptom | Fix |
 |---|---|
-| `driver: no Chromium found: set CHROMIUM=/path/to/chrome` | no browser under `~/.cache/ms-playwright/`; point `CHROMIUM` at one |
+| `driver: no Chromium found: set CHROMIUM=/path/to/chrome` | no browser under `~/.cache/ms-playwright/` or on `PATH`; point `CHROMIUM` at one |
 | `driver: cannot start Chromium: spawn ... ENOENT` | `CHROMIUM` points at nothing |
 | `driver: ... containment-lab missing: run cargo build ...` | run the Build step |
 | `FAIL [aria-current=step] is "Hold", expected "Kill"` | an `expect` did not hold; a classifier signal stopping at Hold is correct |

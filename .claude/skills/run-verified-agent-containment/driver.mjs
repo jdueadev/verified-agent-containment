@@ -21,9 +21,9 @@
 // need root and a disposable Linux or WSL2 machine (AGENTS.md).
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -46,7 +46,30 @@ function findChromium() {
       if (existsSync(join(cache, d, rel))) return join(cache, d, rel);
     }
   }
+  for (const name of ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]) {
+    const found = onPath(name);
+    if (found) return found;
+  }
   throw new Error("no Chromium found: set CHROMIUM=/path/to/chrome");
+}
+
+// The first executable NAME in a PATH directory, like `command -v NAME`.
+function onPath(name) {
+  const exts = process.platform === "win32" ? ["", ".exe"] : [""];
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      const file = join(dir, name + ext);
+      try {
+        if (!statSync(file).isFile()) continue;
+        accessSync(file, constants.X_OK);
+        return file;
+      } catch {
+        // not there or not executable: keep looking
+      }
+    }
+  }
+  return null;
 }
 
 async function browser() {
