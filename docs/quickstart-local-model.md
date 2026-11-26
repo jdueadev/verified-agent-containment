@@ -1,6 +1,6 @@
 # Quickstart: a local model in the containment (WSL2 + Ollama)
 
-> **On native Linux?** Skip Step 1 and run the commands directly inside a disposable Linux VM or container.
+> **On native Linux?** Use a disposable Linux VM or container instead of a WSL2 distribution. In Step 1, skip only the PowerShell that creates the distro; run the rest of Step 1 (packages, rustup, clone and `cargo build`) inside the VM or container, then carry on from Step 2.
 
 This runs a real agent, backed by a model you serve on your own machine, inside the containment. You watch it on the HUD and red-team it. It takes about 20 minutes. Everything runs as root in a **disposable** WSL2 distribution: the controller needs namespaces, cgroups and seccomp.
 
@@ -10,14 +10,14 @@ The model server runs **outside** the sandbox (v1). The agent never talks to it 
 
 ## 1. A disposable WSL2 distribution
 
-In PowerShell on Windows:
+In PowerShell on Windows (on native Linux, skip this block and start your VM or container instead):
 
 ```powershell
 wsl --install -d Ubuntu-24.04 --name containment-lab   # or import any recent distro
 wsl -d containment-lab
 ```
 
-Inside it:
+Inside it (on every host, native Linux included):
 
 ```bash
 sudo apt-get update && sudo apt-get install -y build-essential git curl python3
