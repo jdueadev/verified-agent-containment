@@ -1,0 +1,74 @@
+# RS-UNWRAP debt: the `unwrap`/`expect` sites in containment-host's non-test code
+# that predate the rule. tools/unwrap_check.py fails on any site not listed here and
+# on any entry whose count is higher than the source. This list may only shrink:
+# `uv run tools/unwrap_check.py --update` lowers counts and never raises them.
+
+[[site]]
+file = "crates/containment-host/src/agent.rs"
+item = "fn escape_attempts"
+call = "expect"
+message = "static"
+count = 1
+
+[[site]]
+file = "crates/containment-host/src/agent.rs"
+item = "fn memfd_exec_elf"
+call = "expect"
+message = "static"
+count = 3
+
+[[site]]
+file = "crates/containment-host/src/agent.rs"
+item = "fn windows_exec"
+call = "expect"
+message = "static"
+count = 2
+
+[[site]]
+file = "crates/containment-host/src/common.rs"
+item = "fn record_mac"
+call = "expect"
+message = "HMAC accepts any key length"
+count = 1
+
+[[site]]
+file = "crates/containment-host/src/controller.rs"
+item = "fn lock"
+call = "expect"
+message = "controller lock"
+count = 1
+
+[[site]]
+file = "crates/containment-host/src/controller.rs"
+item = "impl Shared::fn apply"
+call = "expect"
+message = "at least one step"
+count = 1
+
+[[site]]
+file = "crates/containment-host/src/controller.rs"
+item = "impl Shared::fn enforcer"
+call = "expect"
+message = "queue"
+count = 1
+
+[[site]]
+file = "crates/containment-host/src/controller.rs"
+item = "impl Shared::fn perform"
+call = "expect"
+message = "recreate"
+count = 1
+
+[[site]]
+file = "crates/containment-host/src/controller/gateway.rs"
+item = "fn gateway_decide"
+call = "expect"
+message = "live"
+count = 2
+
+[[site]]
+file = "crates/containment-host/src/http.rs"
+item = "fn tls_config"
+call = "expect"
+message = "ring supports the default TLS versions"
+count = 1

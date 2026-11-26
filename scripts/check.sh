@@ -16,6 +16,7 @@ out=target/verify
 mkdir -p "$out" target/generated
 
 uv run tools/invariants_check.py
+uv run tools/unwrap_check.py
 
 uv run tools/generate_proof.py --check
 (cd formal && bend PROOF.bend --check-only)
