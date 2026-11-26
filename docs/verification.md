@@ -64,11 +64,11 @@ T=/tmp/verified-agent-containment-target
 cargo build --release -p containment-host --target-dir "$T/default"
 cargo build --release -p containment-host --features sabotage --target-dir "$T/sabotage"
 # Honest runs on the default build, which is the one that ships.
-sudo "$T/default/release/containment-lab" attack-suite --repeat 30 --out results/attack-suite-honest.json
-sudo "$T/default/release/containment-lab" live-suite --out results/live-suite-honest.json
+sudo FACTORY_LAB_DISPOSABLE=1 "$T/default/release/containment-lab" attack-suite --repeat 30 --out results/attack-suite-honest.json
+sudo FACTORY_LAB_DISPOSABLE=1 "$T/default/release/containment-lab" live-suite --out results/live-suite-honest.json
 # Sabotage controls on the build that contains the defects; each takes the honest runs from the file above.
-sudo "$T/sabotage/release/containment-lab" attack-suite --honest-results results/attack-suite-honest.json --out results/attack-suite-local.json
-sudo "$T/sabotage/release/containment-lab" live-suite --honest-results results/live-suite-honest.json --out results/live-suite-local.json
+sudo FACTORY_LAB_DISPOSABLE=1 "$T/sabotage/release/containment-lab" attack-suite --honest-results results/attack-suite-honest.json --out results/attack-suite-local.json
+sudo FACTORY_LAB_DISPOSABLE=1 "$T/sabotage/release/containment-lab" live-suite --honest-results results/live-suite-honest.json --out results/live-suite-local.json
 # add --allow-missing-limits only if the host has no cgroup v2 pids/memory/cpu controllers; it is recorded
 ```
 

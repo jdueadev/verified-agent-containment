@@ -8,7 +8,7 @@ This repository is a containment controller for AI agents. The work that matters
 scripts/factory.sh check
 ```
 
-It builds the pinned image and runs `scripts/check.sh` inside it: the kernel-purity and sabotage checks, the `unwrap`/`expect` ratchet on the host, the Bend proofs, clippy and tests for both feature sets, the Rust-to-Bend and Rust-to-wasm differentials, the mutation check, the TLA+ model, and the tool tests. Results go to `target/verify/`. If you have the tools installed, `scripts/check.sh` runs the same thing directly.
+It builds the pinned image and runs `scripts/check.sh` inside it: the kernel-purity and sabotage checks, the `unwrap`/`expect` ratchet on the host, the throwaway-marker check, the Bend proofs, clippy and tests for both feature sets, the Rust-to-Bend and Rust-to-wasm differentials, the mutation check, the TLA+ model, and the tool tests. Results go to `target/verify/`. If you have the tools installed, `scripts/check.sh` runs the same thing directly.
 
 A change to `crates/containment-host/src/controller/admission.rs`, `controller/gate.rs` or the kernel's `authorize` also needs `scripts/kani.sh`, the Kani proofs of the gateway's admission (`.claude/skills/verify-gateway-admission/SKILL.md`). `scripts/factory.sh kani` runs it in the factory's `kani` image, with no network; `check` does not run it. The `kani` workflow runs it on every pull request and push to `main`.
 
@@ -27,7 +27,7 @@ On a pull request, the required `check` workflow runs the same checks. It lives 
 - Lab results count only when `tools/lab_evidence.py verify` accepts them: a full pass, sealed and signed by the `lab` workflow. A lab run on your own machine is for finding out, not for proving.
 - Do not weaken or delete a check, law, mutant or scenario to make something pass. If one is wrong, say so in the pull request.
 - Python is run with `uv` (`uv run tools/<name>.py`). The Python version is in `.python-version`; every other tool version is in `ci/pins.env` and `rust-toolchain.toml`.
-- Run the root lab only in a disposable Linux or WSL2 machine.
+- Run the root lab only in a disposable Linux or WSL2 machine. Every root entry point refuses to start unless `FACTORY_LAB_DISPOSABLE=1` confirms it: `scripts/factory.sh lab`, the scripts under `scripts/`, and `containment-lab attack-suite`, `live`, `live-suite` and `redteam` (`sudo FACTORY_LAB_DISPOSABLE=1 containment-lab ...`). `tools/lab_throwaway_check.py` fails when one does not. Whether a machine is disposable is a judgment no check can make: set the marker only on a machine you would wipe. The `lab` workflow sets it on its GitHub runner, and `scripts/lab/lab.ps1` sets it inside the WSL2 distro it imports for that run.
 
 ## Where things are
 

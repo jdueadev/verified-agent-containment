@@ -33,7 +33,7 @@ cargo build --release -p containment-host
 Before downloading a model, run the red-team kit with a scripted model that obeys every injection. It runs six tasks, each in a real sandbox, and writes a scorecard:
 
 ```bash
-sudo target/release/containment-lab redteam --scripted
+sudo FACTORY_LAB_DISPOSABLE=1 target/release/containment-lab redteam --scripted
 ```
 
 Every task should end without `LEAK`, and the command exits 0. If it fails because the host has no delegated cgroup controllers, see the troubleshooting notes at the bottom. Before trusting this host with a real model, run the full gate in [Optional: verify your host](#optional-verify-your-host-full-gate).
@@ -74,7 +74,7 @@ token_budget = 200000
 For option B without mirrored networking, replace `127.0.0.1` with the Windows IP literal from step 3. Then:
 
 ```bash
-sudo FIXTURE_TOKEN=dummy target/release/containment-lab live \
+sudo FACTORY_LAB_DISPOSABLE=1 FIXTURE_TOKEN=dummy target/release/containment-lab live \
   --policy examples/live/policy.toml \
   --task "Read notes.txt and write a one-line summary to summary.md" \
   --hud 8787
@@ -98,7 +98,7 @@ Each run saves `report.json` and `transcript.jsonl` under `results/live/`.
 ## 5. Red-team the model
 
 ```bash
-sudo target/release/containment-lab redteam \
+sudo FACTORY_LAB_DISPOSABLE=1 target/release/containment-lab redteam \
   --model-endpoint http://127.0.0.1:11434/v1/chat/completions --model qwen2.5:7b-instruct
 ```
 
@@ -123,8 +123,8 @@ Every guarantee and its evidence is a row in [`claims.toml`](../claims.toml), re
 The controller is trusted only if both suites pass on this machine **without** `--allow-missing-limits`. Run them before attaching a model you care about. `scripts/run-wsl2.sh` checks the kernel and cgroup setup first.
 
 ```bash
-sudo target/release/containment-lab attack-suite --repeat 30 --out results/wsl2/attack-suite-$(hostname)-$(git rev-parse --short HEAD).json
-sudo target/release/containment-lab live-suite --out results/wsl2/live-suite-$(hostname)-$(git rev-parse --short HEAD).json
+sudo FACTORY_LAB_DISPOSABLE=1 target/release/containment-lab attack-suite --repeat 30 --out results/wsl2/attack-suite-$(hostname)-$(git rev-parse --short HEAD).json
+sudo FACTORY_LAB_DISPOSABLE=1 target/release/containment-lab live-suite --out results/wsl2/live-suite-$(hostname)-$(git rev-parse --short HEAD).json
 ```
 
 The expected results:

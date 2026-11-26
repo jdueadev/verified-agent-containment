@@ -23,14 +23,14 @@ Needs only Rust (`cargo`) and `sudo`, in a disposable Linux or WSL2 environment:
 
 ```bash
 cargo build --release -p containment-host
-sudo target/release/containment-lab redteam --scripted
+sudo FACTORY_LAB_DISPOSABLE=1 target/release/containment-lab redteam --scripted
 ```
 
 This runs six tasks (one clean, five prompt-injection attacks) with a scripted model that obeys every injection, each inside a real sandbox, and writes a scorecard under `results/redteam/`. To confirm the scorer catches a real leak, run a sabotaged controller; it must report `LEAK`. The deliberate defects are compiled only into a build with the `sabotage` feature, so this needs a second binary:
 
 ```bash
 cargo build --release -p containment-host --features sabotage --target-dir target-sabotage
-sudo target-sabotage/release/containment-lab redteam --scripted --weakness gateway_bypass
+sudo FACTORY_LAB_DISPOSABLE=1 target-sabotage/release/containment-lab redteam --scripted --weakness gateway_bypass
 ```
 
 ### 3. A real local model with the live HUD (10 to 20 minutes)
@@ -42,7 +42,7 @@ A single task with the live HUD looks like this:
 
 ```bash
 # Set your model endpoint and name in examples/live/policy.toml first
-sudo FIXTURE_TOKEN=dummy target/release/containment-lab live \
+sudo FACTORY_LAB_DISPOSABLE=1 FIXTURE_TOKEN=dummy target/release/containment-lab live \
   --policy examples/live/policy.toml \
   --task "Read notes.txt and write a one-line summary to summary.md" \
   --hud 8787

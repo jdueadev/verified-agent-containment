@@ -153,7 +153,8 @@ try {
     Say "STEP 4/6 inside the distro: tools, build, model, suites, red team (see logs\inside-$stamp.log)"
     $inside = ToWsl (Join-Path $Root "lab-inside.sh")
     $insideArgs = @($inside, "--lab", (ToWsl $Root), "--repo", (ToWsl $Repo), "--model", $Model, "--stamp", $stamp, "--only", $Only)
-    & wsl.exe -d $Name -u root -- bash @insideArgs
+    # The distro was imported above for this run alone, so it is disposable; lab-inside.sh refuses without the marker.
+    & wsl.exe -d $Name -u root -- env FACTORY_LAB_DISPOSABLE=1 bash @insideArgs
     $exitCode = $LASTEXITCODE
     if ($exitCode -eq 0) { Say "DONE lab ${stamp}: results in $Root\results\$stamp" }
     else { Say "FAILED lab $stamp (exit $exitCode): see $Root\logs\inside-$stamp.log" }
