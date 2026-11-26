@@ -6,6 +6,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Deserialize)]
@@ -89,6 +90,81 @@ fn model_limits(model: &Model) -> Result<crate::http::Limits, String> {
         Some(seconds @ 1..=MAX_MODEL_TIMEOUT_SECONDS) => Ok(crate::http::Limits::model_within(seconds)),
         Some(seconds) => Err(format!("model.timeout_seconds is {seconds}; give 1 to {MAX_MODEL_TIMEOUT_SECONDS}")),
     }
+}
+
+/// Host trees a supplied root may not be or lie under: they hold host state,
+/// credentials, sockets and other runs' directories. `/` itself is refused too.
+pub const FORBIDDEN_ROOTS: [&str; 10] = ["/etc", "/home", "/root", "/proc", "/sys", "/dev", "/run", "/var/run", "/mnt", "/tmp"];
+/// Most entries a supplied root's tree may have, so the check ends.
+pub const MAX_ROOT_ENTRIES: u64 = 1_000_000;
+
+/// The supplied root as it will be bound: canonical, not a host system tree, and
+/// with no socket in what the sandbox would see of it. Each top-level entry is
+/// bound without recursion, so the walk stays on that entry's filesystem.
+fn check_root(dir: &Path, forbidden: &[&str]) -> Result<PathBuf, String> {
+    let shown = dir.display();
+    let missing = || format!("root.dir {shown}: not an existing directory given by an absolute path");
+    if !dir.is_absolute() {
+        return Err(missing());
+    }
+    let canonical = fs::canonicalize(dir).ok().filter(|p| p.is_dir()).ok_or_else(missing)?;
+    if canonical == Path::new("/") {
+        return Err(format!("root.dir {shown}: is the host's /"));
+    }
+    if let Some(tree) = forbidden.iter().find(|tree| canonical.starts_with(tree)) {
+        return Err(format!("root.dir {shown}: resolves to {}, under {tree}", canonical.display()));
+    }
+    let mut seen = 0;
+    let entries = fs::read_dir(&canonical).map_err(|e| format!("root.dir {shown}: {e}"))?;
+    for entry in entries {
+        let path = entry.map_err(|e| format!("root.dir {shown}: {e}"))?.path();
+        let dev = fs::symlink_metadata(&path).map_err(|e| format!("root.dir {}: {e}", path.display()))?.dev();
+        find_socket(&path, dev, &mut seen)?;
+    }
+    Ok(canonical)
+}
+
+fn find_socket(path: &Path, dev: u64, seen: &mut u64) -> Result<(), String> {
+    use std::os::unix::fs::FileTypeExt;
+    *seen += 1;
+    if *seen > MAX_ROOT_ENTRIES {
+        return Err(format!("root.dir: more than {MAX_ROOT_ENTRIES} entries to check"));
+    }
+    let meta = fs::symlink_metadata(path).map_err(|e| format!("root.dir {}: {e}", path.display()))?;
+    if meta.file_type().is_socket() {
+        return Err(format!("root.dir: {} is a socket", path.display()));
+    }
+    if meta.is_dir() && meta.dev() == dev {
+        for entry in fs::read_dir(path).map_err(|e| format!("root.dir {}: {e}", path.display()))? {
+            find_socket(&entry.map_err(|e| format!("root.dir {}: {e}", path.display()))?.path(), dev, seen)?;
+        }
+    }
+    Ok(())
+}
+
+/// Largest `timing` values and `run` limits a policy may set.
+pub const MAX_FREEZE_GRACE_MS: u64 = 60_000;
+pub const MAX_HOLD_MS: u64 = 300_000;
+pub const MAX_RUN_STEPS: u64 = 10_000;
+pub const MAX_RUN_SECONDS: u64 = 86_400;
+
+/// Refuses timing and run limits outside their ranges: a huge hold window or
+/// freeze grace would switch the classifier holds or the kill off in effect.
+fn check_limits(policy: &Policy) -> Result<(), String> {
+    let t = &policy.timing;
+    let r = &policy.run;
+    for (name, value, low, high) in [
+        ("timing.freeze_grace_ms", t.freeze_grace_ms, 0, MAX_FREEZE_GRACE_MS),
+        ("timing.blind_hold_ms", t.blind_hold_ms, 1, MAX_HOLD_MS),
+        ("timing.down_hold_ms", t.down_hold_ms, 1, MAX_HOLD_MS),
+        ("run.max_steps", r.max_steps, 1, MAX_RUN_STEPS),
+        ("run.max_seconds", r.max_seconds, 1, MAX_RUN_SECONDS),
+    ] {
+        if !(low..=high).contains(&value) {
+            return Err(format!("{name} is {value}; give {low} to {high}"));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -186,15 +262,15 @@ pub struct LiveState {
 
 impl LiveState {
     pub fn load(policy_path: &Path, workload: &Workload, canary: String) -> Result<Self, Box<dyn Error>> {
-        let policy: Policy = toml::from_str(&fs::read_to_string(policy_path)?)?;
-        if let Some(root) = &policy.root {
+        let mut policy: Policy = toml::from_str(&fs::read_to_string(policy_path)?)?;
+        // Runs at start, before the controller holds any lock: the root check walks a tree.
+        if let Some(root) = &mut policy.root {
             if !matches!(workload, Workload::Program(_)) {
                 return Err("[root] is only for an outside program, given after -- on the command line".into());
             }
-            if !root.dir.is_absolute() || !root.dir.is_dir() {
-                return Err(format!("root.dir {}: not an existing directory given by an absolute path", root.dir.display()).into());
-            }
+            root.dir = check_root(&root.dir, &FORBIDDEN_ROOTS)?;
         }
+        check_limits(&policy)?;
         let model_url = Url::parse(&policy.model.endpoint).ok_or("model.endpoint is not an http(s) URL")?;
         let model_limits = model_limits(&policy.model)?;
         let mut creds = BTreeMap::new();
@@ -319,13 +395,111 @@ mod tests {
     fn a_root_directory_needs_an_outside_program_and_an_existing_directory() {
         let program = Workload::Program(vec!["/bin/tool".to_owned()]);
         let task = Workload::Task("t".to_owned());
-        let existing = std::env::temp_dir();
-        let with_root = format!("{MODEL}[root]\ndir = \"{}\"\n", existing.display());
-        assert!(load(&with_root, &program).is_ok_and(|l| l.policy.root.is_some_and(|r| r.dir == existing)));
-        assert!(load(&with_root, &task).is_err_and(|e| e.contains("outside program")));
-        assert!(load(&format!("{MODEL}[root]\ndir = \"/no/such/dir\"\n"), &program).is_err_and(|e| e.contains("not an existing directory")));
-        assert!(load(&format!("{MODEL}[root]\ndir = \"relative\"\n"), &program).is_err());
+        let with_root = |dir: &str| format!("{MODEL}[root]\ndir = \"{dir}\"\n");
+        assert!(load(&with_root("/usr"), &task).is_err_and(|e| e.contains("outside program")));
+        assert!(load(&with_root("/no/such/dir"), &program).is_err_and(|e| e.contains("not an existing directory")));
+        assert!(load(&with_root("relative"), &program).is_err());
         assert!(load(MODEL, &program).is_ok_and(|l| l.policy.root.is_none()));
+        // The loader applies the host-tree check (accepted roots: check_root tests below).
+        assert!(load(&with_root("/tmp"), &program).is_err_and(|e| e.contains("under /tmp")));
+        assert!(load(&with_root("/proc/self/root"), &program).is_err_and(|e| e.contains("host's /")));
+    }
+
+    /// A fresh directory under the system temp dir, removed on drop.
+    struct Scratch(PathBuf);
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("vac-root-{name}-{}-{}", std::process::id(), crate::common::boot_ns()));
+            fs::create_dir_all(&dir).expect("scratch dir");
+            Self(fs::canonicalize(&dir).expect("canonical scratch"))
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    // Scratch lives under the temp dir, so these checks leave /tmp off the list.
+    const NOT_TMP: [&str; 9] = ["/etc", "/home", "/root", "/proc", "/sys", "/dev", "/run", "/var/run", "/mnt"];
+
+    #[test]
+    fn a_root_is_refused_when_it_is_or_resolves_into_a_host_tree() {
+        for dir in ["/", "/etc", "/etc/ssl", "/home", "/root", "/proc", "/sys/fs", "/dev", "/run", "/mnt", "/tmp", "/proc/self/root", "/var/run"] {
+            if Path::new(dir).exists() {
+                assert!(check_root(Path::new(dir), &FORBIDDEN_ROOTS).is_err(), "{dir} was accepted");
+            }
+        }
+        // Component-wise: a sibling whose name starts with a forbidden one is not under it.
+        let scratch = Scratch::new("prefix");
+        let etcetera = scratch.0.join("etcetera");
+        fs::create_dir(&etcetera).unwrap();
+        assert_eq!(check_root(&etcetera, &[scratch.0.join("etc").to_str().unwrap()]), Ok(etcetera.clone()));
+        // A symlink is followed before the check: one into /etc is refused.
+        let link = scratch.0.join("to-etc");
+        std::os::unix::fs::symlink("/etc", &link).unwrap();
+        assert!(check_root(&link, &NOT_TMP).is_err_and(|e| e.contains("resolves to /etc, under /etc")));
+    }
+
+    #[test]
+    fn an_accepted_root_is_canonical() {
+        let scratch = Scratch::new("canonical");
+        fs::create_dir_all(scratch.0.join("real/bin")).unwrap();
+        fs::write(scratch.0.join("real/bin/tool"), "").unwrap();
+        std::os::unix::fs::symlink("real", scratch.0.join("alias")).unwrap();
+        let given = scratch.0.join("alias/bin/..");
+        assert_eq!(check_root(&given, &NOT_TMP), Ok(scratch.0.join("real")));
+        // The same directory with /tmp on the list, as the loader runs it.
+        if scratch.0.starts_with("/tmp") {
+            assert!(check_root(&given, &FORBIDDEN_ROOTS).is_err_and(|e| e.contains("under /tmp")));
+        }
+    }
+
+    #[test]
+    fn a_root_with_a_socket_in_its_tree_is_refused() {
+        let scratch = Scratch::new("socket");
+        fs::create_dir_all(scratch.0.join("usr/lib/deep")).unwrap();
+        fs::write(scratch.0.join("usr/lib/libc.so"), "").unwrap();
+        assert!(check_root(&scratch.0, &NOT_TMP).is_ok());
+        let socket = scratch.0.join("usr/lib/deep/agent.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        assert!(check_root(&scratch.0, &NOT_TMP).is_err_and(|e| e.contains("agent.sock is a socket")));
+        // A socket at the top level is refused too.
+        fs::remove_file(&socket).unwrap();
+        let _top = std::os::unix::net::UnixListener::bind(scratch.0.join("docker.sock")).unwrap();
+        assert!(check_root(&scratch.0, &NOT_TMP).is_err_and(|e| e.contains("docker.sock is a socket")));
+    }
+
+    #[test]
+    fn a_symlink_in_a_root_is_not_followed_into_a_socket() {
+        // Symlinks are recreated in the sandbox, not followed, so the check does not
+        // follow them either; their targets resolve inside the sandbox's own root.
+        let outside = Scratch::new("outside");
+        let _listener = std::os::unix::net::UnixListener::bind(outside.0.join("host.sock")).unwrap();
+        let scratch = Scratch::new("link");
+        std::os::unix::fs::symlink(&outside.0, scratch.0.join("out")).unwrap();
+        assert!(check_root(&scratch.0, &NOT_TMP).is_ok());
+    }
+
+    #[test]
+    fn timing_and_run_limits_out_of_range_are_refused() {
+        let task = Workload::Task("t".to_owned());
+        for (table, key, bad, good) in [
+            ("timing", "freeze_grace_ms", MAX_FREEZE_GRACE_MS + 1, MAX_FREEZE_GRACE_MS),
+            ("timing", "blind_hold_ms", MAX_HOLD_MS + 1, MAX_HOLD_MS),
+            ("timing", "blind_hold_ms", 0, 1),
+            ("timing", "down_hold_ms", i64::MAX as u64, MAX_HOLD_MS),
+            ("timing", "down_hold_ms", 0, 1),
+            ("run", "max_steps", 0, 1),
+            ("run", "max_steps", MAX_RUN_STEPS + 1, MAX_RUN_STEPS),
+            ("run", "max_seconds", 0, 1),
+            ("run", "max_seconds", MAX_RUN_SECONDS + 1, MAX_RUN_SECONDS),
+        ] {
+            let policy = |value: u64| format!("{MODEL}[{table}]\n{key} = {value}\n");
+            assert!(load(&policy(bad), &task).is_err_and(|e| e.contains(&format!("{table}.{key} is {bad}"))), "{table}.{key} = {bad} was accepted");
+            assert!(load(&policy(good), &task).is_ok(), "{table}.{key} = {good} was refused");
+        }
+        assert!(load(&format!("{MODEL}[timing]\nfreeze_grace_ms = 0\n"), &task).is_ok());
     }
 
     #[test]
