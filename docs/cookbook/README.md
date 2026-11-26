@@ -23,8 +23,8 @@ Every recipe has these five sections, in this order:
    to the lines quoted.
 3. **Break it.** Pick one mutant from `tools/kernel_mutants.py` that the claim
    lists, show the edit as a diff, and show the proof failure. Label any output
-   by where it came from: a hand run (say when), or the regenerated
-   `results/mutation-check.json`. Never show output that no run produced.
+   by where it came from: a hand run (say when), or the
+   `target/verify/mutation-check.json` that `scripts/check.sh` writes. Never show output that no run produced.
 4. **Reproduce.** List only commands that need no root and that `scripts/check.sh`
    already runs. Break things in a scratch copy, never in the working tree.
    Leave lab suites out; link to [`docs/verification.md`](../verification.md).
@@ -44,10 +44,9 @@ changes:
   Rust kernel, and the scenario or check that must catch it. Quote lab results
   only from a committed file under `results/`, say which run produced them, and
   never show them as live.
-- **Reproduce** gives no command that needs root. Lab runs belong in a
-  throwaway machine (INV-11 in [`AGENTS.md`](../../AGENTS.md)), so link to
+- **Reproduce** gives no command that needs root. [`AGENTS.md`](../../AGENTS.md)
+  allows the root lab only in a disposable Linux or WSL2 machine, so link to
   [`docs/verification.md`](../verification.md) instead.
 
-Recipes are documentation (lane A). They must not edit any file a claim lists,
-so nothing here can make evidence stale. Nothing checks the quoted text
-mechanically yet, so a reviewer compares it with its source.
+Nothing checks the quoted text mechanically yet, so a reviewer compares it with
+its source.

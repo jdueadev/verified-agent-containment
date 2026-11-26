@@ -78,5 +78,5 @@ The exit code is 0 only if every step passed and no red-team task leaked.
   - the SHA-256 of `Cargo.lock` and of `.cargo/config.toml`;
   - the C compiler, the linker, and the `gcc`, `binutils` and `libc6-dev` packages.
 
-  After the build, `rustc -vV`, `cargo -V` and both paths must still succeed and must not have changed. That is a tripwire, not proof: code that runs during the build could fake them. The record is written by the same script that builds the binaries, so whether it is authentic is review-only (INV-1). The binary SHA-256s remain the strongest link to the evidence.
+  After the build, `rustc -vV`, `cargo -V` and both paths must still succeed and must not have changed. That is a tripwire, not proof: code that runs during the build could fake them. The record is written by the same script that builds the binaries, so nothing checks that it is authentic. The binary SHA-256s remain the strongest link to the evidence.
 - **Thinking is off.** The red-team policy caps each model call at 1024 tokens, and a thinking model would spend them reasoning instead of calling tools.

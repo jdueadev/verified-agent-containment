@@ -7,7 +7,7 @@
 //! recreated as it is on the host, and each final regular file bound read-only.
 //!
 //! Anything it cannot resolve exactly is an error, and the sandbox then fails to start
-//! (INV-7: unconfirmed means stopped). In particular it refuses `DT_RPATH`,
+//! (unconfirmed means stopped). In particular it refuses `DT_RPATH`,
 //! `DT_RUNPATH`, `$ORIGIN`-style tokens and a `DT_NEEDED` entry containing `/`: each
 //! would make the loader look somewhere this plan does not cover.
 

@@ -16,9 +16,9 @@ a host recipe: nothing on this page runs in your browser or without root.
 
 The kernel decides *what* should happen (for example: revoke secrets, block
 egress, freeze the processes). The host has to make it happen, and an actuator
-can fail: a write to the cgroup can fail, or a freeze may not take. The rule is
-INV-7 in [`AGENTS.md`](../../AGENTS.md): enforcement that cannot be read back
-ends in fail-stop, never in "assume it worked".
+can fail: a write to the cgroup can fail, or a freeze may not take. The rule:
+enforcement that cannot be read back ends in fail-stop, never in "assume it
+worked".
 
 ## Where it is enforced
 
@@ -82,12 +82,14 @@ records both controls as `"detected": true`, each with the failed checks
 
 ## Reproduce
 
-The scenarios need root and change cgroups, so they run only in a throwaway
-Linux or WSL2 machine (INV-11). There are no commands on this page on purpose;
-[`docs/verification.md`](../verification.md) has the lab instructions, and
+The scenarios need root and change cgroups, and [`AGENTS.md`](../../AGENTS.md)
+allows the root lab only in a disposable Linux or WSL2 machine. There are no
+commands on this page on purpose; [`docs/verification.md`](../verification.md)
+has the lab instructions, and
 [`scripts/lab/README.md`](../../scripts/lab/README.md) the one-click Windows
-route. The maintainer runs the lab; its output lands under `results/` in a
-follow-up pull request.
+route. The `lab` workflow runs both suites on a GitHub runner for every pull
+request and push to `main` and signs the results;
+[`docs/verification.md`](../verification.md) says how to check a run.
 
 ## What this does not prove
 
@@ -103,8 +105,7 @@ follow-up pull request.
 - **The order of actions is a kernel claim.** That every stop revokes secrets
   and blocks egress before it freezes or kills is K-PLAN-01, proved on the Bend
   model. This claim is about the host carrying out whatever plan it is given.
-- **Host code can fool the lab.** That is why host code is lane C
-  ([#83](https://github.com/jdueadev/verified-agent-containment/issues/83)).
-  The maintainer's approval is required for an author who is not on the
-  `trusted` list in `ci/lanes.toml`, and for every pull request from a fork
-  ([AGENTS.md](../../AGENTS.md)).
+- **Host code can fool the lab.** The controller under test and the suites
+  that judge it come from the same checkout, so on a pull request its author
+  controls both. Only lab results signed for `main` say anything about merged
+  code ([`docs/verification.md`](../verification.md)).

@@ -1,6 +1,6 @@
 # Evidence rules
 
-What a claim's evidence must satisfy. Before the cut at tag `pre-factory`, `tools/claims_check.py` and `tools/results_ratchet.py` enforced these on every commit. Nothing enforces them now. They are kept as the list to work from when the claims are reset and re-earned.
+What a claim's evidence must satisfy. Until the cut at tag `pre-factory`, the claims checker and the results ratchet enforced these on every commit; both remain in that tag. Nothing enforces them now. They are kept as the list to work from when the claims are reset and re-earned.
 
 ## A claim
 

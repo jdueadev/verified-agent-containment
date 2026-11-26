@@ -2,7 +2,7 @@
 
 > **Frozen at tag `pre-factory`, not yet re-verified.** The tooling that checked these claims was removed, along with older result folders this page cites; both remain in the tag. The claims will be reset and re-earned. See [`evidence-rules.md`](evidence-rules.md).
 
-The results behind every guarantee in the [README](../README.md). Each guarantee, its evidence and its falsifier is also a row in [`claims.toml`](../claims.toml), rendered as [`claims.md`](claims.md) and checked by `tools/claims_check.py`. To rerun any of this yourself, see [`verification.md`](verification.md).
+The results behind every guarantee in the [README](../README.md). Each guarantee, its evidence and its falsifier is also a row in [`claims.toml`](../claims.toml), rendered as [`claims.md`](claims.md). To rerun any of this yourself, see [`verification.md`](verification.md).
 
 ## Result
 

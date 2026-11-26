@@ -585,7 +585,7 @@ fn drop_authority(uid: u32, seccomp: bool, keep: libc::c_int) -> Result<(), Box<
     limit(libc::RLIMIT_FSIZE, 16 * 1024 * 1024)?;
     // SAFETY: these calls change only this process's credentials and flags.
     unsafe {
-        // Unconfirmed means stopped (INV-7): a failed close_range would leave the
+        // Unconfirmed means stopped: a failed close_range would leave the
         // controller's descriptors open in the agent.
         if keep > 3 {
             check(libc::syscall(libc::SYS_close_range, 3_u32, keep - 1, 0_u32) as libc::c_int)?;
