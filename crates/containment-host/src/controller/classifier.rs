@@ -68,17 +68,20 @@ pub(super) struct SystemOneSpec {
 pub(super) fn spawn_system_one(spec: &SystemOneSpec, restarted: bool) -> std::io::Result<(Child, OwnedFd, UnixDatagram)> {
     let mut pipe = [0; 2];
     let mut pair = [0; 2];
-    // SAFETY: both arrays are valid two-element outputs.
-    unsafe {
-        if libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) != 0
-            || libc::socketpair(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0, pair.as_mut_ptr()) != 0
-        {
+    // Each pair is owned as soon as it exists, so a later failure closes it.
+    // SAFETY: pipe is a valid two-element output; on success nothing else owns the descriptors.
+    let (trace_read, trace_write) = unsafe {
+        if libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) != 0 {
             return Err(std::io::Error::last_os_error());
         }
-    }
-    // SAFETY: the calls above returned these descriptors and nothing else owns them.
-    let (trace_read, trace_write, mine, theirs) = unsafe {
-        (OwnedFd::from_raw_fd(pipe[0]), OwnedFd::from_raw_fd(pipe[1]), OwnedFd::from_raw_fd(pair[0]), OwnedFd::from_raw_fd(pair[1]))
+        (OwnedFd::from_raw_fd(pipe[0]), OwnedFd::from_raw_fd(pipe[1]))
+    };
+    // SAFETY: as above, for the socket pair.
+    let (mine, theirs) = unsafe {
+        if libc::socketpair(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0, pair.as_mut_ptr()) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        (OwnedFd::from_raw_fd(pair[0]), OwnedFd::from_raw_fd(pair[1]))
     };
     // SAFETY: fcntl on descriptors this function owns.
     unsafe {
@@ -107,14 +110,16 @@ pub(super) fn spawn_system_one(spec: &SystemOneSpec, restarted: bool) -> std::io
                 return Err(std::io::Error::last_os_error());
             }
             // Move both ends above fd 4 first so dup2 cannot clobber one with the other,
-            // then place them and close everything else.
+            // then place them and mark everything else close-on-exec. Not closed here:
+            // std reports a failed step or exec through a pipe in this range, and
+            // closing it would make spawn() return Ok for a child that never ran.
             let high_read = libc::fcntl(read_fd, libc::F_DUPFD, 10);
             let high_out = libc::fcntl(out_fd, libc::F_DUPFD, 10);
             check(high_read)?;
             check(high_out)?;
             check(libc::dup2(high_read, crate::system_one::TRACE_FD))?;
             check(libc::dup2(high_out, crate::system_one::VERDICT_FD))?;
-            check(libc::syscall(libc::SYS_close_range, 5_u32, u32::MAX, 0_u32) as libc::c_int)?;
+            check(libc::syscall(libc::SYS_close_range, 5_u32, u32::MAX, libc::CLOSE_RANGE_CLOEXEC) as libc::c_int)?;
             let limit = |resource, value| check(libc::setrlimit(resource, &libc::rlimit { rlim_cur: value, rlim_max: value }));
             limit(libc::RLIMIT_NPROC, 64)?;
             limit(libc::RLIMIT_NOFILE, 64)?;
@@ -186,6 +191,19 @@ pub(super) fn read_verdicts(shared: &Shared, socket: &UnixDatagram, epoch: u64, 
     }
 }
 
+/// Marks System One down. The outage start and its activity baseline are
+/// taken once, when the outage begins: a failed restart later in the same
+/// outage must not move the baseline, or an agent that kept acting would look
+/// idle and the classifier_down Hold would never fire.
+fn note_outage(down_since: &Mutex<Option<u64>>, dropped_at_down: &AtomicU64, dropped_logs: &AtomicU64, now: u64) {
+    let mut down = lock(down_since);
+    if down.is_none() {
+        *down = Some(now);
+        // Only activity after this point makes the agent count as busy.
+        dropped_at_down.store(dropped_logs.load(Ordering::Relaxed), Ordering::SeqCst);
+    }
+}
+
 /// Keeps System One running. While it is down, trace records are dropped
 /// (which restricts) and the down timer runs (which holds a busy agent).
 pub(super) fn supervise_system_one(shared: Arc<Shared>, spec: SystemOneSpec) {
@@ -229,16 +247,59 @@ pub(super) fn supervise_system_one(shared: Arc<Shared>, spec: SystemOneSpec) {
             shared.dropped_logs.fetch_add(lost, Ordering::Relaxed);
             apply_classifier(&shared, Some("classifier_lost_records"), boot_ns(), Level::Restrict);
         }
-        {
-            let mut down = lock(&shared.s1_down_since);
-            if down.is_none() {
-                *down = Some(boot_ns());
-            }
-            // Only activity after this point makes the agent count as busy.
-            shared.s1_dropped_at_down.store(shared.dropped_logs.load(Ordering::Relaxed), Ordering::SeqCst);
-        }
+        note_outage(&shared.s1_down_since, &shared.s1_dropped_at_down, &shared.dropped_logs, boot_ns());
         shared.s1_restarts.fetch_add(1, Ordering::Relaxed);
         restarted = true;
         thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_restart_keeps_the_outage_baseline() {
+        let (down, baseline, dropped) = (Mutex::new(None), AtomicU64::new(0), AtomicU64::new(3));
+        note_outage(&down, &baseline, &dropped, 100);
+        // The agent keeps acting while System One is down: its records are dropped.
+        dropped.fetch_add(5, Ordering::Relaxed);
+        // The restart fails and the outage is noted again.
+        note_outage(&down, &baseline, &dropped, 200);
+        assert_eq!(*lock(&down), Some(100), "the outage start moved");
+        assert_eq!(baseline.load(Ordering::SeqCst), 3, "the activity baseline moved, so an active agent looks idle");
+        assert!(dropped.load(Ordering::Relaxed) > baseline.load(Ordering::SeqCst), "the agent counts as busy");
+    }
+
+    #[test]
+    fn a_new_outage_takes_a_new_baseline() {
+        let (down, baseline, dropped) = (Mutex::new(None), AtomicU64::new(0), AtomicU64::new(3));
+        note_outage(&down, &baseline, &dropped, 100);
+        // System One came back and stayed up: read_verdicts ended the outage.
+        *lock(&down) = None;
+        dropped.fetch_add(5, Ordering::Relaxed);
+        note_outage(&down, &baseline, &dropped, 300);
+        assert_eq!(*lock(&down), Some(300));
+        assert_eq!(baseline.load(Ordering::SeqCst), 8);
+    }
+
+    #[test]
+    fn a_setup_failure_in_the_child_is_reported() {
+        let dir = std::env::temp_dir().join(format!("vac-s1-spawn-{}-{}", std::process::id(), boot_ns()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("cgroup.procs"), "").unwrap();
+        let spec = SystemOneSpec {
+            exe: dir.join("missing-system-one"), profile: "lab", scenario: "honest".to_owned(), private_file: dir.join("private"),
+            uid: 0, confined: false, weak_filter: true, pipe_bytes: 4096, cgroup: dir.clone(),
+        };
+        let result = spawn_system_one(&spec, false);
+        let _ = fs::remove_dir_all(&dir);
+        match result {
+            Ok((mut child, _, _)) => {
+                let status = child.wait();
+                panic!("spawn returned Ok for a child that never ran System One (exit {status:?})");
+            }
+            Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}"),
+        }
     }
 }
