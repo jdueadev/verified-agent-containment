@@ -18,11 +18,21 @@ impl Generation {
     pub(super) fn create(parent: &Path, number: u64) -> std::io::Result<Self> {
         let path = parent.join(format!("g{number}"));
         fs::create_dir(&path)?;
-        for (file, value) in LIMITS {
-            let _ = fs::write(path.join(file), value);
-        }
+        // A create that fails below leaves no directory behind, so a retry can
+        // use this number again.
+        let mut unfinished = Unfinished(Some(path.clone()));
+        // Control files are opened, never created: the kernel makes them with
+        // the cgroup. A limit that cannot be written is said so; `limits()`
+        // reads back what is really in force.
         let write = |name| fs::OpenOptions::new().write(true).open(path.join(name));
-        Ok(Self { number, freeze: write("cgroup.freeze")?, kill: write("cgroup.kill")?, events: File::open(path.join("cgroup.events"))?, path })
+        for (file, value) in LIMITS {
+            if let Err(error) = write(file).and_then(|mut f| f.write_all(value.as_bytes())) {
+                eprintln!("generation {number}: {file} = {value} was not applied: {error}");
+            }
+        }
+        let generation = Self { number, freeze: write("cgroup.freeze")?, kill: write("cgroup.kill")?, events: File::open(path.join("cgroup.events"))?, path };
+        unfinished.0 = None;
+        Ok(generation)
     }
 
     /// Limits actually in force, read back from the cgroup.
@@ -31,13 +41,55 @@ impl Generation {
         json!(LIMITS.iter().map(|(file, value)| json!({"file": file, "wanted": value, "actual": read(file)})).collect::<Vec<_>>())
     }
 
-    pub(super) fn events(&self) -> String {
+    /// Reads `cgroup.events`. An error means nothing about the cgroup is known.
+    pub(super) fn state(&self) -> std::io::Result<CgroupState> {
         let mut buffer = [0_u8; 256];
-        let count = self.events.read_at(&mut buffer, 0).unwrap_or(0);
-        String::from_utf8_lossy(&buffer[..count]).into_owned()
+        let count = self.events.read_at(&mut buffer, 0)?;
+        Ok(CgroupState::parse(&String::from_utf8_lossy(&buffer[..count])))
     }
-    pub(super) fn empty(&self) -> bool { self.events().contains("populated 0") }
-    pub(super) fn frozen(&self) -> bool { self.events().contains("frozen 1") }
+
+    // Each holds only on positive evidence. A read error or a missing line
+    // confirms nothing, so an actuator that cannot be read back is retried
+    // and then fail-stops; it is never taken as done.
+    pub(super) fn empty(&self) -> bool { self.state().is_ok_and(|s| s.populated == Some(false)) }
+    pub(super) fn frozen(&self) -> bool { self.state().is_ok_and(|s| s.frozen == Some(true)) }
+    pub(super) fn thawed(&self) -> bool { self.state().is_ok_and(|s| s.frozen == Some(false)) }
+}
+
+/// What `cgroup.events` says. A field is `None` when its line is missing or
+/// does not read `0` or `1`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct CgroupState {
+    pub(super) populated: Option<bool>,
+    pub(super) frozen: Option<bool>,
+}
+
+impl CgroupState {
+    fn parse(text: &str) -> Self {
+        let flag = |value: &str| match value { "0" => Some(false), "1" => Some(true), _ => None };
+        let mut state = Self::default();
+        for line in text.lines() {
+            match line.split_once(' ') {
+                Some(("populated", value)) => state.populated = flag(value),
+                Some(("frozen", value)) => state.frozen = flag(value),
+                _ => {}
+            }
+        }
+        state
+    }
+}
+
+/// Removes a generation directory whose create did not finish.
+struct Unfinished(Option<PathBuf>);
+
+impl Drop for Unfinished {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            if let Err(error) = fs::remove_dir(&path) {
+                eprintln!("{}: not removed after a failed create: {error}", path.display());
+            }
+        }
+    }
 }
 
 /// Aborts a TCP connection: connect(AF_UNSPEC) makes Linux reset it and drop
@@ -71,4 +123,64 @@ pub(super) fn enable_limits(parent: &Path) -> Vec<&'static str> {
         }
     }
     enabled
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("vac-enforcer-{name}-{}-{}", std::process::id(), boot_ns()));
+        fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    /// A create that fails after its mkdir leaves no directory behind, so the
+    /// next recreate can use the same number.
+    #[test]
+    fn a_failed_create_removes_its_generation_directory() {
+        let parent = scratch("create");
+        // A plain directory has no cgroup.freeze, so the create fails after mkdir.
+        let created = Generation::create(&parent, 3);
+        let left = parent.join("g3").exists();
+        let _ = fs::remove_dir_all(&parent);
+        assert!(created.is_err(), "a plain directory is not a cgroup");
+        assert!(!left, "g3 was left behind");
+    }
+
+    /// An events file that cannot be read confirms nothing: not empty, not
+    /// frozen and not thawed.
+    #[test]
+    fn an_unreadable_events_file_confirms_nothing() {
+        let parent = scratch("events");
+        let control = |name: &str| {
+            let path = parent.join(name);
+            fs::write(&path, "").expect("control file");
+            fs::OpenOptions::new().write(true).open(path).expect("open")
+        };
+        // Reading a directory fails with EISDIR.
+        let events = File::open(&parent).expect("directory");
+        let generation = Generation { number: 1, path: parent.clone(), freeze: control("freeze"), kill: control("kill"), events };
+        let seen = (generation.empty(), generation.frozen(), generation.thawed(), generation.state().is_err());
+        let _ = fs::remove_dir_all(&parent);
+        assert_eq!(seen, (false, false, false, true), "(empty, frozen, thawed, read failed)");
+    }
+
+    /// Only an explicit `0` or `1` line confirms; a missing or garbled one does not.
+    #[test]
+    fn events_are_parsed_line_by_line() {
+        let state = |populated, frozen| CgroupState { populated, frozen };
+        assert_eq!(CgroupState::parse("populated 1
+frozen 0
+"), state(Some(true), Some(false)));
+        assert_eq!(CgroupState::parse("populated 0
+frozen 1
+"), state(Some(false), Some(true)));
+        assert_eq!(CgroupState::parse(""), CgroupState::default());
+        assert_eq!(CgroupState::parse("populated 0"), state(Some(false), None));
+        assert_eq!(CgroupState::parse("frozen 10
+populated x
+not populated 0
+"), CgroupState::default());
+    }
 }

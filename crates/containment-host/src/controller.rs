@@ -342,7 +342,9 @@ impl Shared {
             }
             Action::ThawProcesses => {
                 enforced.frozen = false;
-                self.write_freeze("0") && self.wait_generation(|g| !g.frozen())
+                // Thawed only once the cgroup says `frozen 0`; an unreadable
+                // one is not thawed, so the action is retried and then fail-stops.
+                self.write_freeze("0") && self.wait_generation(Generation::thawed)
             }
             Action::RecreateSandbox => {
                 // A fresh sandbox starts only after the old cgroup is confirmed empty.
@@ -972,11 +974,13 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         thread::sleep(Duration::from_millis(1));
     }
     let final_control = *lock(&shared.control);
+    // What cannot be read is reported as null, never as false or 0, so no
+    // check can take an unreadable cgroup for an empty or thawed one.
     let (populated, frozen, survivors, generation, limits) = {
         let generation = lock(&shared.generation);
-        let events = generation.events();
-        (events.contains("populated 1"), events.contains("frozen 1"),
-         fs::read_to_string(generation.path.join("cgroup.procs")).unwrap_or_default().lines().count(), generation.number, generation.limits())
+        let state = generation.state().ok();
+        (state.and_then(|s| s.populated), state.and_then(|s| s.frozen),
+         fs::read_to_string(generation.path.join("cgroup.procs")).ok().map(|procs| procs.lines().count()), generation.number, generation.limits())
     };
     let report = json!({
         "final_mode": mode_name(final_control.mode), "exit_cause": exit_cause, "program": program.poll().to_json(), "populated": populated, "frozen": frozen, "survivors": survivors, "generation": generation, "limits": limits, "authority_pending": authority_pending_at_exit,
