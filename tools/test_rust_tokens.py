@@ -294,6 +294,11 @@ class SpliceTests(unittest.TestCase):
             rt.splice_once("let a = 1;", "  // nothing\n", "x")
 
 
+def _canonical_keys(src):
+    """(kind, text) of the canonical tokens the mutant matcher compares."""
+    return [(t.kind, t.text) for t in rt._canonical(rt.tokenize(src))[0]]
+
+
 def _token_change(before, after):
     """The canonical tokens removed and inserted between two versions of a file."""
     a = [(t.kind, t.text) for t in rt._canonical(rt.tokenize(before))[0]]
@@ -318,12 +323,21 @@ class KernelMutantTests(unittest.TestCase):
         cls.mutants = kernel_mutants.RUST_MUTANTS
         cls.lib = cls.LIB.read_text(encoding="utf-8")
 
-    def test_every_mutant_makes_the_same_edit_as_the_byte_replacement(self):
+    def test_every_mutant_replaces_exactly_its_pattern(self):
+        # The oracle is a naive search in canonical tokens: old's tokens occur exactly
+        # once in lib.rs, and the mutated file is lib.rs with those tokens swapped for
+        # new's. It is not a byte replace, because rustfmt moves patterns off the
+        # bytes they were written against; mutants match by tokens (#61).
         self.assertTrue(self.mutants)
+        lib = _canonical_keys(self.lib)
         for name, old, new in self.mutants:
             with self.subTest(mutant=name):
-                self.assertEqual(_exact(rt.splice_once(self.lib, old, new)),
-                                 _exact(self.lib.replace(old, new, 1)))
+                needle = _canonical_keys(old)
+                hits = [i for i in range(len(lib) - len(needle) + 1) if lib[i:i + len(needle)] == needle]
+                self.assertEqual(len(hits), 1, "pattern must match lib.rs exactly once")
+                i = hits[0]
+                expected = lib[:i] + _canonical_keys(new) + lib[i + len(needle):]
+                self.assertEqual(_canonical_keys(rt.splice_once(self.lib, old, new)), expected)
 
     def _rustfmt(self, max_width, text=None):
         """lib.rs (or text) formatted by the rustfmt of the toolchain rust-toolchain.toml
@@ -351,7 +365,9 @@ class KernelMutantTests(unittest.TestCase):
             return target.read_text(encoding="utf-8")
 
     def test_every_mutant_survives_rustfmt(self):
-        for max_width in (None, 40):
+        # Two layouts the kernel is not in: a narrow one (tuples and calls split
+        # further) and a wide one (lists joined back onto one line).
+        for max_width in (40, 200):
             formatted = self._rustfmt(max_width)
             # Not vacuous: rustfmt really rewrote the file.
             self.assertNotEqual(formatted, self.lib)
@@ -359,7 +375,7 @@ class KernelMutantTests(unittest.TestCase):
                 with self.subTest(max_width=max_width, mutant=name):
                     mutated = rt.splice_once(formatted, old, new)
                     self.assertEqual(_token_change(formatted, mutated),
-                                     _token_change(self.lib, self.lib.replace(old, new, 1)))
+                                     _token_change(self.lib, rt.splice_once(self.lib, old, new)))
                     self._rustfmt(max_width, mutated)  # the mutant still parses
 
 
