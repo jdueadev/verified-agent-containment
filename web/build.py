@@ -40,11 +40,11 @@ for name, title, effect, law in SHOWCASE:
     variants.append({"id": name, "title": title, "effect": effect, "law": law, "old": old.strip(), "new": new.strip(), "wasm": b64(gen / f"variants/{name}.wasm")})
     fallbacks.append(f"{name}(){{{fallback(gen / f'variants/{name}.js')}}}")
 kernels = {"safe": b64(gen / "kernel.opt.wasm"), "variants": variants}
-page = (root / "web/template.html").read_text()
+page = (root / "web/template.html").read_text(encoding="utf-8")
 page = page.replace("__KERNELS_JSON__", json.dumps(kernels).replace("</", "<\\/"))
 page = page.replace("__EVIDENCE_JSON__", json.dumps(evidence))
 page = page.replace("__FALLBACKS_JS__", ",\n".join(fallbacks))
 out = Path(sys.argv[1] if len(sys.argv) > 1 else root / "web/dist/agent-containment-simulator.html")
 out.parent.mkdir(parents=True, exist_ok=True)
-out.write_text(page)
+out.write_text(page, encoding="utf-8")
 print(json.dumps({"out": str(out), "bytes": out.stat().st_size, "variants": len(variants), "proof_current": current}))
