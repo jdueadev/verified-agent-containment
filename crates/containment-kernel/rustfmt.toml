@@ -1,0 +1,4 @@
+# This crate is rustfmt-clean (#56) and scripts/check.sh keeps it so. This file
+# overrides the root rustfmt.toml, whose guard still keeps formatting off for the
+# host crate.
+disable_all_formatting = false

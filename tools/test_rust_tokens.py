@@ -364,6 +364,11 @@ class KernelMutantTests(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stderr[-2000:])
             return target.read_text(encoding="utf-8")
 
+    def test_the_kernel_is_rustfmt_clean(self):
+        # The same fact scripts/check.sh checks with cargo fmt --check, seen from here:
+        # the mutant patterns are matched against a file in default rustfmt layout.
+        self.assertEqual(self._rustfmt(None), self.lib)
+
     def test_every_mutant_survives_rustfmt(self):
         # Two layouts the kernel is not in: a narrow one (tuples and calls split
         # further) and a wide one (lists joined back onto one line).
