@@ -2,7 +2,7 @@
 // Replays Rust kernel traces through the WebAssembly build shown in the browser.
 import { readFileSync } from "node:fs";
 import { fields, groups } from "./fingerprints.mjs";
-const [wasmFile, casesFile] = process.argv.slice(2);
+const [wasmFile, casesFile, firstCases] = process.argv.slice(2);
 const { instance } = await WebAssembly.instantiate(readFileSync(wasmFile));
 const w = instance.exports;
 const modes = ["run", "restrict", "hold", "freeze", "kill"];
@@ -17,9 +17,10 @@ const apply = (e) => {
   return w.apply_reset(e.signed ? 1 : 0, e.now, e.counter, modes.indexOf(e.from), e.not_after, e.ttl);
 };
 let transitions = 0;
-const found = groups();
+const found = groups(firstCases);
 for (const line of readFileSync(casesFile, "utf8").trim().split("\n")) {
   const item = JSON.parse(line);
+  found.case(line);
   w.set_config(item.config.max, item.config.grace);
   w.set_control(modes.indexOf(item.initial.mode), item.initial.deadline, item.initial.clock, item.initial.counter);
   for (const step of item.steps) {

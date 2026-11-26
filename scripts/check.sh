@@ -29,6 +29,10 @@ cargo test -q --locked -p containment-host --features sabotage
 cargo build -q --locked -p containment-host
 
 target/debug/containment-lab differential-cases 5000 24301 > target/generated/differential.jsonl
+# Every case the outer loop found is replayed too (formal/cases/README.md).
+for found in formal/cases/*.jsonl; do
+  if [ -e "$found" ]; then cat "$found" >> target/generated/differential.jsonl; fi
+done
 bun tools/differential.mjs target/generated/kernel.mjs target/generated/differential.jsonl | tee "$out/differential.json"
 scripts/build-wasm.sh
 node tools/wasm_check.mjs target/wasm32-unknown-unknown/release/containment_wasm.wasm target/generated/differential.jsonl | tee "$out/wasm-differential.json"

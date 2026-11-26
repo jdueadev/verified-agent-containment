@@ -22,6 +22,23 @@ scripts/factory.sh kani       # scripts/kani.sh, the Kani proofs of admission, i
 
 The claims in [`claims.toml`](../claims.toml) are frozen at tag `pre-factory`; see [`evidence-rules.md`](evidence-rules.md).
 
+## The outer loop
+
+`scripts/check.sh` and the Kani proofs are the inner loop: they run on every push and take minutes at most. The `outer-loop` workflow runs once a night on `main` and takes hours. Each finding comes back to the inner loop as a case it reruns.
+
+1. **Eval.** Every AgentDojo case through the gate, with no model called, compared with the last committed run by `tools/eval_diff.py`. Differences are grouped by fingerprint, and one listed in `evals/agentdojo/expected-differences.toml` is meant.
+2. **Replay.** Every kernel step those cases took, replayed through the Bend and wasm kernels in the check image. The first case of each fingerprint goes to `new-cases.jsonl`.
+3. **Report.** The run's summary lists every fingerprint, and the run fails if any is new.
+
+A new kernel case goes into `formal/cases/` in the pull request that fixes it, and `scripts/check.sh` replays it on every push from then on. A new AgentDojo fingerprint prints the one `run.py --case` that reruns it.
+
+A live run shadowed on vac-lab replays the same way. Its `kernel.jsonl` comes from `containment-lab live --out DIR`:
+
+```bash
+scripts/factory.sh replay DIR/kernel.jsonl     # or scripts/outer-loop.sh replay DIR/kernel.jsonl
+scripts/outer-loop.sh report
+```
+
 ## What the laws cover
 
 - **Lease and time:** fail closed at the deadline. Only renewal or an accepted reset extends a lease, within the maximum. The kernel clock is exactly the event's effective time, and stale timestamps cannot move it back.

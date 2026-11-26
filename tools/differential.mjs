@@ -2,8 +2,8 @@
 // Replays Rust kernel traces through the Bend kernel compiled to JavaScript.
 import { readFileSync } from "node:fs";
 import { fields, groups } from "./fingerprints.mjs";
-const [moduleFile, casesFile] = process.argv.slice(2);
-if (!moduleFile || !casesFile) throw new Error("usage: differential.mjs KERNEL_MJS CASES_JSONL");
+const [moduleFile, casesFile, firstCases] = process.argv.slice(2);
+if (!moduleFile || !casesFile) throw new Error("usage: differential.mjs KERNEL_MJS CASES_JSONL [FIRST_CASES_OUT]");
 const exports_ = (await import(new URL(moduleFile, `file://${process.cwd()}/`).href)).default;
 const pick = (name) => exports_[name] ?? exports_[`kernel:${name}`];
 const step = pick("step");
@@ -33,9 +33,10 @@ const plan = (value) => {
   return out;
 };
 let sequences = 0, transitions = 0;
-const found = groups();
+const found = groups(firstCases);
 for (const line of readFileSync(casesFile, "utf8").trim().split("\n")) {
   const item = JSON.parse(line);
+  found.case(line);
   sequences += 1;
   const config = tag("KernelConfig", { max_lease: item.config.max, freeze_grace: item.config.grace });
   let control = tag("ControlState", { mode: tag(modes[item.initial.mode]), deadline: item.initial.deadline, clock: item.initial.clock, reset_counter: item.initial.counter });

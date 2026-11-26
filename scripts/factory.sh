@@ -10,7 +10,7 @@ while IFS= read -r pin; do pins+=(--build-arg "$pin"); done < <(grep -E '^[A-Z0-
 if [ -n "${FACTORY_BASE_IMAGE:-}" ]; then pins+=(--build-arg "FACTORY_BASE_IMAGE=$FACTORY_BASE_IMAGE"); fi
 
 usage() {
-  echo "usage: scripts/factory.sh build [image...] | shell | check [check.sh options] | verdict | kani [kani.sh options] | lab [repeat]" >&2
+  echo "usage: scripts/factory.sh build [image...] | shell | check [check.sh options] | verdict | kani [kani.sh options] | lab [repeat] | replay [kernel.jsonl...]" >&2
   echo "  build    build the named images, or check, proofs, kani and dev, from ci/factory.Dockerfile" >&2
   echo "  shell    open a shell in the dev image with this checkout mounted at /work" >&2
   echo "  check    run scripts/check.sh in the check image" >&2
@@ -19,6 +19,8 @@ usage() {
   echo "  lab      run the root attack and live suites in a privileged container" >&2
   echo "           only on a disposable machine: set FACTORY_LAB_DISPOSABLE=1 to confirm" >&2
   echo "           FACTORY_LAB_OUT=<dir> keeps the results in <dir>; FACTORY_LAB_IMAGE_ID=<file> records the image id" >&2
+  echo "  replay   run the outer loop's kernel replay (scripts/outer-loop.sh replay) in the check image, with no network" >&2
+  echo "           FACTORY_OUTER_OUT=<dir> is the outer loop's folder: its traces.jsonl is read, and the replay is written there" >&2
 }
 
 build() {
@@ -67,6 +69,16 @@ case "${1:-}" in
     fi
     "$engine" image inspect --format '{{.Id}}' "$image:check" > "${FACTORY_LAB_IMAGE_ID:-/dev/null}"
     exec "$engine" run --rm --privileged --cgroupns=private "${mounts[@]}" "${lab[@]}" "$image:check" scripts/factory-lab.sh "$@"
+    ;;
+  replay)
+    shift
+    build check
+    outer=()
+    if [ -n "${FACTORY_OUTER_OUT:-}" ]; then
+      mkdir -p "$FACTORY_OUTER_OUT"
+      outer+=(-v "$(cd "$FACTORY_OUTER_OUT" && pwd):/work/target/outer")
+    fi
+    exec "$engine" run --rm --network=none -e CARGO_NET_OFFLINE=true "${mounts[@]}" "${outer[@]}" "$image:check" scripts/outer-loop.sh replay "$@"
     ;;
   *)
     usage
