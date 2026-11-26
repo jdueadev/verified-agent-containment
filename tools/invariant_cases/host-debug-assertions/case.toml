@@ -1,0 +1,5 @@
+checker = "invariants"
+origin = "#121: a defect live in every debug and test build"
+twin = "host-allowed-conditions"
+expect = "reject"
+expect_error = '`debug_assertions` is not an allowed build condition'

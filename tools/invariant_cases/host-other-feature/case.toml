@@ -1,0 +1,5 @@
+checker = "invariants"
+origin = "#121: a second feature switch"
+twin = "host-allowed-conditions"
+expect = "reject"
+expect_error = '`feature = "fast"` is not an allowed build condition'

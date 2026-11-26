@@ -1,0 +1,5 @@
+checker = "invariants"
+origin = "#121: a feature beyond default and sabotage"
+twin = "host-allowed-conditions"
+expect = "reject"
+expect_error = "the features must be exactly"

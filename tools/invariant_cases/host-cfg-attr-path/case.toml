@@ -1,0 +1,5 @@
+checker = "invariants"
+origin = "#121: other source swapped in under a build condition"
+twin = "host-allowed-conditions"
+expect = "reject"
+expect_error = '`cfg_attr(.., path = ..)`'

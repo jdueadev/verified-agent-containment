@@ -1,0 +1,5 @@
+checker = "invariants"
+origin = "#121: a sabotage switch outside the weaknesses! registry"
+twin = "host-allowed-conditions"
+expect = "reject"
+expect_error = '`feature = "sabotage"` is allowed only'
