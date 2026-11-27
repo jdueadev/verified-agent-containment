@@ -212,6 +212,24 @@ fn action_end(report: &Value, name: &str, after: u64) -> Option<u64> {
         .and_then(|item| item["end_ns"].as_u64())
 }
 
+/// Whether the stop's freeze was confirmed (#38, H1): the enforcer logged a
+/// `freeze_processes` with `ok:true` after the stop commit, which it does only
+/// once the cgroup reads back `frozen 1` (or empty), whether its own wait saw
+/// it or a later reconcile pass did (`via:"reconcile"`). A final mode, or an
+/// unreadable cgroup, is not evidence. The detail keeps the read-back so a
+/// failing run shows which path it took.
+fn freeze_confirmed(report: &Value, metrics: &Value) -> (bool, Value) {
+    let actions: Vec<&Value> = report["actions"].as_array()
+        .map(|items| items.iter().filter(|a| a["action"] == "freeze_processes" || a["action"] == "kill_processes").collect())
+        .unwrap_or_default();
+    let detail = json!({
+        "commit_to_frozen_ms": metrics["commit_to_frozen_ms"], "commit_to_killed_ms": metrics["commit_to_killed_ms"],
+        "final_mode": report["final_mode"], "frozen": report["frozen"], "populated": report["populated"], "survivors": report["survivors"],
+        "actuator_retries": report["actuator_retries"], "actions": actions,
+    });
+    (metrics["commit_to_frozen_ms"].is_number(), detail)
+}
+
 fn total_bytes<'a>(records: impl Iterator<Item = &'a Value>) -> u64 {
     records.map(|r| r["bytes"].as_u64().unwrap_or(0)).sum()
 }
@@ -661,6 +679,8 @@ fn execute(scenario: &str, weakness: &str, sequence: usize) -> Result<Value, Box
             } else {
                 let overflow = report["transitions"].as_array().is_some_and(|items| items.iter().any(|t| t["event"] == "classifier_overflow" && t["to"] == "restrict"));
                 checks.add("classifier_overflow_restricts", overflow, json!(overflow));
+                let (confirmed, detail) = freeze_confirmed(report, &metrics);
+                checks.add("freeze_confirmed", confirmed, detail);
             }
             if scenario == "monitor_crash" {
                 checks.add("positive_control_egress_before_trigger", bytes(sink, None) > 0, json!(bytes(sink, None)));
@@ -980,5 +1000,36 @@ mod tests {
     #[test]
     fn an_unreadable_executable_is_an_error_not_an_empty_list() {
         assert!(loader_libraries(Path::new("/nonexistent/agent")).is_err());
+    }
+
+    /// Only a logged, confirmed freeze passes; a final read-back alone does not.
+    #[test]
+    fn only_a_logged_freeze_confirms() {
+        let confirmed = |report: Value, metrics: Value| freeze_confirmed(&report, &metrics).0;
+        assert!(confirmed(json!({"final_mode":"freeze"}), json!({"commit_to_frozen_ms":0.6})));
+        assert!(confirmed(json!({"final_mode":"kill"}), json!({"commit_to_frozen_ms":180.0,"commit_to_killed_ms":3.1})));
+        let unlogged = json!({"commit_to_frozen_ms":null,"commit_to_killed_ms":null});
+        assert!(!confirmed(json!({"final_mode":"freeze","frozen":true}), unlogged.clone()));
+        assert!(!confirmed(json!({"final_mode":"kill","populated":false,"survivors":0}), unlogged.clone()));
+        assert!(!confirmed(json!({"final_mode":"controller_exited"}), unlogged));
+        assert!(!confirmed(json!({}), json!({})));
+    }
+
+    /// A freeze confirmed by the reconcile pass after its own wait timed out
+    /// counts, at the reconcile record's later time; a failed one does not.
+    #[test]
+    fn a_reconcile_confirmation_sets_the_freeze_time() {
+        let report = json!({"final_mode":"freeze","actuator_retries":2,"actions":[
+            {"action":"freeze_processes","start_ns":900,"end_ns":950,"ok":true},
+            {"action":"block_egress","start_ns":1000,"end_ns":1001,"ok":true},
+            {"action":"freeze_processes","start_ns":1001,"end_ns":1101,"ok":false},
+            {"action":"freeze_processes","start_ns":1150,"end_ns":1160,"ok":true,"via":"reconcile"}]});
+        assert_eq!(action_end(&report, "freeze_processes", 1000), Some(1160));
+        let (ok, detail) = freeze_confirmed(&report, &json!({"commit_to_frozen_ms":0.16}));
+        assert!(ok);
+        assert_eq!(detail["actions"].as_array().map(Vec::len), Some(3));
+        assert_eq!(detail["actuator_retries"], 2);
+        let failed = json!({"actions":[{"action":"freeze_processes","start_ns":1001,"end_ns":1101,"ok":false}]});
+        assert_eq!(action_end(&failed, "freeze_processes", 1000), None);
     }
 }

@@ -379,6 +379,8 @@ impl Shared {
     fn enforcer(&self) {
         let mut enforced = Enforced::default();
         let mut failing_since: Option<Instant> = None;
+        // A Freeze or Kill logged `ok:false` that no record has confirmed since.
+        let mut outstanding = false;
         let began = Instant::now();
         loop {
             if self.scenario == "enforcer_stall" && began.elapsed() > Duration::from_millis(150) {
@@ -397,6 +399,11 @@ impl Shared {
                 let started = boot_ns();
                 let ok = self.perform(action, &mut enforced);
                 self.bounded_push(&self.actions, json!({"action": action_name(action), "start_ns": started, "end_ns": boot_ns(), "ok": ok}));
+                match action {
+                    Action::FreezeProcesses | Action::KillProcesses => outstanding = !ok,
+                    Action::ThawProcesses | Action::RecreateSandbox if ok => outstanding = false,
+                    _ => {}
+                }
                 if !ok && !self.weak.ignore_actuator_failure() {
                     // Retry from the reconcile path, in the same order.
                     if matches!(action, Action::RecreateSandbox | Action::ThawProcesses) {
@@ -406,7 +413,12 @@ impl Shared {
                 self.enforcer_busy.store(false, Ordering::SeqCst);
                 ok
             } else {
-                self.drive(enforced)
+                let started = boot_ns();
+                let held = self.drive(enforced);
+                if let Some(name) = reconcile_record(&mut outstanding, enforced, held) {
+                    self.bounded_push(&self.actions, json!({"action": name, "start_ns": started, "end_ns": boot_ns(), "ok": true, "via": "reconcile"}));
+                }
+                held
             };
             if healthy || self.weak.ignore_actuator_failure() {
                 failing_since = None;
