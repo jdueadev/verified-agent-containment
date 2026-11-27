@@ -1,0 +1,4 @@
+checker = "invariants"
+origin = "#120: `Event` renamed on import (the aliasing class)"
+expect = "reject"
+expect_error = "renames `Event`, which hides the variants it builds"

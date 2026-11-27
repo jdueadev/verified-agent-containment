@@ -1,0 +1,18 @@
+checker = "invariants"
+origin = "#120: the construction moved into a helper the control handler calls"
+expect = "reject"
+expect_error = "names `Event::Renew` in `renew_now`"
+
+[[replace]]
+file = "crates/containment-host/src/controller/reset.rs"
+old = '''pub(super) fn control_handler('''
+new = '''fn renew_now(shared: &Shared, at: u64) {
+    shared.apply(None, at, |now_ms| Event::Renew { now_ms, ttl_ms: 0 });
+}
+
+pub(super) fn control_handler('''
+
+[[replace]]
+file = "crates/containment-host/src/controller/reset.rs"
+old = '''Some("status") => {}'''
+new = '''Some("status") => renew_now(shared, received),'''

@@ -1,0 +1,10 @@
+checker = "invariants"
+origin = "#120 twin: variants named only in comments, docs, strings and raw strings"
+expect = "accept"
+
+[[replace]]
+file = "crates/containment-host/src/controller/reset.rs"
+old = '''Some("status") => {}'''
+new = '''// Event::Renew { now_ms, ttl_ms }
+        /* Event::Reset */
+        Some("status") => { let _ = ("Event::Renew", r#"Event::AgentRequest { now_ms }"#); }'''

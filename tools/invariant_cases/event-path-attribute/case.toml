@@ -1,0 +1,11 @@
+checker = "invariants"
+origin = "#120: a `#[path]` module outside the read sources builds a renewal"
+expect = "reject"
+expect_error = "`#[path]` loads source the event check has not read"
+
+[[replace]]
+file = "crates/containment-host/src/controller/gate.rs"
+old = '''mod proofs;'''
+new = '''mod proofs;
+#[path = "../../../../formal/evil.rs"]
+mod evil;'''

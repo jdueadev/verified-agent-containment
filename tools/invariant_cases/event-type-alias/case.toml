@@ -1,0 +1,4 @@
+checker = "invariants"
+origin = "#120: `Event` aliased with `type`"
+expect = "reject"
+expect_error = "aliases `Event`, which hides the variants it builds"

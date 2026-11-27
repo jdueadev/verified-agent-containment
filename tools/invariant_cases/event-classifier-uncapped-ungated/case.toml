@@ -1,0 +1,9 @@
+checker = "invariants"
+origin = "#120: the classifier_uncapped sabotage branch with its gate stripped"
+expect = "reject"
+expect_error = "`apply_classifier` may name only Classifier, not `Event::HardRule`"
+
+[[replace]]
+file = "crates/containment-host/src/controller/classifier.rs"
+old = '''if uncapped { Event::HardRule'''
+new = '''if true { Event::HardRule'''

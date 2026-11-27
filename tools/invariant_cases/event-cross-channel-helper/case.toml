@@ -1,0 +1,9 @@
+checker = "invariants"
+origin = "#120: the control handler calls the classifier's helper"
+expect = "reject"
+expect_error = "names `apply_classifier`, which builds events for another channel"
+
+[[replace]]
+file = "crates/containment-host/src/controller/reset.rs"
+old = '''Some("status") => {}'''
+new = '''Some("status") => super::classifier::apply_classifier(shared, None, received, Level::Run),'''

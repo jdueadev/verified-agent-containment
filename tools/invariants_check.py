@@ -2,11 +2,13 @@
 """Check the rules that must hold on every commit.
 
 The `sabotage` feature is never reachable from the host's default features, the
-host's build conditions are a closed list, and the kernel stays pure: no_std, no
-unsafe, `core` only, no build-time reads.
+host's build conditions are a closed list, each controller handler builds only its
+channel's kernel events, and the kernel stays pure: no_std, no unsafe, `core` only,
+no build-time reads.
 
 Usage: invariants_check.py [ROOT]
 """
+import posixpath
 import re
 import sys
 import tomllib
@@ -255,6 +257,295 @@ def host_cfg_errors(files):
     return out
 
 
+# Each controller channel builds only its own kernel events (#120: INV-6, "the channel
+# decides the event", and the host side of INV-4). Every host function that names an
+# `Event` variant is listed with the variants it may name; a variant named anywhere
+# else fails, as does any way of naming one the token scan cannot follow: a glob or
+# group import of the variants, an alias of `Event`, `#[path]` into an unread file,
+# `include!`. A message body may still choose among its own channel's variants, so the
+# table holds sets. `X{..}` is a match pattern (`Event::X { .. }`), which cannot build
+# an event. This is a tripwire against mistakes, not a proof: a function in another
+# crate that returns an `Event` is beyond it, and the lab stays the evidence.
+EVENT_VARIANTS = ("Tick", "Renew", "Classifier", "HardRule", "AgentRequest", "Reset")
+CONTROLLER = f"{HOST_SRC}/controller"
+EVENT_TABLE = {
+    (f"{CONTROLLER}/reset.rs", "monitor_handler"): {"Renew"},
+    (f"{CONTROLLER}/reset.rs", "control_handler"): {"HardRule", "Tick"},
+    (f"{CONTROLLER}/reset.rs", "reset_handler"): {"Reset"},
+    (f"{CONTROLLER}/classifier.rs", "apply_classifier"): {"Classifier"},
+    (f"{CONTROLLER}/gateway.rs", "gateway_decide"): {"AgentRequest"},
+    (f"{CONTROLLER}/gateway.rs", "live_infer"): {"HardRule"},
+    (f"{CONTROLLER}/gate.rs", "Shared::admit"): {"HardRule"},
+    # The clock-regression freeze, and the check that a reset restored authority.
+    (f"{HOST_SRC}/controller.rs", "Shared::apply"): {"HardRule", "Reset{..}"},
+    (f"{HOST_SRC}/controller.rs", "event_name"): {f"{v}{{..}}" for v in EVENT_VARIANTS},
+    # The lease clock thread.
+    (f"{HOST_SRC}/controller.rs", "run"): {"Tick"},
+    # Random events for the Rust-to-Bend differential, which never reach a controller.
+    (f"{HOST_SRC}/differential.rs", "event"): set(EVENT_VARIANTS),
+}
+# The two sabotage controls (INV-9) that let the classifier's channel build a hard
+# rule. Each is pinned to its exact tokens, gate included: allowing "any weak-gated
+# block" would itself be a bypass.
+EVENT_SABOTAGE = (
+    {"control": "classifier_uncapped", "file": f"{CONTROLLER}/classifier.rs", "function": "apply_classifier",
+     "binding": "let uncapped = shared . weak . classifier_uncapped ( ) ;", "gate": "uncapped",
+     "branch": "if uncapped { Event :: HardRule { now_ms , level } }"},
+    {"control": "shared_control_socket", "file": f"{CONTROLLER}/classifier.rs", "function": "read_verdicts",
+     "binding": None, "gate": None,
+     "branch": 'if shared . weak . shared_control_socket ( ) && v [ "op" ] == "hard" { shared . apply ( '
+               'Some ( "system_one_hard" ) , now , | now_ms | Event :: HardRule { now_ms , level } ) ; }'},
+)
+# The classifier's side may not name another channel's variants at all, in any position.
+EVENT_BANNED = {f"{CONTROLLER}/classifier.rs": {"Renew", "Reset", "Tick", "AgentRequest"},
+                f"{HOST_SRC}/system_one.rs": {"Renew", "Reset", "Tick", "AgentRequest"}}
+# Host enums with a variant of the same name as one of `Event`'s.
+EVENT_LOOKALIKES = {(f"{HOST_SRC}/run_live.rs", "CtlAction"): {"Reset"}}
+# Which socket feeds which handler. Each sequence appears exactly once in controller.rs.
+EVENT_BINDINGS = (
+    'let monitor_socket = private_dir . join ( "monitor.sock" ) ;',
+    'let control_socket = private_dir . join ( "control.sock" ) ;',
+    'let reset_socket = private_dir . join ( "reset.sock" ) ;',
+    "let monitor_listener = listener ( & monitor_socket ,",
+    "let control_listener = listener ( & control_socket ,",
+    "let reset_listener = listener ( & reset_socket ,",
+    "let gateway_listener = listener ( & gateway ,",
+    "serve ( monitor_listener , shared , PeerRule :: Monitor , monitor_handler )",
+    "serve ( control_listener , shared , rule , control_handler )",
+    "serve ( reset_listener , shared , rule , reset_handler )",
+    "serve_gateway ( gateway_listener , shared )",
+    "supervise_system_one ( shared , spec )",
+)
+# Names that appear exactly twice in the host (or in the one file given): where they
+# are defined and where they are bound or called. So a handler cannot be called from
+# another channel's handler or bound to a second socket, and a listener cannot be rebound.
+EVENT_SINGLE_USE = {
+    "monitor_handler": None, "control_handler": None, "reset_handler": None, "serve_gateway": None,
+    "supervise_system_one": None, "read_verdicts": None, "gateway_decide": None, "live_infer": None,
+    "monitor_listener": f"{HOST_SRC}/controller.rs", "control_listener": f"{HOST_SRC}/controller.rs",
+    "reset_listener": f"{HOST_SRC}/controller.rs", "gateway_listener": f"{HOST_SRC}/controller.rs",
+}
+EVENT_REBIND = ("monitor_socket", "control_socket", "reset_socket")
+# Helpers that build events, and the files of the controller module that may name them.
+# Code outside the controller module cannot reach `Shared`.
+EVENT_CALLERS = {
+    "apply_classifier": {f"{HOST_SRC}/controller.rs", f"{CONTROLLER}/classifier.rs", f"{CONTROLLER}/gateway.rs"},
+    "admit": {f"{CONTROLLER}/gate.rs", f"{CONTROLLER}/gateway.rs", "formal/kani/gate_proofs.rs"},
+}
+# differential.rs builds every variant, so the controller may not reach it: main.rs
+# names the module exactly here, and no other file names it.
+EVENT_DIFFERENTIAL = (f"{HOST_SRC}/main.rs", ("mod differential ;", "differential :: run ("))
+
+
+def _event_tokens(text):
+    """Code tokens with raw identifiers normalised and layout commas dropped."""
+    toks = [t._replace(text=_ident(t.kind, t.text)) for t in rust_tokens.tokenize(text)
+            if t.kind not in ("comment", "doc")]
+    return rust_tokens.drop_layout_commas(toks)
+
+
+def _find(toks, seq, lo=0, hi=None):
+    """Start indexes of the token texts `seq` (space-separated) in toks[lo:hi]."""
+    want, hi = seq.split(), len(toks) if hi is None else hi
+    return [i for i in range(lo, hi - len(want) + 1) if [t.text for t in toks[i:i + len(want)]] == want]
+
+
+def _items(toks, partner):
+    """(open, close, name, kind) of every mod, impl, trait and fn with a body."""
+    items = []
+    for i, tok in enumerate(toks):
+        if tok.kind != "ident" or tok.text not in ("mod", "impl", "trait", "fn") or i + 1 >= len(toks):
+            continue
+        if tok.text == "impl":
+            if i and toks[i - 1].text not in ("}", ";", "]", "{", "unsafe", "default"):
+                continue  # `impl Trait` in a type
+        elif toks[i + 1].kind != "ident":
+            continue  # a `fn(..)` pointer type
+        j, depth, head = i + 1, 0, []
+        while j < len(toks):
+            t = toks[j]
+            if t.kind == "punct" and t.text in ("(", "["):
+                depth += 1
+            elif t.kind == "punct" and t.text in (")", "]"):
+                depth -= 1
+            elif depth == 0 and t.text in ("{", ";"):
+                break
+            head.append(t)
+            j += 1
+        if j >= len(toks) or toks[j].text != "{" or j not in partner:
+            continue
+        if tok.text == "impl":
+            texts = [t.text for t in head]
+            if "for" in texts:
+                head = head[texts.index("for") + 1:]
+            elif head and head[0].text == "<":
+                depth = 0
+                for k, t in enumerate(head):
+                    depth += {"<": 1, "<<": 2, ">": -1, ">>": -2}.get(t.text, 0)
+                    if depth <= 0:
+                        head = head[k + 1:]
+                        break
+            name = next((t.text for t in head if t.kind == "ident" and t.text not in ("dyn", "mut")), "?")
+        else:
+            name = toks[i + 1].text
+        items.append((j, partner[j], name, tok.text))
+    return items
+
+
+def _qualname(items, k):
+    return "::".join(name for lo, hi, name, _ in sorted(items) if lo < k < hi)
+
+
+def _path_attrs(toks, items):
+    """(index, value, inside an inline mod) of every `#[path = "..."]`."""
+    found = []
+    for i in range(len(toks) - 4):
+        if [t.text for t in toks[i:i + 4]] == ["#", "[", "path", "="] and toks[i + 4].kind == "str":
+            inline = any(kind == "mod" and lo < i < hi for lo, hi, _, kind in items)
+            found.append((i, _cfg_string(toks[i + 4].text), inline))
+    return found
+
+
+def _path_target(path, value):
+    return None if value is None else posixpath.normpath(posixpath.join(posixpath.dirname(path), value))
+
+
+def event_path_targets(files):
+    """Repository paths that `#[path]` attributes in `files` load."""
+    out = set()
+    for path, text in files.items():
+        try:
+            toks = _event_tokens(text)
+        except rust_tokens.LexError:
+            continue  # host_event_errors reports it
+        out.update(_path_target(path, value) for _, value, _ in _path_attrs(toks, []) if value is not None)
+    return out
+
+
+def host_event_errors(files):
+    """`files` maps each host source path, and every file a `#[path]` there loads, to
+    its text. See EVENT_TABLE."""
+    out, parsed = [], {}
+    for path, text in sorted(files.items()):
+        try:
+            toks = _event_tokens(text)
+        except rust_tokens.LexError as error:
+            out.append(f"{path}: cannot be read ({error}), so the events it builds cannot be checked")
+            continue
+        partner = rust_tokens._partners(toks)
+        if 2 * len(partner) != sum(t.kind == "punct" and t.text in "()[]{}" for t in toks):
+            out.append(f"{path}: has unbalanced delimiters, so the events it builds cannot be checked")
+            continue
+        parsed[path] = (text, toks, partner, _items(toks, partner))
+
+    def where(path, k):
+        text, toks = parsed[path][0], parsed[path][1]
+        return f"{path}:{text.count(chr(10), 0, toks[k].start) + 1}"
+
+    functions = {}
+    for path, (_, toks, partner, items) in parsed.items():
+        for lo, hi, name, kind in items:
+            if kind == "fn":
+                outer = _qualname(items, lo)
+                functions.setdefault((path, f"{outer}::{name}" if outer else name), []).append((lo, hi))
+    for key in sorted(EVENT_TABLE):
+        if len(functions.get(key, [])) != 1:
+            out.append(f"{key[0]}: the event table lists `{key[1]}`, which is not exactly one function here")
+
+    exempt = set()
+    for pin in EVENT_SABOTAGE:
+        spans = functions.get((pin["file"], pin["function"]), [])
+        toks = parsed[pin["file"]][1] if pin["file"] in parsed else []
+        branch = _find(toks, pin["branch"], *spans[0]) if len(spans) == 1 else []
+        ok = len(branch) == 1
+        if ok and pin["binding"]:
+            lo, hi = spans[0]
+            binding = _find(toks, pin["binding"], lo, hi)
+            uses = [k for k in range(lo, hi) if toks[k].kind == "ident" and toks[k].text == pin["gate"]]
+            ok = len(binding) == 1 and binding[0] < branch[0] and len(uses) == 2
+        if ok:
+            exempt.add((pin["file"], branch[0] + pin["branch"].split().index("HardRule")))
+        else:
+            out.append(f"{pin['file']}: the sabotage control `{pin['control']}` in `{pin['function']}` "
+                       f"is no longer its pinned gated branch, so its `HardRule` is not exempt")
+
+    idents = {}
+    for path, (_, toks, partner, items) in sorted(parsed.items()):
+        lookalikes = {}
+        for (file, enum), names in EVENT_LOOKALIKES.items():
+            if file == path:
+                for i in _find(toks, f"enum {enum} {{"):
+                    lookalikes.update({k: names for k in range(i + 3, partner[i + 2])})
+                for i in _find(toks, f"{enum} ::"):
+                    lookalikes[i + 2] = names
+        for k, tok in enumerate(toks):
+            if tok.kind == "ident":
+                idents.setdefault(tok.text, []).append((path, k))
+            nxt = toks[k + 1].text if k + 1 < len(toks) else ""
+            if tok.kind == "ident" and tok.text == "Event" and nxt == "::":
+                after = toks[k + 2].text if k + 2 < len(toks) else ""
+                if after in ("*", "{"):
+                    out.append(f"{where(path, k)}: imports `Event`'s variants by glob or group; name each as `Event::X`")
+                elif after not in EVENT_VARIANTS:
+                    out.append(f"{where(path, k)}: `Event::{after}` is not a variant the check can follow")
+            elif tok.kind == "ident" and tok.text == "Event" and nxt == "as":
+                out.append(f"{where(path, k)}: renames `Event`, which hides the variants it builds")
+            elif tok.kind == "ident" and tok.text == "type":
+                end = next((j for j in range(k, len(toks)) if toks[j].text == ";"), len(toks))
+                if any(t.kind == "ident" and t.text == "Event" for t in toks[k:end]):
+                    out.append(f"{where(path, k)}: aliases `Event`, which hides the variants it builds")
+            elif tok.kind == "ident" and tok.text == "include" and nxt == "!":
+                out.append(f"{where(path, k)}: `include!` brings in source the event check cannot see")
+            if tok.kind != "ident" or tok.text not in EVENT_VARIANTS or tok.text in lookalikes.get(k, ()):
+                continue
+            close = partner.get(k + 1) if nxt == "{" else None
+            form = f"{tok.text}{{..}}" if close and toks[close - 1].text == ".." else tok.text
+            qual = _qualname(items, k)
+            if tok.text in EVENT_BANNED.get(path, ()):
+                out.append(f"{where(path, k)}: names `{tok.text}`, which the classifier's side may never name")
+                continue
+            allowed = EVENT_TABLE.get((path, qual))
+            if (path, k) in exempt or (allowed is not None and (form in allowed or tok.text in allowed)):
+                continue
+            if allowed is None:
+                out.append(f"{where(path, k)}: names `Event::{form}` in `{qual or '(no function)'}`, "
+                           f"which the event table does not list")
+            else:
+                out.append(f"{where(path, k)}: `{qual}` may name only {', '.join(sorted(allowed))}, "
+                           f"not `Event::{form}`")
+        for k, value, inline in _path_attrs(toks, items):
+            if inline or _path_target(path, value) not in files:
+                out.append(f"{where(path, k)}: `#[path]` loads source the event check has not read")
+
+    controller = parsed.get(f"{HOST_SRC}/controller.rs")
+    if controller is None:
+        out.append(f"{HOST_SRC}/controller.rs: missing, so the socket bindings cannot be checked")
+    else:
+        for seq in EVENT_BINDINGS:
+            if len(_find(controller[1], seq)) != 1:
+                out.append(f"{HOST_SRC}/controller.rs: the binding `{seq}` must appear exactly once")
+        for name in EVENT_REBIND:
+            if len(_find(controller[1], f"let {name}")) + len(_find(controller[1], f"let mut {name}")) != 1:
+                out.append(f"{HOST_SRC}/controller.rs: `{name}` must be bound exactly once")
+    for name, only in EVENT_SINGLE_USE.items():
+        places = [(p, k) for p, k in idents.get(name, []) if only is None or p == only]
+        if len(places) != 2:
+            out.append(f"`{name}` appears {len(places)} times; it may appear only where it is defined and where it is bound")
+    for name, allowed in EVENT_CALLERS.items():
+        for p, k in idents.get(name, []):
+            in_controller = p == f"{HOST_SRC}/controller.rs" or p.startswith(f"{CONTROLLER}/") or p.startswith("formal/")
+            if in_controller and p not in allowed:
+                out.append(f"{where(p, k)}: names `{name}`, which builds events for another channel")
+    main, sequences = EVENT_DIFFERENTIAL
+    for p, k in idents.get("differential", []):
+        if p != main:
+            out.append(f"{where(p, k)}: names `differential`, whose events never reach a controller")
+    if main not in parsed or len([1 for p, _ in idents.get("differential", []) if p == main]) != len(sequences) \
+            or any(len(_find(parsed[main][1], s)) != 1 for s in sequences):
+        out.append(f"{main}: `differential` may appear only as {' and '.join(f'`{s}`' for s in sequences)}")
+    return out
+
+
 def host_manifest_errors(manifest_text, has_build_script):
     """The host's features are exactly `default = []` and `sabotage = []`, and it has no build script."""
     data = tomllib.loads(manifest_text)
@@ -280,7 +571,17 @@ def errors(root):
     if not host.is_dir():
         return out + [f"{HOST_SRC}: missing, so the host's build conditions cannot be checked"]
     host_files = {p.relative_to(root).as_posix(): p.read_text(encoding="utf-8") for p in sorted(host.rglob("*.rs"))}
-    return out + host_cfg_errors(host_files)
+    out += host_cfg_errors(host_files)
+    # Add the files a `#[path]` loads (the Kani proofs), so that what they build is read too.
+    loaded = dict(host_files)
+    todo = event_path_targets(loaded) - set(loaded)
+    while todo:
+        target = todo.pop()
+        file = root / target
+        if file.is_file() and file.resolve().is_relative_to(root.resolve()):
+            loaded[target] = file.read_text(encoding="utf-8")
+            todo |= event_path_targets({target: loaded[target]}) - set(loaded)
+    return out + host_event_errors(loaded)
 
 
 def main(argv):

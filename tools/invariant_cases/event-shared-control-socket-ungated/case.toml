@@ -1,0 +1,9 @@
+checker = "invariants"
+origin = "#120: the shared_control_socket sabotage branch with its gate stripped"
+expect = "reject"
+expect_error = "names `Event::HardRule` in `read_verdicts`"
+
+[[replace]]
+file = "crates/containment-host/src/controller/classifier.rs"
+old = '''if shared.weak.shared_control_socket() && v["op"] == "hard" {'''
+new = '''if v["op"] == "hard" {'''

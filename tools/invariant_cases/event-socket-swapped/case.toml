@@ -1,0 +1,9 @@
+checker = "invariants"
+origin = "#120: the control handler's listener bound to the reset socket"
+expect = "reject"
+expect_error = "the binding `let control_listener = listener ( & control_socket ,` must appear exactly once"
+
+[[replace]]
+file = "crates/containment-host/src/controller.rs"
+old = '''let control_listener = listener(&control_socket,'''
+new = '''let control_listener = listener(&reset_socket,'''

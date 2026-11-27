@@ -1,0 +1,9 @@
+checker = "invariants"
+origin = "#120: the control socket rebound to the reset handler"
+expect = "reject"
+expect_error = "the binding `serve ( control_listener , shared , rule , control_handler )` must appear exactly once"
+
+[[replace]]
+file = "crates/containment-host/src/controller.rs"
+old = '''serve(control_listener, shared, rule, control_handler)'''
+new = '''serve(control_listener, shared, rule, reset_handler)'''
