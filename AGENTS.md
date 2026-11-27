@@ -14,6 +14,7 @@ A change to `crates/containment-host/src/controller/admission.rs`, `controller/g
 
 RustSec advisories need the network, so they are not in `check`: `scripts/advisories.sh` runs them, and the `supply-chain` workflow runs it daily and when the dependencies change.
 A change to the kernel, `crates/containment-wasm`, `web/`, `tools/kernel_mutants.py` or the results the page shows also needs `scripts/factory.sh page`: it builds the browser simulator from the tree into `target/page/` with the pinned binaryen, drives it in the pinned headless Chromium, and fails unless `web/dist/agent-containment-simulator.html` is the page it built. The `page` workflow runs it on every pull request and push to `main`.
+The `outer-loop` workflow is the outer loop. It runs nightly on `main`: the whole AgentDojo eval, compared with the last committed run, and every kernel step replayed through Bend and wasm (`scripts/outer-loop.sh`). When it finds a new kernel difference, add its case from `new-cases.jsonl` to `formal/cases/` in the pull request that fixes it, so `check` reruns it on every push.
 
 `scripts/factory.sh verdict` rechecks the proofs with Lean. `scripts/factory.sh lab` runs the root attack and live suites in a privileged container; only on a disposable machine. The `lab` workflow runs it on a GitHub runner for every pull request and push to `main`, and signs the results; `docs/verification.md` says how to check a run.
 
