@@ -580,10 +580,11 @@ mod tests {
             }
         });
         let (mut whole, mut masked) = (0, 0);
+        let tls = crate::http::tls_client(&[]).expect("tls");
         for n in 0..=150 {
             let url = crate::http::Url::parse(&format!("http://127.0.0.1:{port}/{}", "a".repeat(n))).expect("url");
             let headers = [("X-Key".to_owned(), credential.to_owned())];
-            let response = crate::http::send(&url, "GET", &headers, b"", crate::http::Limits::WEB, |_| true).expect("echo");
+            let response = crate::http::send(&url, &tls, "GET", &headers, b"", crate::http::Limits::WEB, |_| true).expect("echo");
             let text = redact_value(&all, json!(cut_body(&all, response.body, response.truncated))).as_str().expect("text").to_owned();
             // Nothing else in the echo has a Z, so any Z is the credential's first byte.
             assert!(!text.contains('Z'), "path of {n} bytes leaks {:?}", &text[text.len().saturating_sub(40)..]);
