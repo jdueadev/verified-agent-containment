@@ -65,10 +65,3 @@ item = "fn gateway_decide"
 call = "expect"
 message = "live"
 count = 2
-
-[[site]]
-file = "crates/containment-host/src/http.rs"
-item = "fn tls_config"
-call = "expect"
-message = "ring supports the default TLS versions"
-count = 1
