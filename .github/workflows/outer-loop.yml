@@ -1,0 +1,105 @@
+name: outer-loop
+
+# The outer loop. check and kani are the inner loop: they go round on every
+# push in seconds. This runs once a night on main, takes hours, and hands what
+# it finds back to the inner loop as cases (scripts/outer-loop.sh). Watch this
+# workflow: it goes red, and its summary lists each new fingerprint, only when
+# something new turns up.
+
+on:
+  schedule:
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: Cases per suite to run, or all
+        default: all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: outer-loop
+  cancel-in-progress: false
+
+jobs:
+  # Runs the eval as root on the runner, so this job holds no token that can
+  # write anything.
+  eval:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # The sandbox root needs a CPython that reads the getrandom system call,
+      # at exactly evals/agentdojo/root/python-version.
+      - id: python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version-file: evals/agentdojo/root/python-version
+
+      - name: AgentDojo through the gate, compared with the last committed run
+        env:
+          CASES: ${{ inputs.cases || 'all' }}
+          PYTHON: ${{ steps.python.outputs.python-path }}
+          OUTER_OUT: ${{ runner.temp }}/outer
+        run: |
+          if [ "$CASES" = all ]; then pick=--all
+          elif [[ "$CASES" =~ ^[1-9][0-9]{0,2}$ ]]; then pick="--cases $CASES"
+          else echo "cases must be all or 1 to 999, not $CASES" >&2; exit 1; fi
+          pipx install "uv==$(sed -n 's/^FACTORY_UV_VERSION=//p' ci/pins.env)"
+          sudo --preserve-env=PYTHON,OUTER_OUT env "PATH=$PATH" "HOME=$HOME" FACTORY_LAB_DISPOSABLE=1 OUTER_EVAL_ARGS="$pick" scripts/outer-loop.sh eval
+          sudo chown -R "$(id -u):$(id -g)" "$OUTER_OUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: outer-eval
+          path: |
+            ${{ runner.temp }}/outer/eval-diff.json
+            ${{ runner.temp }}/outer/eval-diff.txt
+            ${{ runner.temp }}/outer/traces.jsonl
+            ${{ runner.temp }}/outer/agentdojo/cases.jsonl
+            ${{ runner.temp }}/outer/agentdojo/summary.json
+          if-no-files-found: error
+
+  # Replays every kernel step through Bend and wasm in the check image, with
+  # no network, and writes the report.
+  replay:
+    needs: eval
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: outer-eval
+          path: ${{ runner.temp }}/outer
+
+      - name: Kernel steps through Bend and wasm
+        env:
+          FACTORY_OUTER_OUT: ${{ runner.temp }}/outer
+        run: scripts/factory.sh replay
+
+      - name: Report
+        env:
+          OUTER_OUT: ${{ runner.temp }}/outer
+        run: |
+          status=0
+          scripts/outer-loop.sh report || status=$?
+          cat "$OUTER_OUT/report.md" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: ${{ !cancelled() }}
+        with:
+          name: outer-loop
+          path: |
+            ${{ runner.temp }}/outer/report.md
+            ${{ runner.temp }}/outer/new-cases.jsonl
+            ${{ runner.temp }}/outer/eval-diff.json
+          if-no-files-found: warn

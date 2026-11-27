@@ -14,6 +14,7 @@ A change to `crates/containment-host/src/controller/admission.rs`, `controller/g
 
 RustSec advisories need the network, so they are not in `check`: `scripts/advisories.sh` runs them, and the `supply-chain` workflow runs it daily and when the dependencies change.
 A change to the kernel, `crates/containment-wasm`, `web/`, `tools/kernel_mutants.py` or the results the page shows also needs `scripts/factory.sh page`: it builds the browser simulator from the tree into `target/page/` with the pinned binaryen, drives it in the pinned headless Chromium, and fails unless `web/dist/agent-containment-simulator.html` is the page it built. The `page` workflow runs it on every pull request and push to `main`.
+The `outer-loop` workflow is the outer loop. It runs nightly on `main`: the whole AgentDojo eval, compared with the last committed run, and every kernel step replayed through Bend and wasm (`scripts/outer-loop.sh`). When it finds a new kernel difference, add its case from `new-cases.jsonl` to `formal/cases/` in the pull request that fixes it, so `check` reruns it on every push.
 
 `scripts/factory.sh verdict` rechecks the proofs with Lean. `scripts/factory.sh lab` runs the root attack and live suites in a privileged container; only on a disposable machine. The `lab` workflow runs it on a GitHub runner for every pull request and push to `main`, and signs the results; `docs/verification.md` says how to check a run.
 
@@ -29,6 +30,10 @@ On a pull request, the required `check` workflow runs the same checks. It lives 
 - Do not write under `results/` by hand. Checks write to `target/verify/`.
 - Lab results count only when `tools/lab_evidence.py verify` accepts them: a full pass, sealed and signed by the `lab` workflow. A lab run on your own machine is for finding out, not for proving.
 - Do not weaken or delete a check, law, mutant or scenario to make something pass. If one is wrong, say so in the pull request.
+- Before a new AgentDojo run folder is committed, compare it with the last one: `uv run tools/eval_diff.py OLD NEW --expected evals/agentdojo/expected-differences.toml`. Each fingerprint is fixed or listed there with its reason. A new entry there needs the owner, like a change to `claims.toml`.
+- A pull request that removes a check, law, mutant, Kani harness, test or scenario names each one in `ci/verifier-removals.toml` with the reason. `tools/verifier_ratchet.py`, run from `main`'s copy, refuses it otherwise.
+- Making two outputs match by copying the expected value in (a constant, a fixture, a grant) is not a fix. Find why they differ.
+- A correction found in review becomes a check in the same pull request: a test, a law, a mutant, a scenario or an entry in `evals/agentdojo/expected-differences.toml`. If it cannot, add a row to the run's decision log under `docs/runs/` saying why.
 - Python is run with `uv` (`uv run tools/<name>.py`). The Python version is in `.python-version`; every other tool version is in `ci/pins.env` and `rust-toolchain.toml`.
 - Run the root lab only in a disposable Linux or WSL2 machine. Every root entry point refuses to start unless `FACTORY_LAB_DISPOSABLE=1` confirms it: `scripts/factory.sh lab`, the scripts under `scripts/`, and `containment-lab attack-suite`, `live`, `live-suite` and `redteam` (`sudo FACTORY_LAB_DISPOSABLE=1 containment-lab ...`). `tools/lab_throwaway_check.py` fails when one does not. Whether a machine is disposable is a judgment no check can make: set the marker only on a machine you would wipe. The `lab` workflow sets it on its GitHub runner, and `scripts/lab/lab.ps1` sets it inside the WSL2 distro it imports for that run.
 

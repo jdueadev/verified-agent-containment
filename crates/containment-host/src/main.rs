@@ -9,6 +9,7 @@ mod harness;
 mod helpers;
 mod http;
 mod hud;
+mod kernel_trace;
 mod live;
 mod live_suite;
 mod mock;
@@ -32,6 +33,7 @@ Commands (each takes --help):
   redteam         run the red-team pack against a model and write a scorecard
   mock-model      scripted OpenAI-compatible model server (for tests)
   fixture-server  fixture HTTP server (for tests)
+  kernel-cases    turn a live run's private/kernel.jsonl into differential cases
 
 attack-suite, live, live-suite and redteam run attack code as root. They refuse
 to start unless FACTORY_LAB_DISPOSABLE=1 says this machine is disposable.
@@ -45,7 +47,7 @@ const DISPOSABLE_MARKER: &str = "FACTORY_LAB_DISPOSABLE";
 const ROOT_COMMANDS: &[&str] = &["attack-suite", "live", "live-suite", "redteam"];
 
 /// Commands that start no attack code of their own: help and version, the test
-/// servers, the differential cases, `ctl` and `hud` (which talk to a controller a
+/// servers, the differential and kernel cases, `ctl` and `hud` (which talk to a controller a
 /// root command already started), and the internal children a root command spawns,
 /// some of them with a cleared environment that could not carry the marker.
 /// `tools/lab_throwaway_check.py` fails if a command is in neither list; only it and
@@ -53,7 +55,7 @@ const ROOT_COMMANDS: &[&str] = &["attack-suite", "live", "live-suite", "redteam"
 #[cfg(test)]
 const NO_MARKER_COMMANDS: &[&str] = &[
     "controller", "sandbox-launch", "agent", "monitor", "sink", "probe-operator", "probe-root", "system-one",
-    "ctl", "hud", "mock-model", "fixture-server", "differential-cases",
+    "ctl", "hud", "mock-model", "fixture-server", "differential-cases", "kernel-cases",
 ];
 
 /// Why `command` may not start here, or `None` when it may.
@@ -105,6 +107,7 @@ fn main() -> ExitCode {
         Some("mock-model") => mock::mock_model(&args[1..]),
         Some("fixture-server") => mock::fixture_server(&args[1..]),
         Some("differential-cases") => differential::run(&args[1..]),
+        Some("kernel-cases") => kernel_trace::kernel_cases(&args[1..]),
         Some(other) => Err(Box::new(common::UsageError(format!("error: unknown command '{other}'\n\n{USAGE}"))) as Box<dyn std::error::Error>),
         None => Err(Box::new(common::UsageError(USAGE.to_owned())) as Box<dyn std::error::Error>),
     };
