@@ -40,6 +40,8 @@ use weakness::*;
 pub use reset::hex;
 
 const MAX_LOG_ENTRIES: usize = 4_096;
+/// Lines kept in private/kernel.jsonl. Past this the trace stops and says so, so replay sees a cut, not a gap.
+const MAX_KERNEL_LINES: u64 = 2_000_000;
 const MAX_GATEWAY_CONNECTIONS: usize = 64;
 const HEALTH_LIMIT_NS: u64 = 100_000_000;
 const ACTUATOR_WAIT: Duration = Duration::from_millis(100);
@@ -75,6 +77,9 @@ struct Shared {
     work_root: Option<PathBuf>,
     /// Live runs: append-only event log for the HUD (private/events.jsonl).
     events: Option<Mutex<(File, u64)>>,
+    /// Every committed kernel step (live runs only), for replay through Bend and wasm.
+    kernel_log: Option<Mutex<(File, u64)>>,
+    kernel_seq: AtomicU64,
     skew_ms: AtomicI64,
     config: Config,
     control: Mutex<Control>,
@@ -216,13 +221,15 @@ impl Shared {
                     lock(&self.queue).extend(result.actions.iter());
                     self.queued.notify_one();
                 }
-                records.push((previous, result, event, commit_ns, name));
+                let seq = self.kernel_seq.fetch_add(1, Ordering::Relaxed);
+                records.push((previous, result, event, commit_ns, name, seq));
                 last = Some(result);
             }
             *control = current;
             (start, last.expect("at least one step"))
         };
-        for (previous, result, event, commit_ns, label) in records {
+        for (previous, result, event, commit_ns, label, seq) in records {
+            self.kernel_record(seq, previous, event, result);
             if previous.mode != result.control.mode || !result.actions.is_empty() {
                 let record = json!({
                     "received_ns": received_ns,
@@ -239,6 +246,24 @@ impl Shared {
             }
         }
         (before, result)
+    }
+
+    /// Appends one committed step to private/kernel.jsonl. The sequence number is
+    /// taken under the control lock and the write happens after it, so replay
+    /// sorts by `seq` and the lock never waits on the disk.
+    fn kernel_record(&self, seq: u64, before: Control, event: Event, result: StepResult) {
+        let Some(log) = &self.kernel_log else { return };
+        let mut guard = lock(log);
+        if guard.1 > MAX_KERNEL_LINES {
+            return;
+        }
+        guard.1 += 1;
+        let line = if guard.1 > MAX_KERNEL_LINES {
+            json!({"seq": seq, "truncated": true})
+        } else {
+            crate::differential::kernel_line(seq, self.config, before, event, result)
+        };
+        let _ = writeln!(guard.0, "{line}");
     }
 
     /// Whether the gateway may grant anything now. Called with the control lock held.
@@ -782,6 +807,8 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         start_ns, skew_ms: AtomicI64::new(0), config, lag: Mutex::default(), blind_hold_ms,
         trace_out: Mutex::new(None), s1_down_since: Mutex::new(None), s1_down_held: AtomicBool::new(false), s1_restarts: AtomicU64::new(0), s1_dropped_at_down: AtomicU64::new(0), s1_probe: Mutex::new(Value::Null), s1_limits: Mutex::new(Value::Null), s1_pid: AtomicU32::new(0), down_hold_ms, stable_ms: if live.is_some() { LIVE_STABLE_MS } else { LAB_STABLE_MS }, classifier_signals: Mutex::default(), live: live.clone(), work_root: work_root.clone(),
         events: live.as_ref().map(|_| fs::OpenOptions::new().create(true).append(true).open(private_dir.join("events.jsonl")).map(|f| Mutex::new((f, 0)))).transpose()?,
+        kernel_log: live.as_ref().map(|_| fs::OpenOptions::new().create(true).append(true).open(private_dir.join("kernel.jsonl")).map(|f| Mutex::new((f, 0)))).transpose()?,
+        kernel_seq: AtomicU64::new(0),
         control: Mutex::new(Control::new(Mode::Run, LEASE_TTL_MS)),
         queue: Mutex::default(), queued: Condvar::new(), enforcer_busy: AtomicBool::new(false),
         enforcer_beat: AtomicU64::new(now), classifier_beat: AtomicU64::new(now),
