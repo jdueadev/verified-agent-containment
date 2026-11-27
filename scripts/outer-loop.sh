@@ -30,6 +30,7 @@ mkdir -p "$out"
 case "${1:-}" in
   eval)
     [ "$(id -u)" = 0 ] || { echo "outer-loop: the eval runs sandboxes as root" >&2; exit 2; }
+    [ "${FACTORY_LAB_DISPOSABLE:-}" = 1 ] || { echo "outer-loop: the eval runs attack code as root, so only on a disposable machine: set FACTORY_LAB_DISPOSABLE=1 to confirm" >&2; exit 1; }
     read -r -a pick <<< "${OUTER_EVAL_ARGS:---all}"
     rm -rf "$out/agentdojo" "$out/baseline"
     run_dir=/run/verified-agent-containment

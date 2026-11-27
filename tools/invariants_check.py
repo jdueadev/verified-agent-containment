@@ -284,6 +284,13 @@ EVENT_TABLE = {
     # Random events for the Rust-to-Bend differential, which never reach a controller.
     (f"{HOST_SRC}/differential.rs", "event"): set(EVENT_VARIANTS),
 }
+# Functions that may name every variant, but only as a match-arm pattern: right after
+# the `{`, `,`, `|` or `}` that starts an arm, and followed (after its fields) by `=>`
+# or `|`. A value built there, a guard, or a closure body is refused. The controller
+# calls kernel_trace.rs to log each committed step, so it may read events, not build them.
+EVENT_PATTERNS = {
+    (f"{HOST_SRC}/kernel_trace.rs", "encode"): set(EVENT_VARIANTS),
+}
 # The two sabotage controls (INV-9) that let the classifier's channel build a hard
 # rule. Each is pinned to its exact tokens, gate included: allowing "any weak-gated
 # block" would itself be a bypass.
@@ -451,6 +458,9 @@ def host_event_errors(files):
     for key in sorted(EVENT_TABLE):
         if len(functions.get(key, [])) != 1:
             out.append(f"{key[0]}: the event table lists `{key[1]}`, which is not exactly one function here")
+    for key in sorted(EVENT_PATTERNS):
+        if len(functions.get(key, [])) != 1:
+            out.append(f"{key[0]}: the pattern table lists `{key[1]}`, which is not exactly one function here")
 
     exempt = set()
     for pin in EVENT_SABOTAGE:
@@ -503,6 +513,15 @@ def host_event_errors(files):
             qual = _qualname(items, k)
             if tok.text in EVENT_BANNED.get(path, ()):
                 out.append(f"{where(path, k)}: names `{tok.text}`, which the classifier's side may never name")
+                continue
+            patterns = EVENT_PATTERNS.get((path, qual))
+            if patterns is not None and tok.text in patterns:
+                end = close if close else k
+                arm_start = k >= 3 and toks[k - 1].text == "::" and toks[k - 2].text == "Event" \
+                    and toks[k - 3].text in ("{", ",", "|", "}")
+                arm_end = end + 1 < len(toks) and toks[end + 1].text in ("=>", "|")
+                if not (arm_start and arm_end):
+                    out.append(f"{where(path, k)}: `{qual}` may name `Event::{tok.text}` only as a match-arm pattern")
                 continue
             allowed = EVENT_TABLE.get((path, qual))
             if (path, k) in exempt or (allowed is not None and (form in allowed or tok.text in allowed)):

@@ -50,7 +50,7 @@ jobs:
           elif [[ "$CASES" =~ ^[1-9][0-9]{0,2}$ ]]; then pick="--cases $CASES"
           else echo "cases must be all or 1 to 999, not $CASES" >&2; exit 1; fi
           pipx install "uv==$(sed -n 's/^FACTORY_UV_VERSION=//p' ci/pins.env)"
-          sudo --preserve-env=PYTHON,OUTER_OUT env "PATH=$PATH" "HOME=$HOME" OUTER_EVAL_ARGS="$pick" scripts/outer-loop.sh eval
+          sudo --preserve-env=PYTHON,OUTER_OUT env "PATH=$PATH" "HOME=$HOME" FACTORY_LAB_DISPOSABLE=1 OUTER_EVAL_ARGS="$pick" scripts/outer-loop.sh eval
           sudo chown -R "$(id -u):$(id -g)" "$OUTER_OUT"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

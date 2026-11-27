@@ -211,6 +211,22 @@ class HostEvents(unittest.TestCase):
                      'Some("status") => {}', 'Some("status") => { monitor_handler(shared, message.clone(), peer); }')
         self.refused("names `differential`, whose events never reach a controller", self.RESET,
                      'Some("status") => {}', 'Some("status") => { let _ = crate::differential::run(&[]); }')
+        self.refused("names `differential`, whose events never reach a controller", self.CONTROLLER,
+                     "crate::kernel_trace::kernel_line(", "crate::differential::kernel_line(")
+
+    def test_the_trace_encoder_may_only_match_events(self):
+        trace = f"{self.H}/kernel_trace.rs"
+        arm = 'Event::Tick { now_ms } => json!({"type":"tick","now":now_ms}),'
+        for src, why in (('_ if now_ms == 0 => { let _ = Event::Tick { now_ms: 0 }; json!({}) }', "a value in an arm body"),
+                         ('e if e == Event::Tick { now_ms: 0 } => json!({}),', "a value in a guard"),
+                         ('_ => json!(Event::Tick { now_ms: 0 }.now_ms()),', "a value after `=>`")):
+            with self.subTest(why=why):
+                self.refused("`encode` may name `Event::Tick` only as a match-arm pattern", trace, arm, arm + "\n        " + src)
+        self.refused("names `Event::Tick` in `control_json`, which the event table does not list", trace,
+                     "pub fn control_json(control: Control) -> Value {",
+                     "pub fn control_json(control: Control) -> Value {\n    let _ = Event::Tick { now_ms: 0 };")
+        self.refused("the pattern table lists `encode`, which is not exactly one function here", trace,
+                     "pub fn encode(event: Event)", "pub fn encode_event(event: Event)")
 
     def test_a_renamed_table_function_is_refused(self):
         self.refused("lists `monitor_handler`, which is not exactly one function here", self.RESET,

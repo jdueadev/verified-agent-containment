@@ -9,6 +9,7 @@ mod harness;
 mod helpers;
 mod http;
 mod hud;
+mod kernel_trace;
 mod live;
 mod live_suite;
 mod mock;
@@ -106,7 +107,7 @@ fn main() -> ExitCode {
         Some("mock-model") => mock::mock_model(&args[1..]),
         Some("fixture-server") => mock::fixture_server(&args[1..]),
         Some("differential-cases") => differential::run(&args[1..]),
-        Some("kernel-cases") => differential::kernel_cases(&args[1..]),
+        Some("kernel-cases") => kernel_trace::kernel_cases(&args[1..]),
         Some(other) => Err(Box::new(common::UsageError(format!("error: unknown command '{other}'\n\n{USAGE}"))) as Box<dyn std::error::Error>),
         None => Err(Box::new(common::UsageError(USAGE.to_owned())) as Box<dyn std::error::Error>),
     };

@@ -261,7 +261,7 @@ impl Shared {
         let line = if guard.1 > MAX_KERNEL_LINES {
             json!({"seq": seq, "truncated": true})
         } else {
-            crate::differential::kernel_line(seq, self.config, before, event, result)
+            crate::kernel_trace::kernel_line(seq, self.config, before, event, result)
         };
         let _ = writeln!(guard.0, "{line}");
     }
