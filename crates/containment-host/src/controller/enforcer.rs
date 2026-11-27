@@ -2,7 +2,8 @@
 
 use super::*;
 
-pub(super) const LIMITS: [(&str, &str); 3] = [("pids.max", "512"), ("memory.max", "1073741824"), ("cpu.max", "50000 100000")];
+const CPU_CAP: (&str, &str) = ("cpu.max", "50000 100000");
+pub(super) const LIMITS: [(&str, &str); 3] = [("pids.max", "512"), ("memory.max", "1073741824"), CPU_CAP];
 
 /// One sandbox generation. Control files stay open so enforcement does not need
 /// a new file descriptor while the host is under pressure.
@@ -12,6 +13,8 @@ pub(super) struct Generation {
     pub(super) freeze: File,
     pub(super) kill: File,
     pub(super) events: File,
+    /// `cpu.max`, when the cpu controller is on. See `lift_cpu_cap`.
+    pub(super) cpu: Option<File>,
 }
 
 impl Generation {
@@ -30,7 +33,7 @@ impl Generation {
                 eprintln!("generation {number}: {file} = {value} was not applied: {error}");
             }
         }
-        let generation = Self { number, freeze: write("cgroup.freeze")?, kill: write("cgroup.kill")?, events: File::open(path.join("cgroup.events"))?, path };
+        let generation = Self { number, freeze: write("cgroup.freeze")?, kill: write("cgroup.kill")?, events: File::open(path.join("cgroup.events"))?, cpu: write(CPU_CAP.0).ok(), path };
         unfinished.0 = None;
         Ok(generation)
     }
@@ -46,6 +49,24 @@ impl Generation {
         let mut buffer = [0_u8; 256];
         let count = self.events.read_at(&mut buffer, 0)?;
         Ok(CgroupState::parse(&String::from_utf8_lossy(&buffer[..count])))
+    }
+
+    /// Lifts the CPU quota so a freeze can land. A task throttled by `cpu.max`
+    /// does not run until its quota refills (up to a whole 100 ms period, longer
+    /// with many busy threads), and the freezer needs it to run to stop it. Egress
+    /// is already cut when this runs; the cap is put back by `restore_cpu_cap`
+    /// as soon as the freeze is read back or the attempt gives up. Returns
+    /// whether there is a cap to put back.
+    pub(super) fn lift_cpu_cap(&self) -> bool {
+        self.cpu.as_ref().is_some_and(|file| file.write_all_at(b"max", 0).is_ok())
+    }
+
+    pub(super) fn restore_cpu_cap(&self) {
+        let (name, value) = CPU_CAP;
+        let restored = self.cpu.as_ref().is_some_and(|file| file.write_all_at(value.as_bytes(), 0).is_ok());
+        if !restored {
+            eprintln!("generation {}: {name} = {value} was not restored after a freeze", self.number);
+        }
     }
 
     // Each holds only on positive evidence. A read error or a missing line
@@ -160,7 +181,7 @@ mod tests {
         };
         // Reading a directory fails with EISDIR.
         let events = File::open(&parent).expect("directory");
-        let generation = Generation { number: 1, path: parent.clone(), freeze: control("freeze"), kill: control("kill"), events };
+        let generation = Generation { number: 1, path: parent.clone(), freeze: control("freeze"), kill: control("kill"), events, cpu: None };
         let seen = (generation.empty(), generation.frozen(), generation.thawed(), generation.state().is_err());
         let _ = fs::remove_dir_all(&parent);
         assert_eq!(seen, (false, false, false, true), "(empty, frozen, thawed, read failed)");

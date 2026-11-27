@@ -292,7 +292,12 @@ impl Shared {
                     return true;
                 }
             }
-            self.write_freeze("1") && self.wait_generation(|g| g.frozen() || g.empty())
+            let lifted = lock(&self.generation).lift_cpu_cap();
+            let held = self.write_freeze("1") && self.wait_generation(|g| g.frozen() || g.empty());
+            if lifted {
+                lock(&self.generation).restore_cpu_cap();
+            }
+            held
         } else {
             true
         }
