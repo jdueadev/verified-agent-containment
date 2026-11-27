@@ -30,6 +30,6 @@ for name, *_ in SHOWCASE:
     subprocess.run(["scripts/build-wasm.sh"], cwd=work, env=env, check=True)
     built = root / "target/variant-build/wasm32-unknown-unknown/release/containment_wasm.wasm"
     opt = out / f"{name}.wasm"
-    npx = ["npx", "--yes", "--package", "binaryen@123.0.0"]
-    subprocess.run(npx + ["wasm-opt", "-Oz", "--strip-debug", "--strip-producers", str(built), "-o", str(opt)], check=True)
-    subprocess.run(npx + ["wasm2js", str(opt), "-o", str(out / f"{name}.js")], check=True)
+    # The pinned binaryen on PATH; scripts/build-page.sh checks its version first.
+    subprocess.run(["wasm-opt", "-Oz", "--strip-debug", "--strip-producers", str(built), "-o", str(opt)], check=True)
+    subprocess.run(["wasm2js", str(opt), "-o", str(out / f"{name}.js")], check=True)

@@ -58,16 +58,15 @@ wasm crate or `web/template.html` does not show up until you build a page from t
 working tree. Build it to another path, never over `web/dist/`:
 
 ```bash
-scripts/build-wasm.sh
-npx --yes --package binaryen@123.0.0 wasm-opt -Oz --strip-debug --strip-producers target/wasm32-unknown-unknown/release/containment_wasm.wasm -o target/generated/kernel.opt.wasm
-npx --yes --package binaryen@123.0.0 wasm2js target/generated/kernel.opt.wasm -o target/generated/kernel.fallback.js
-uv run web/build_variants.py
-uv run web/build.py target/vac-driver/simulator.html
+scripts/build-page.sh target/vac-driver/simulator.html
 node .claude/skills/run-verified-agent-containment/driver.mjs sim --page target/vac-driver/simulator.html
 ```
 
-These are the steps of `scripts/build-page.sh` with an output path given to `build.py`.
-They take about 15 seconds warm, download `binaryen` through `npx`, and write only under
+`scripts/build-page.sh` with a path writes there instead of `web/dist/`. It needs
+binaryen's `wasm-opt` and `wasm2js` at the version pinned in `ci/pins.env`, and refuses
+any other; the factory images have them. `scripts/factory.sh page` does both steps in the
+page image, with the pinned Chromium, and also fails unless the committed page is the one
+the tree builds. Either way the build takes about 15 seconds warm and writes only under
 `target/`. The `unused variable` warnings come from the deliberately mutated kernels.
 
 Give it steps to run your own flow. They run in order:
@@ -149,9 +148,10 @@ or stop.
   `--file-url` loads it the raw way if you need to see that.
 - **Do not run `scripts/build-page.sh` to test the page.** It rewrites `web/dist/`. Use the build-to-another-path steps
   above.
-- **The committed page is a snapshot.** Its evidence footer and wasm are whatever was
-  current when it was last built. A page built from the working tree was not
-  byte-identical to it (1.4 MB against 1.8 MB) when this was written.
+- **The committed page must be the page the tree builds.** Its evidence footer comes from
+  `results/` and its wasm from the kernel, so a change to either changes the page. The
+  build is byte-for-byte reproducible, and the `page` workflow fails when the two differ;
+  commit the page `scripts/factory.sh page` leaves at `target/page/`.
 - **The classifier button says Kill and the mode says Hold.** That is the point of the
   demo, not a failed click.
 - **The simulator clock is live.** The lease runs out about two seconds after load unless

@@ -134,6 +134,32 @@ RUN case "$TARGETARCH" in \
     tar -xzf /tmp/cargo-deny.tar.gz -C /tmp; \
     install -D -m 0755 "/tmp/cargo-deny-${CARGO_DENY_VERSION}-${triple}/cargo-deny" /out/cargo-deny; \
     /out/cargo-deny --version
+# binaryen's npm package: wasm-opt and wasm2js compiled to WebAssembly, one file each,
+# run by Node. Unlike the native release builds, they give the same output on amd64
+# and arm64 (see ci/pins.env).
+FROM os AS get-binaryen
+ARG BINARYEN_VERSION
+ARG FACTORY_BINARYEN_NPM_SHA256
+RUN curl -fsSL -o /tmp/binaryen.tgz "https://registry.npmjs.org/binaryen/-/binaryen-${BINARYEN_VERSION}.0.0.tgz";     echo "${FACTORY_BINARYEN_NPM_SHA256}  /tmp/binaryen.tgz" | sha256sum --check --strict;     mkdir -p /opt/binaryen;     tar -xzf /tmp/binaryen.tgz -C /opt/binaryen --strip-components=1       package/LICENSE package/bin/package.json package/bin/wasm-opt package/bin/wasm2js;     rm /tmp/binaryen.tgz
+
+
+# Chrome for Testing's headless shell. Its shared libraries are installed in the
+# page image, so this stage only checks and unpacks it.
+FROM os AS get-chromium
+ARG TARGETARCH
+ARG CHROMIUM_VERSION
+ARG FACTORY_CHROMIUM_SHA256_AMD64
+ARG FACTORY_CHROMIUM_SHA256_ARM64
+RUN case "$TARGETARCH" in \
+      amd64) platform=linux64; sum="$FACTORY_CHROMIUM_SHA256_AMD64" ;; \
+      arm64) platform=linux-arm64; sum="$FACTORY_CHROMIUM_SHA256_ARM64" ;; \
+      *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/chromium.zip "https://storage.googleapis.com/chrome-for-testing-public/${CHROMIUM_VERSION}/${platform}/chrome-headless-shell-${platform}.zip"; \
+    echo "${sum}  /tmp/chromium.zip" | sha256sum --check --strict; \
+    unzip -q /tmp/chromium.zip -d /tmp/chromium; \
+    mv "/tmp/chromium/chrome-headless-shell-${platform}" /opt/chromium; \
+    rm -r /tmp/chromium.zip /tmp/chromium
 
 
 FROM os AS get-python
@@ -249,6 +275,8 @@ COPY --from=get-tla /opt/tla /opt/tla
 COPY --from=get-shellcheck /out/shellcheck /usr/local/bin/shellcheck
 COPY --from=get-cargo-deny /out/cargo-deny /usr/local/bin/cargo-deny
 COPY --from=get-node /opt/node /opt/node
+COPY --from=get-binaryen /opt/binaryen /opt/binaryen
+RUN ln -s /opt/binaryen/bin/wasm-opt /opt/binaryen/bin/wasm2js /usr/local/bin/;     wasm-opt --version;     wasm2js --version
 COPY --from=get-python /opt/python /opt/python
 COPY --from=get-python /out/uv /usr/local/bin/uv
 COPY --from=get-bend /opt/bend /opt/bend
@@ -269,6 +297,21 @@ COPY --from=get-kani /out/toolchains/ /opt/rustup/toolchains/
 COPY --from=get-kani /opt/kani /opt/kani
 COPY --from=get-kani /out/bin/cargo-kani /out/bin/kani /usr/local/bin/
 CMD ["scripts/kani.sh"]
+
+
+# Its own image, not part of check: the required check runs scripts/check.sh in
+# a published check image, and Chromium with its libraries is a large addition
+# that scripts/check.sh never reads. scripts/page-check.sh runs here.
+FROM check AS page
+RUN apt-get update; \
+    apt-get install -y --no-install-recommends fonts-liberation libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 \
+      libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3 libdrm2 libexpat1 libgbm1 libglib2.0-0t64 libnspr4 libnss3 \
+      libpango-1.0-0 libudev1 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2; \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=get-chromium /opt/chromium /opt/chromium
+ENV CHROMIUM=/opt/chromium/chrome-headless-shell
+RUN "$CHROMIUM" --version
+CMD ["scripts/page-check.sh"]
 
 
 FROM check AS dev
