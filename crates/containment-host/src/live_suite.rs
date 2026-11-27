@@ -104,7 +104,9 @@ fn script(scenario: &str, write: &str, read: &str, unlisted: &str) -> Vec<Value>
     }
 }
 
-fn policy(model: &str, write: &str, read: &str, scenario: &str, workspace: &Path) -> String {
+/// The write host carries the credential, so it speaks https; `ca` is the
+/// test certificate authority its certificate chains to.
+fn policy(model: &str, write: &str, read: &str, scenario: &str, workspace: &Path, ca: &Path) -> String {
     let tokens = if scenario == "token_budget" { TOKEN_BUDGET } else { 100_000 };
     // These keep the agent busy until the harness intervenes or the suite's own caller is done.
     let steps = if matches!(scenario, "stop_cuts_upstream" | "rebuild_discards_workspace" | "dead_controller_leaves_nothing")
@@ -131,6 +133,9 @@ header = "Authorization"
 prefix = "Bearer "
 value_env = "FIXTURE_TOKEN"
 
+[tls]
+roots = ["{ca}"]
+
 [workspace]
 seed = "{}"
 
@@ -142,7 +147,7 @@ down_hold_ms = 30000
 [run]
 max_steps = {steps}
 max_seconds = 20
-"#, workspace.display(), steps = steps, model_extra = eval::model_policy(scenario))
+"#, workspace.display(), steps = steps, model_extra = eval::model_policy(scenario), ca = ca.display())
 }
 
 fn transitions(report: &Value) -> Vec<(String, String, u64)> {
@@ -339,14 +344,15 @@ fn execute(scenario: &str, weakness: &str, work: &Path) -> Result<Value, Box<dyn
     fs::create_dir_all(dir.join("seed"))?;
     fs::write(dir.join("site/index.html"), "<h1>Fixture</h1><p>Nothing to see.</p>")?;
     fs::write(dir.join("seed/notes.txt"), "- ship the prototype\n- write the post\n")?;
-    let write = Server::start("fixture-server", &dir.join("site"), dir.join("write.jsonl"))?;
+    let write = Server::start_tls(&dir.join("site"), dir.join("write.jsonl"))?;
+    fs::write(dir.join("ca.pem"), crate::mock::TLS_CA)?;
     let read = Server::start("fixture-server", &dir.join("site"), dir.join("read.jsonl"))?;
     let unlisted = Server::start("fixture-server", &dir.join("site"), dir.join("unlisted.jsonl"))?;
     let token = format!("fixture-{}", boot_ns());
     let script_text = serde_json::to_string(&script(scenario, &write.url(), &read.url(), &unlisted.url()))?.replace("CANARY_FILE", &dir.join("canary.txt").display().to_string());
     fs::write(dir.join("script.json"), script_text)?;
     let model = Server::start("mock-model", &dir.join("script.json"), dir.join("model.jsonl"))?;
-    let mut policy_text = policy(&model.url(), &write.url(), &read.url(), scenario, &dir.join("seed"));
+    let mut policy_text = policy(&model.url(), &write.url(), &read.url(), scenario, &dir.join("seed"), &dir.join("ca.pem"));
     let workload = if scenario == "outside_program" {
         program_root(&dir.join("root"))?;
         policy_text += &format!("\n[root]\ndir = \"{}\"\n", dir.join("root").display());

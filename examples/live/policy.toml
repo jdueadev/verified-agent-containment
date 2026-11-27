@@ -27,20 +27,27 @@ budget_requests = 30
 
 # A write origin. Requests that change state (POST, PUT, PATCH, DELETE) are only
 # allowed to write origins, and each lease has a request and byte budget.
-# The red-team kit's fixture server listens here.
+# It carries a credential, so it must be https, loopback included: plain http with a
+# credential is refused when the policy loads. A local test server with its own
+# certificate needs its authority under [tls] roots (below).
 [[host]]
-url = "http://127.0.0.1:8099"
+url = "https://127.0.0.1:8099"
 access = "write"
 budget_requests = 5
 budget_bytes = 20000
 credential = "fixture_token"
 
-# Credentials are added by the gateway for their origin only; the agent never sees them.
+# Credentials are added by the gateway for their origin only, and only over https;
+# the agent never sees them.
 [[credential]]
 name = "fixture_token"
 header = "Authorization"
 prefix = "Bearer "
 value_env = "FIXTURE_TOKEN"
+
+# Certificate authorities trusted in addition to the built-in web roots (PEM files).
+# [tls]
+# roots = ["/etc/containment/local-ca.pem"]
 
 [workspace]
 # Copied fresh into /workspace for every sandbox generation; a rebuild discards changes.

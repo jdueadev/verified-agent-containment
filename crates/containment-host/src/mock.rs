@@ -26,7 +26,25 @@ pub struct Request {
     pub body: Vec<u8>,
 }
 
-pub fn read_request(stream: &TcpStream) -> std::io::Result<Request> {
+/// A test certificate authority and the certificate it issued for 127.0.0.1,
+/// valid 2026 to 2126. They exist so the live suite can send a credential over
+/// https to a server on loopback; the key protects nothing.
+pub const TLS_CA: &str = include_str!("fixture_tls/ca.pem");
+const TLS_CERT: &str = include_str!("fixture_tls/server.pem");
+const TLS_KEY: &str = include_str!("fixture_tls/server.key");
+
+fn tls_server() -> Result<Arc<rustls::ServerConfig>, Box<dyn Error>> {
+    use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
+    let chain = vec![CertificateDer::from_pem_slice(TLS_CERT.as_bytes())?, CertificateDer::from_pem_slice(TLS_CA.as_bytes())?];
+    let key = PrivateKeyDer::from_pem_slice(TLS_KEY.as_bytes())?;
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()?
+        .with_no_client_auth()
+        .with_single_cert(chain, key)?;
+    Ok(Arc::new(config))
+}
+
+pub fn read_request(stream: impl Read) -> std::io::Result<Request> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line)?;
@@ -53,10 +71,14 @@ pub fn read_request(stream: &TcpStream) -> std::io::Result<Request> {
     Ok(Request { method, path, headers, body })
 }
 
-pub fn respond(mut stream: &TcpStream, status: u16, content_type: &str, body: &[u8]) {
+/// What a handler answers: status, content type and body.
+type Reply = (u16, &'static str, Vec<u8>);
+
+pub fn respond(mut stream: impl Write, (status, content_type, body): Reply) {
     let head = format!("HTTP/1.1 {status} OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
     let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(body);
+    let _ = stream.write_all(&body);
+    let _ = stream.flush();
 }
 
 struct Log(Mutex<fs::File>);
@@ -72,8 +94,30 @@ impl Log {
     }
 }
 
-/// Binds 127.0.0.1:port (0 picks one), prints the port on stdout, and serves.
-fn serve(port: u16, handler: impl Fn(&TcpStream, Request) + Send + Sync + 'static) -> Result<(), Box<dyn Error>> {
+/// Reads one request from `stream` and answers it, over TLS when `tls` is given.
+fn answer(stream: TcpStream, tls: Option<Arc<rustls::ServerConfig>>, handler: &(impl Fn(Request) -> Reply + ?Sized)) {
+    match tls {
+        Some(config) => {
+            let Ok(connection) = rustls::ServerConnection::new(config) else { return };
+            let mut stream = rustls::StreamOwned::new(connection, stream);
+            if let Ok(request) = read_request(&mut stream) {
+                respond(&mut stream, handler(request));
+                stream.conn.send_close_notify();
+                let _ = stream.flush();
+            }
+        }
+        None => {
+            if let Ok(request) = read_request(&stream) {
+                respond(&stream, handler(request));
+            }
+        }
+    }
+}
+
+/// Binds 127.0.0.1:port (0 picks one), prints the port on stdout, and serves,
+/// over TLS with the test certificate when `tls` is set.
+fn serve(port: u16, tls: bool, handler: impl Fn(Request) -> Reply + Send + Sync + 'static) -> Result<(), Box<dyn Error>> {
+    let tls = tls.then(tls_server).transpose()?;
     let listener = TcpListener::bind(("127.0.0.1", port))?;
     println!("{}", listener.local_addr()?.port());
     std::io::stdout().flush()?;
@@ -81,11 +125,8 @@ fn serve(port: u16, handler: impl Fn(&TcpStream, Request) + Send + Sync + 'stati
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
         let handler = Arc::clone(&handler);
-        thread::spawn(move || {
-            if let Ok(request) = read_request(&stream) {
-                handler(&stream, request);
-            }
-        });
+        let tls = tls.clone();
+        thread::spawn(move || answer(stream, tls, &*handler));
     }
     Ok(())
 }
@@ -98,7 +139,7 @@ pub fn mock_model(args: &[String]) -> Result<(), Box<dyn Error>> {
     let script: Vec<Value> = serde_json::from_str(&fs::read_to_string(script)?)?;
     let log = Log::open(Path::new(log))?;
     let next = AtomicUsize::new(0);
-    serve(port.parse()?, move |stream, request| {
+    serve(port.parse()?, false, move |request| {
         let n = next.fetch_add(1, Ordering::SeqCst);
         let incoming: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
         log.write(json!({"ns": boot_ns(), "n": n, "path": request.path, "messages": incoming["messages"].as_array().map_or(0, Vec::len),
@@ -127,7 +168,7 @@ pub fn mock_model(args: &[String]) -> Result<(), Box<dyn Error>> {
         let body = json!({"id": format!("mock-{n}"), "object": "chat.completion", "model": incoming["model"],
             "choices": [{"index": 0, "message": message, "finish_reason": if calls.is_empty() { "stop" } else { "tool_calls" }}],
             "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}});
-        respond(stream, 200, "application/json", body.to_string().as_bytes());
+        (200, "application/json", body.to_string().into_bytes())
     })
 }
 
@@ -150,12 +191,17 @@ fn fill_files(text: &str) -> String {
     out
 }
 
-/// `fixture-server PORT DIR LOG`: GET serves DIR; other methods are recorded.
+/// `fixture-server PORT DIR LOG [tls]`: GET serves DIR; other methods are recorded.
+/// With `tls` it serves https with the test certificate for 127.0.0.1 (`TLS_CA`).
 pub fn fixture_server(args: &[String]) -> Result<(), Box<dyn Error>> {
-    let [port, dir, log] = args else { return Err("fixture-server PORT DIR LOG".into()) };
+    let (port, dir, log, tls) = match args {
+        [port, dir, log] => (port, dir, log, false),
+        [port, dir, log, tls] if tls == "tls" => (port, dir, log, true),
+        _ => return Err("fixture-server PORT DIR LOG [tls]".into()),
+    };
     let dir = PathBuf::from(dir);
     let log = Log::open(Path::new(log))?;
-    serve(port.parse()?, move |stream, request| {
+    serve(port.parse()?, tls, move |request| {
         let headers: serde_json::Map<String, Value> = request.headers.iter().map(|(k, v)| (k.to_ascii_lowercase(), json!(v))).collect();
         log.write(json!({"ns": boot_ns(), "method": request.method, "path": request.path, "headers": headers,
             "body": String::from_utf8_lossy(&request.body)}));
@@ -165,16 +211,16 @@ pub fn fixture_server(args: &[String]) -> Result<(), Box<dyn Error>> {
             let mut lines: Vec<String> = request.headers.iter().map(|(k, v)| format!("{k}: {v}")).collect();
             lines.extend(request.headers.iter().filter_map(|(_, v)| v.split_once(' ').map(|(_, token)| format!("invalid token {token}"))));
             let echoed = json!(lines);
-            respond(stream, 200, "application/json", echoed.to_string().as_bytes());
+            (200, "application/json", echoed.to_string().into_bytes())
         } else if request.method == "GET" {
             let relative = request.path.trim_start_matches('/').split('?').next().unwrap_or("").to_owned();
             let safe = Path::new(&relative).components().all(|c| matches!(c, Component::Normal(_)));
             match fs::read(dir.join(if relative.is_empty() { "index.html" } else { &relative })) {
-                Ok(bytes) if safe => respond(stream, 200, "text/html; charset=utf-8", &bytes),
-                _ => respond(stream, 404, "text/plain", b"not found"),
+                Ok(bytes) if safe => (200, "text/html; charset=utf-8", bytes),
+                _ => (404, "text/plain", b"not found".to_vec()),
             }
         } else {
-            respond(stream, 200, "application/json", br#"{"ok":true}"#);
+            (200, "application/json", br#"{"ok":true}"#.to_vec())
         }
     })
 }
@@ -204,15 +250,30 @@ pub struct Server {
     child: Child,
     pub port: u16,
     pub log: PathBuf,
+    tls: bool,
 }
 
 impl Server {
     pub fn start(kind: &str, arg: &Path, log: PathBuf) -> Result<Self, Box<dyn Error>> {
-        let mut child = Command::new(std::env::current_exe()?).arg(kind).arg("0").arg(arg).arg(&log)
-            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn()?;
+        Self::spawn(kind, arg, log, false)
+    }
+
+    /// A fixture server that speaks https with the test certificate; a policy
+    /// that lists it needs `TLS_CA` under `[tls] roots`.
+    pub fn start_tls(arg: &Path, log: PathBuf) -> Result<Self, Box<dyn Error>> {
+        Self::spawn("fixture-server", arg, log, true)
+    }
+
+    fn spawn(kind: &str, arg: &Path, log: PathBuf, tls: bool) -> Result<Self, Box<dyn Error>> {
+        let mut command = Command::new(std::env::current_exe()?);
+        command.arg(kind).arg("0").arg(arg).arg(&log);
+        if tls {
+            command.arg("tls");
+        }
+        let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn()?;
         let mut line = String::new();
         BufReader::new(child.stdout.take().ok_or("server stdout")?).read_line(&mut line)?;
-        Ok(Self { child, port: line.trim().parse()?, log })
+        Ok(Self { child, port: line.trim().parse()?, log, tls })
     }
 
     /// Every logged request; an unreadable log or a malformed line is an error,
@@ -226,7 +287,7 @@ impl Server {
     }
 
     pub fn url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
+        format!("{}://127.0.0.1:{}", if self.tls { "https" } else { "http" }, self.port)
     }
 }
 
@@ -246,6 +307,34 @@ mod tests {
         let path = std::env::temp_dir().join(format!("vac-mock-{name}-{}.jsonl", std::process::id()));
         let _ = fs::remove_file(&path);
         path
+    }
+
+    /// The gateway's client reaches the https fixture only when it trusts the
+    /// test authority, and the credential header arrives over TLS.
+    #[test]
+    fn the_tls_fixture_is_trusted_only_through_its_authority() {
+        use rustls::pki_types::{pem::PemObject, CertificateDer};
+        let ca = CertificateDer::from_pem_slice(TLS_CA.as_bytes()).unwrap();
+        for (roots, reached) in [(vec![ca], true), (Vec::new(), false)] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let url = crate::http::Url::parse(&format!("https://127.0.0.1:{}/", listener.local_addr().unwrap().port())).unwrap();
+            let config = tls_server().unwrap();
+            let server = thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                answer(stream, Some(config), &|r: Request| {
+                    let auth = r.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("authorization")).map(|(_, v)| v.clone());
+                    (200, "text/plain", auth.unwrap_or_default().into_bytes())
+                });
+            });
+            let client = crate::http::tls_client(&roots).unwrap();
+            let headers = [("Authorization".to_owned(), "Bearer t0ken".to_owned())];
+            let sent = crate::http::send(&url, &client, "GET", &headers, b"", crate::http::Limits::WEB, |_| true);
+            server.join().unwrap();
+            match sent {
+                Ok(r) => assert!(reached && r.status == 200 && r.body == b"Bearer t0ken", "{:?}", String::from_utf8_lossy(&r.body)),
+                Err(e) => assert!(!reached, "{e}"),
+            }
+        }
     }
 
     #[test]

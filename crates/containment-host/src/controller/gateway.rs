@@ -198,8 +198,8 @@ fn carries_canary(shared: &Shared, live: &LiveState, texts: &[&str]) -> bool {
 /// Sends one upstream request on an admitted slot, which is freed when this
 /// returns. A cut between admission and connect aborts before any byte is
 /// written; a cut later shuts the socket.
-pub(super) fn send_on_slot(slot: Slot<'_>, url: &crate::http::Url, method: &str, headers: &[(String, String)], body: &[u8], limits: crate::http::Limits) -> std::io::Result<crate::http::Response> {
-    crate::http::send(url, method, headers, body, limits, |stream| slot.attach(stream))
+pub(super) fn send_on_slot(slot: Slot<'_>, live: &LiveState, url: &crate::http::Url, method: &str, headers: &[(String, String)], body: &[u8], limits: crate::http::Limits) -> std::io::Result<crate::http::Response> {
+    crate::http::send(url, &live.tls, method, headers, body, limits, |stream| slot.attach(stream))
 }
 
 /// Standard chat-completion settings an `infer` request may carry. Each is
@@ -273,7 +273,7 @@ pub(super) fn live_infer(shared: &Shared, live: &LiveState, message: &Value, rec
     headers.extend(live.model_header.clone());
     // Sabotage: the policy's timeout is ignored and the fixed limits apply.
     let limits = if shared.weak.live_model_timeout_ignored() { crate::http::Limits::MODEL } else { live.model_limits };
-    let response = match send_on_slot(slot, &live.model_url, "POST", &headers, body.as_bytes(), limits) {
+    let response = match send_on_slot(slot, live, &live.model_url, "POST", &headers, body.as_bytes(), limits) {
         Ok(r) => r,
         Err(e) => {
             // Refused or cut before any byte was written: nothing was spent. Any other
@@ -498,7 +498,7 @@ pub(super) fn live_http(shared: &Shared, live: &LiveState, message: &Value, rece
     if writes {
         headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
     }
-    match send_on_slot(permit.slot, &url, &method, &headers, body.as_bytes(), crate::http::Limits::WEB) {
+    match send_on_slot(permit.slot, live, &url, &method, &headers, body.as_bytes(), crate::http::Limits::WEB) {
         // Sabotage: a cut body is reported whole.
         Ok(r) => redact(live, json!({"ok": true, "status": r.status, "truncated": r.truncated && !shared.weak.live_truncation_hidden(),
             "body": cut_body(&live.secret_values, r.body, r.truncated)})),
@@ -580,10 +580,11 @@ mod tests {
             }
         });
         let (mut whole, mut masked) = (0, 0);
+        let tls = crate::http::tls_client(&[]).expect("tls");
         for n in 0..=150 {
             let url = crate::http::Url::parse(&format!("http://127.0.0.1:{port}/{}", "a".repeat(n))).expect("url");
             let headers = [("X-Key".to_owned(), credential.to_owned())];
-            let response = crate::http::send(&url, "GET", &headers, b"", crate::http::Limits::WEB, |_| true).expect("echo");
+            let response = crate::http::send(&url, &tls, "GET", &headers, b"", crate::http::Limits::WEB, |_| true).expect("echo");
             let text = redact_value(&all, json!(cut_body(&all, response.body, response.truncated))).as_str().expect("text").to_owned();
             // Nothing else in the echo has a Z, so any Z is the credential's first byte.
             assert!(!text.contains('Z'), "path of {n} bytes leaks {:?}", &text[text.len().saturating_sub(40)..]);
