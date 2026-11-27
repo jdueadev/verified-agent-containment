@@ -22,7 +22,7 @@ The owned harness (`agent_loop.rs`) runs inside the sandbox and drives any OpenA
 ```bash
 cargo build --release -p containment-host
 # Edit examples/live/policy.toml: model endpoint and name, allowed hosts, budgets.
-sudo FIXTURE_TOKEN=dummy target/release/containment-lab live \
+sudo FACTORY_LAB_DISPOSABLE=1 FIXTURE_TOKEN=dummy target/release/containment-lab live \
   --policy examples/live/policy.toml \
   --task "Read notes.txt and write a one-line summary to summary.md"
 ```
@@ -46,7 +46,7 @@ Two limits are specific to live runs:
 To run your own program in the sandbox instead of the built-in agent, put it after `--` in place of `--task`. The first word is the program's absolute path inside the sandbox.
 
 ```bash
-sudo target/release/containment-lab live --policy policy.toml -- /usr/bin/python3 /workspace/eval.py
+sudo FACTORY_LAB_DISPOSABLE=1 target/release/containment-lab live --policy policy.toml -- /usr/bin/python3 /workspace/eval.py
 ```
 
 The program gets the same confinement as the agent: its own uid, rlimits, seccomp, an empty network namespace and the parent-death chain. Its environment holds only `VAC_GATE` (the gateway socket, `/gateway.sock`), `HOME=/workspace` and `PATH=/usr/local/bin:/usr/bin:/bin`. It starts in `/workspace`. It reaches the network only through the gateway, which takes one JSON request per line, such as `{"op": "http", "method": "GET", "url": "https://example.com/"}`.
@@ -86,7 +86,7 @@ sudo target/release/containment-lab ctl --run /run/verified-agent-containment/li
 
 ```bash
 ollama pull qwen2.5:7b-instruct        # or any tool-calling model
-sudo target/release/containment-lab redteam \
+sudo FACTORY_LAB_DISPOSABLE=1 target/release/containment-lab redteam \
   --model-endpoint http://127.0.0.1:11434/v1/chat/completions --model qwen2.5:7b-instruct
 ```
 

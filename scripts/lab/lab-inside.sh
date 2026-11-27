@@ -4,6 +4,7 @@
 # model, runs both suites without waivers, then serves the model and runs the
 # red team. Progress goes to <lab>/logs/status.txt; results to <lab>/results/<stamp>.
 set -euo pipefail
+[ "${FACTORY_LAB_DISPOSABLE:-}" = 1 ] || { echo "lab-inside: this runs attack code as root; start it with run-lab.cmd, which creates a throwaway distro and sets FACTORY_LAB_DISPOSABLE=1 there" >&2; exit 1; }
 
 LAB="" REPO="" MODEL="" STAMP="$(date +%Y%m%d-%H%M%S)" ONLY="all"
 while [ $# -gt 0 ]; do

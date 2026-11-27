@@ -32,7 +32,41 @@ Commands (each takes --help):
   redteam         run the red-team pack against a model and write a scorecard
   mock-model      scripted OpenAI-compatible model server (for tests)
   fixture-server  fixture HTTP server (for tests)
+
+attack-suite, live, live-suite and redteam run attack code as root. They refuse
+to start unless FACTORY_LAB_DISPOSABLE=1 says this machine is disposable.
 ";
+
+/// The marker that says this machine is disposable. The same name gates
+/// `scripts/factory.sh lab` and every root script under `scripts/`.
+const DISPOSABLE_MARKER: &str = "FACTORY_LAB_DISPOSABLE";
+
+/// Commands that run attack code as root. Each refuses to start without the marker.
+const ROOT_COMMANDS: &[&str] = &["attack-suite", "live", "live-suite", "redteam"];
+
+/// Commands that start no attack code of their own: help and version, the test
+/// servers, the differential cases, `ctl` and `hud` (which talk to a controller a
+/// root command already started), and the internal children a root command spawns,
+/// some of them with a cleared environment that could not carry the marker.
+/// `tools/lab_throwaway_check.py` fails if a command is in neither list; only it and
+/// the tests below read this one.
+#[cfg(test)]
+const NO_MARKER_COMMANDS: &[&str] = &[
+    "controller", "sandbox-launch", "agent", "monitor", "sink", "probe-operator", "probe-root", "system-one",
+    "ctl", "hud", "mock-model", "fixture-server", "differential-cases",
+];
+
+/// Why `command` may not start here, or `None` when it may.
+fn disposable_refusal(command: &str, marker: Option<&str>) -> Option<String> {
+    if !ROOT_COMMANDS.contains(&command) || marker == Some("1") {
+        return None;
+    }
+    Some(format!(
+        "containment-lab: {command} runs attack code as root, so it runs only on a disposable Linux or WSL2 machine.\n\
+         containment-lab: on such a machine, set {DISPOSABLE_MARKER}=1 to confirm \
+         (sudo {DISPOSABLE_MARKER}=1 containment-lab {command} ...), or run scripts/factory.sh lab.\n"
+    ))
+}
 
 fn main() -> ExitCode {
     // Arguments are decoded explicitly: a non-UTF-8 argument is a usage error, not a panic.
@@ -41,6 +75,10 @@ fn main() -> ExitCode {
         eprintln!("containment-lab: arguments must be valid UTF-8");
         return ExitCode::from(2);
     };
+    if let Some(refusal) = args.first().and_then(|c| disposable_refusal(c, std::env::var(DISPOSABLE_MARKER).ok().as_deref())) {
+        eprint!("{refusal}");
+        return ExitCode::FAILURE;
+    }
     let result = match args.first().map(String::as_str) {
         Some("-h" | "--help" | "help") => {
             print!("{USAGE}");
@@ -79,6 +117,29 @@ fn main() -> ExitCode {
         Err(error) => {
             eprintln!("containment-lab: {error}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_commands_refuse_without_the_marker_and_name_the_fix() {
+        for command in ROOT_COMMANDS {
+            for marker in [None, Some(""), Some("0"), Some("yes"), Some("1 ")] {
+                let refusal = disposable_refusal(command, marker).unwrap_or_else(|| panic!("{command} started with {marker:?}"));
+                assert!(refusal.contains("FACTORY_LAB_DISPOSABLE=1"), "{refusal}");
+            }
+            assert_eq!(disposable_refusal(command, Some("1")), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn other_commands_need_no_marker() {
+        for command in NO_MARKER_COMMANDS {
+            assert_eq!(disposable_refusal(command, None), None, "{command}");
         }
     }
 }

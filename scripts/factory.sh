@@ -60,7 +60,7 @@ case "${1:-}" in
     fi
     build check
     shift
-    lab=(-e "FACTORY_LAB_COMMIT=$(git rev-parse HEAD)")
+    lab=(-e FACTORY_LAB_DISPOSABLE=1 -e "FACTORY_LAB_COMMIT=$(git rev-parse HEAD)")
     if [ -n "${FACTORY_LAB_OUT:-}" ]; then
       mkdir -p "$FACTORY_LAB_OUT"
       lab+=(-v "$(cd "$FACTORY_LAB_OUT" && pwd):/work/target/verify/lab")

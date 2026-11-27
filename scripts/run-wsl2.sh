@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Builds both binaries as your user, then runs the Linux attack suite as root:
 # the honest runs on the default build, the sabotage controls on the sabotage build.
-# Run without sudo inside a disposable WSL2 distribution: scripts/run-wsl2.sh [repeat] [extra suite flags]
+# Run without sudo inside a disposable WSL2 distribution:
+#   FACTORY_LAB_DISPOSABLE=1 scripts/run-wsl2.sh [repeat] [extra suite flags]
 set -euo pipefail
 cd "$(dirname "$0")/.."
+[ "${FACTORY_LAB_DISPOSABLE:-}" = 1 ] || { echo "run-wsl2: this runs attack code as root; run it only in a disposable WSL2 distribution, and set FACTORY_LAB_DISPOSABLE=1 to confirm" >&2; exit 1; }
 [ "$(id -u)" != 0 ] || { echo "Run as your user, not with sudo. The script asks for sudo only for the suite." >&2; exit 2; }
 kernel="$(uname -r)"
 major="${kernel%%.*}"; rest="${kernel#*.}"; minor="${rest%%.*}"
@@ -23,8 +25,8 @@ repeat="${1:-30}"; shift || true
 status=0
 honest="${out%.json}-honest.json"
 {
-  sudo target/release/containment-lab attack-suite --repeat "$repeat" --out "$honest" "$@" \
-    && sudo target-sabotage/release/containment-lab attack-suite --honest-results "$honest" --out "$out" "$@"
+  sudo FACTORY_LAB_DISPOSABLE=1 target/release/containment-lab attack-suite --repeat "$repeat" --out "$honest" "$@" \
+    && sudo FACTORY_LAB_DISPOSABLE=1 target-sabotage/release/containment-lab attack-suite --honest-results "$honest" --out "$out" "$@"
 } 2>&1 | tee "${out%.json}.log" || status=$?
 for file in "$honest" "$out"; do [ ! -e "$file" ] || sudo chown "$(id -u):$(id -g)" "$file"; done
 exit "$status"

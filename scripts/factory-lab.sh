@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+[ "${FACTORY_LAB_DISPOSABLE:-}" = 1 ] || { echo "factory-lab: this runs attack code as root; run it with scripts/factory.sh lab on a disposable machine, which sets FACTORY_LAB_DISPOSABLE=1" >&2; exit 1; }
 
 repeat="${1:-30}"
 out=target/verify/lab
