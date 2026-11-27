@@ -1,0 +1,21 @@
+# Weekly update pull requests for the Rust crates in Cargo.lock and the
+# SHA-pinned actions in .github/workflows/. They go through review like any other
+# pull request and are never merged automatically. A new release waits a week
+# before it is proposed.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5

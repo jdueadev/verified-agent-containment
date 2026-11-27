@@ -15,6 +15,16 @@ done
 out=target/verify
 mkdir -p "$out" target/generated
 
+# ShellCheck and cargo-deny's offline checks. Both tools are newer than the image
+# the organization's required check pins, so there, until that pin moves, the
+# lint is skipped with a warning; the supply-chain workflow runs it in the image
+# built from this checkout. scripts/factory.sh check builds that image too.
+if command -v shellcheck >/dev/null && command -v cargo-deny >/dev/null; then
+  scripts/lint.sh
+else
+  echo "check: WARNING: shellcheck or cargo-deny is not installed; scripts/lint.sh was skipped" >&2
+fi
+
 uv run tools/invariants_check.py
 uv run tools/unwrap_check.py
 uv run tools/lab_throwaway_check.py
