@@ -44,7 +44,7 @@ pub fn boot_ns() -> u64 {
 
 /// MAC over one upstream record. The key never enters the sandbox.
 pub fn record_mac(key: &[u8], admit_ns: u64, write_ns: u64, host: &str, data: &str, credential: &str) -> String {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     let mut mac = Hmac::<sha2::Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
     for part in [admit_ns.to_string().as_str(), write_ns.to_string().as_str(), host, data, credential] {
         mac.update(&(part.len() as u64).to_be_bytes());
