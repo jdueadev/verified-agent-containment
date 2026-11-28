@@ -23,6 +23,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# A GitHub runner has python3 and no uv; the check image has uv and no python3.
+py() { if command -v python3 >/dev/null 2>&1; then python3 "$@"; else uv run python "$@"; fi; }
+
 out="${OUTER_OUT:-target/outer}"
 baseline="${OUTER_BASELINE:-evals/agentdojo/runs/2026-11-25-domain}"
 mkdir -p "$out"
@@ -48,7 +51,7 @@ case "${1:-}" in
       # A partial run is compared with the same cases of the baseline only.
       before="$out/baseline"
       mkdir -p "$before"
-      python3 -I - "$baseline/cases.jsonl" "$out/agentdojo/cases.jsonl" "$before/cases.jsonl" <<'PY'
+      py -I - "$baseline/cases.jsonl" "$out/agentdojo/cases.jsonl" "$before/cases.jsonl" <<'PY'
 import json, sys
 ran = {json.loads(line)["case"] for line in open(sys.argv[2]) if line.strip()}
 with open(sys.argv[3], "w") as kept:
@@ -89,7 +92,7 @@ PY
     {
       echo "# Outer loop at $(git rev-parse --short HEAD 2>/dev/null || echo 'an unknown commit')"
       if [ -f "$out/eval-diff.json" ]; then
-        new=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["unexpected_groups"])' "$out/eval-diff.json")
+        new=$(py -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["unexpected_groups"])' "$out/eval-diff.json")
         [ "$new" = 0 ] || status=1
         printf '\n## AgentDojo compared with %s: %s new\n\n```\n' "${baseline##*/}" "$new"
         cat "$out/eval-diff.txt"
